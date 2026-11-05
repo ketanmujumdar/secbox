@@ -27,7 +27,11 @@ secbox logs [SERVICE] [-f] [--tail N] [--project PATH]
 
 Terminal control codes are removed, so a service cannot clear or take over your terminal through its log.
 
-> **Logs are not masked.** A service given a secret can print it, and `logs` will show it.
+### Secret values are masked
+
+`logs` replaces the value of each secret assigned to the project with its name, such as `[DEMO_TOKEN]`, before you see it. That covers the value as it is, in base64 at any alignment, URL-encoded and in hex, even when it is split across reads.
+
+> Masking stops accidental leaks into logs, not a thief. A value that has been encrypted or reworked cannot be recognised. `shell` and `exec` run on your own terminal, so their output is **not** masked.
 
 ## shell
 

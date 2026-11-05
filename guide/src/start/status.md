@@ -11,7 +11,8 @@ secbox is an early build. This page says exactly which parts work, which are bui
 - Secrets are stored in the OS keychain and work.
 - Starting, stopping and inspecting a sandbox (`up`, `down`, `status`, `logs`, `shell`, `exec`) are built. Most of that was tested against a fake engine. `logs`, `shell` and `exec` have run against a real sandbox.
 - The only network rule on real traffic is the engine's own **hostname allowlist**. The fuller policy engine (HTTP methods, paths) explains decisions but enforces nothing yet.
-- There is **no way to bring changes back** from a sandbox to your machine yet. `diff` and `export` are not built.
+- `logs` and `net blocked` replace secret values with their names.
+- `diff` shows what changed in a sandbox and flags risky files, tested against a fake engine only. There is still **no way to bring changes back** to your machine: `export` is not built.
 
 ## Command by command
 
@@ -26,10 +27,12 @@ secbox is an early build. This page says exactly which parts work, which are bui
 | `net blocked` | Works, through the daemon, on a sandbox created recently enough. Hostnames only |
 | `uninstall --purge` | Works. Removes the state folder only |
 | `up`, `down`, `status` | Built, for Compose projects and projects with only a Dockerfile. Need the daemon |
-| `logs`, `shell`, `exec` | Work on a running sandbox, through the daemon |
+| `logs` | Works on a running sandbox, through the daemon. Removes terminal control codes, and replaces assigned secret values with their names |
+| `shell`, `exec` | Work on a running sandbox, on your real terminal. Their output is not masked |
 | `mcp serve` | Built, never run on a real VM |
 | `mcp setup claude`, `mcp setup codex` | Works |
-| `diff`, `export` | Not built. They exit with code 69 |
+| `diff [PATH]` | Built, through the daemon, tested against a fake engine only. **Never run on a real VM.** Lists what changed in a running sandbox, with risky files flagged first. Copies nothing out |
+| `export` | Not built. Exits with code 69 |
 | Desktop app | Early first cut. Run on Linux only, under a virtual display. macOS untested |
 
 ## What kind of project can it start
@@ -47,6 +50,10 @@ Dev containers and plain package manifests (`package.json` and the like) are rec
 | Linux | KVM, meaning `/dev/kvm` exists. A cloud VM needs nested virtualization |
 
 Windows is not supported.
+
+## Every protection, with its proof
+
+[`docs/PROTECTIONS.md`](https://github.com/ketanmujumdar/secbox/blob/main/docs/PROTECTIONS.md) in the repository lists each protection, the real attack it answers, the test that proves it, and whether it has run on a real VM. Quote its status along with any claim.
 
 ## Keeping up
 

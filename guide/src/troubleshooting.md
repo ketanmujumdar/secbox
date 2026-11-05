@@ -48,6 +48,15 @@ Common problems and how to fix them. Start with `secbox doctor`, which checks mo
 | `no such service` | Use a service name from `secbox status` |
 | `net blocked` says nothing is being recorded | The sandbox was created before recording existed. Recreate it with `secbox down --destroy`, then `secbox up`. This deletes its data |
 
+## Reviewing changes
+
+| Symptom | Fix |
+| --- | --- |
+| `there is no record of what this sandbox started from` | The sandbox was created before `diff` existed. Recreate it with `secbox down --destroy`, then `secbox up`. This deletes its data |
+| `diff` exits 5 | Something was flagged, or the review stopped at a limit. Read the `FLAG` lines |
+| `the sandbox is not running, and the comparison runs inside it` | Start it with `secbox up`. `diff` never starts one |
+| `the sandbox's history does not start from the snapshot` | Something in the sandbox rewrote `/work/.git`, so the list may be incomplete. Treat the sandbox as suspect |
+
 ## Secrets
 
 | Symptom | Fix |

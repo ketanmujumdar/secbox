@@ -20,7 +20,7 @@ These screenshots come from a real daemon with no VM engine, so the project's st
 | `l` | Logs | Recent and new log lines, for all services or one |
 | `t` | Traffic | Blocked hostnames, newest last |
 | `s` | Secrets | Secret names, how each was stored and which services get it. Never values |
-| `r` | Review | Not built yet |
+| `r` | Review | What changed in the sandbox, flags first. Press `5` to compare |
 
 `Tab` moves to the next panel. The bar along the bottom lists only the keys that work on the panel showing.
 
@@ -29,7 +29,7 @@ These screenshots come from a real daemon with no VM engine, so the project's st
 | Key | Where | What it does |
 | --- | --- | --- |
 | Up, Down (or `k`, `j`) | Everywhere | Choose a project, or scroll |
-| PgUp, PgDn | Logs, Traffic | Scroll a page |
+| PgUp, PgDn | Logs, Traffic, Review | Scroll a page |
 | `2` or `u` | Projects | Start the selected project |
 | `3` | Projects | Stop it, after confirming |
 | `x` | Projects | Destroy it, after confirming |
@@ -58,6 +58,12 @@ Pressing `e` steps the interface aside and opens the same shell as `secbox shell
 ## Starting
 
 Pressing `2` on a stopped project shows a summary of the plan, including the ports that would be forwarded to `127.0.0.1`. `y` starts it with those ports, and `n` or Esc cancels. To pick ports one by one, use `secbox up --port` instead. While it starts, a box lists each step as the daemon reports it, the same steps `secbox up` prints. Keys do nothing until it ends.
+
+## Review
+
+The Review panel shows the same comparison as [`secbox diff`](reviewing-changes.md), flags first in red. Press `5` to compare: it runs inside the sandbox, so it never runs by itself. Up, down, PgUp and PgDn scroll.
+
+![The Review panel](../images/cli/tui-review.png)
 
 ## Secrets panel
 

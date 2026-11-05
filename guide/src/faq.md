@@ -24,7 +24,7 @@ macOS on Apple Silicon, and Linux with KVM. Not Windows.
 
 ### Where do my changes go?
 
-They stay inside the sandbox. A reviewed way to bring them back through Git (`diff` and `export`) is planned and not built. Until then, treat a sandbox as a place to run and test, and make your changes on your machine.
+They stay inside the sandbox. `secbox diff` shows what changed and flags risky files, but `export`, which would bring them back through Git, is not built. Until then, treat a sandbox as a place to run and test, and make your changes on your machine.
 
 ### Why does it copy a commit and not my folder?
 
@@ -38,9 +38,9 @@ Yes, through MCP. The agent runs on your machine and works in the sandbox throug
 
 No. There is no SSH server and no open port in the VM. Use `secbox shell` and `secbox exec`. VS Code Remote-SSH is not offered, because a compromised remote has been reported to reach a local terminal.
 
-### Why is my secret visible in `secbox logs`?
+### Can a secret show up in `secbox logs`?
 
-Because the service printed it. A service can read and print every secret it was given. Masking is planned, and even then an encoded secret could slip through.
+`logs` replaces each assigned secret's value with its name, such as `[API_KEY]`, including base64, URL-encoded and hex forms. A value the service encrypted or reworked is not recognised, and `shell` and `exec` output is never masked.
 
 ### What happens on `down --destroy`?
 

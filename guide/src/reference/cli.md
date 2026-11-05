@@ -29,7 +29,7 @@ Where a command takes `[PATH]` or `--project PATH`, the default is the current f
 | [`shell`](#shell) | Yes | Open a shell inside a running sandbox |
 | [`exec`](#exec) | Yes | Run one command inside a running sandbox |
 | [`mcp`](#mcp) | `serve` only | Let an AI agent on this machine work inside a sandbox |
-| `diff` | | Not built yet. Exits with 69 |
+| [`diff`](#diff) | Yes | Show what changed inside a sandbox, with risky files flagged first |
 | `export` | | Not built yet. Exits with 69 |
 
 Global options: `-h`, `--help` and `-V`, `--version`.
@@ -132,7 +132,7 @@ secbox net blocked [--project PATH] [-f]
 | Subcommand | |
 | --- | --- |
 | `check` | Explain whether a policy file allows one request. `METHOD` is uppercase, such as `GET`. `URL` is a full URL. Exits 4 when denied |
-| `blocked` | Show blocked hostnames recorded for a project. `-f`, `--follow` keeps checking until Ctrl-C. Raw IP, metadata and UDP attempts are not recorded |
+| `blocked` | Show blocked hostnames recorded for a project, with secret values masked. `-f`, `--follow` keeps checking until Ctrl-C. Raw IP, metadata and UDP attempts are not recorded |
 
 See [Network](../guides/network.md).
 
@@ -194,7 +194,7 @@ secbox logs [OPTIONS] [SERVICE]
 | `--tail N` | How many recent lines to show from each service. Default 200 |
 | `--project PATH` | Project folder |
 
-Removes terminal control codes. Does not mask secret values.
+Removes terminal control codes, and replaces assigned secret values with their names.
 
 ## shell
 
@@ -211,6 +211,14 @@ secbox exec [--service SERVICE] [--project PATH] -- CMD...
 ```
 
 Runs one command, after `--`, in the sandbox or in one service's container, and exits with its exit code.
+
+## diff
+
+```text
+secbox diff [PATH]
+```
+
+Compares a running sandbox's `/work` with the snapshot it started from, and lists flags first, then every changed file. Copies nothing out. Exits 0 when nothing is flagged, 5 when something is or the review stopped at a limit, and 1 when it could not compare. See [Reviewing changes](../guides/reviewing-changes.md).
 
 ## mcp
 

@@ -18,6 +18,7 @@
 - [Checking a project](guides/checking-a-project.md)
 - [Running a project in a sandbox](guides/running-a-project.md)
 - [Logs, shell and exec](guides/inspecting.md)
+- [Reviewing changes](guides/reviewing-changes.md)
 - [Secrets](guides/secrets.md)
 - [Network policy and blocked hostnames](guides/network.md)
 - [RAM, CPU and disk](guides/resources.md)

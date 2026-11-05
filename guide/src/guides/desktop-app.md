@@ -14,8 +14,9 @@ The desktop app is a menu bar icon and a window for the same daemon the command 
 - *Start*, *Stop* and *Destroy*
 - a **Logs** tab and a **Blocked traffic** tab
 - a **Terminal & about** tab, with commands to put the bundled CLI on your `PATH`
+- a **Git review** page with a **Compare** button, showing the same comparison as [`secbox diff`](reviewing-changes.md)
 
-Secrets and Git review say "not built yet", as in the terminal interface.
+The Secrets page says "not built yet".
 
 ## How it starts a project
 

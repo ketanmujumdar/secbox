@@ -176,7 +176,7 @@ pub fn run(args: &DiffArgsCli, deps: &mut Deps) -> i32 {
             return exit::FAILED;
         }
         Err(error) => {
-            tell!(deps, "diff: {}", esc(&error.message()));
+            tell!(deps, "diff: {}", error.for_terminal());
             return exit::FAILED;
         }
     };

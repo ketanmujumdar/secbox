@@ -8,6 +8,24 @@ When the daemon creates a sandbox, it gives the engine the list of hostnames the
 
 The hostnames appear in the plan that `secbox up` shows before you approve it.
 
+### Build hosts
+
+A build needs to download images and packages. The daemon picks the build hosts from a fixed menu, according to the project's files:
+
+| Group | Hosts | Given when |
+| --- | --- | --- |
+| Container images | `registry-1.docker.io`, `auth.docker.io` and Docker Hub's download hosts | Always |
+| Alpine packages | `dl-cdn.alpinelinux.org` | The project uses Alpine |
+| npm packages | `registry.npmjs.org` | The project uses npm |
+| Go modules | `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com` | The project uses Go |
+| Web fonts | `fonts.googleapis.com`, `fonts.gstatic.com` | The build fetches web fonts, as Next.js does |
+
+A project can switch on a group it might really need, but it **can never name a host of its own**. Hosts for the running app come only from approvals stored on your machine, never from the project.
+
+If the detection misses something, the build fails on a refused name, and `secbox net blocked` shows which.
+
+> **Build hosts stay reachable while the project runs.** The engine fixes a sandbox's rules when it is created, so every service, including one that holds a secret, can reach the build hosts. Some of them, such as Docker Hub and `storage.googleapis.com`, accept uploads from anyone. A separate build sandbox with no secrets would fix this, and is not built yet.
+
 ## Explaining a policy: `net check`
 
 ```sh
@@ -81,6 +99,7 @@ In the [full-screen interface](terminal-ui.md), press `t` for the Traffic panel.
 - **Events can be lost.** The engine keeps about 50 MB of log. On an idle sandbox that is about an hour. A busy or hostile sandbox can push events out within seconds. The output says when older events were cut off. `-f` sees events as they arrive, so it loses far fewer.
 - **Counts are refused queries.** One lookup is usually two queries, for IPv4 and IPv6.
 - **The guest chooses each name.** A name shows what was asked for and proves nothing else.
+- **Secret values are masked.** A secret cut into a hostname label shows as its name, such as `[API_KEY]`.
 
 The record is the engine's log, read on the host by the daemon. In testing the guest could not write to it. If a check on the folders holding it fails, the output says the record is not trustworthy.
 

@@ -61,6 +61,7 @@ Owner-only (`0700`). Holds:
 | `projects/<id>/secrets.json` | Secret names, how each was stored, and which services get them. No values |
 | `projects/<id>/audit.jsonl` | Secret changes, by name only |
 | `projects/<id>/approvals.json`, `sandbox.json` | What you approved, and the sandbox's own record |
+| `projects/<id>/baseline.git` | A small Git repository holding the commit of the snapshot the sandbox was given, which [`diff`](../guides/reviewing-changes.md) compares with. Removed by `down --destroy` |
 | `msb/` | The engine's home: downloaded images, its database and VM state, if you installed the engine there |
 
 **Secret values are not here.** They are in the macOS Keychain under the service `secbox`, or in Linux Secret Service.
@@ -72,5 +73,6 @@ A project's id is its folder name plus a hash of its path, for example `clean-13
 | Path | |
 | --- | --- |
 | `/work` | The copy of your project, from the chosen commit |
+| `/work/.git` | The same commit as the host's baseline. The sandbox can change it; `diff` compares with the host's copy |
 | `/work/compose.yaml` | The generated Compose file, for a project with only a Dockerfile |
 | `/run/secrets/NAME` | A secret delivered with `--as-file`, on a `tmpfs` that disappears when the sandbox stops |

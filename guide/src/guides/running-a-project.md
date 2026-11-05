@@ -23,7 +23,7 @@ secbox up ~/code/myapp     # another folder
 
 - the commit that will be copied in
 - the services, and the ports they ask to publish
-- the hostnames the sandbox may reach
+- the hostnames the sandbox may reach, for the build and while it runs
 - **Where secrets could go**: each secret name and the service that receives it
 - memory, CPU and disk limits
 - findings from the same checks as `secbox check`
@@ -90,6 +90,14 @@ secbox status ~/code/myapp
 
 Shows whether the sandbox is running, each service and its health, the forwarded ports, resource limits and how many hostname lookups were refused.
 
+## Review changes
+
+```sh
+secbox diff
+```
+
+Lists what changed in the sandbox since it started, with risky files flagged first. See [Reviewing changes](reviewing-changes.md).
+
 ## Stop
 
 ```sh
@@ -104,7 +112,7 @@ Stops the VM and keeps its data for the next `up`. Stopping is abrupt for what r
 secbox down --destroy
 ```
 
-Removes the VM and everything in it: the copy of the project, images, build caches, data volumes and any changes made inside. **Rotate every secret the sandbox was given** if you suspect it was compromised.
+Removes the VM and everything in it: the copy of the project, images, build caches, data volumes and any changes made inside. The host's baseline commit for [`diff`](reviewing-changes.md) goes too. **Rotate every secret the sandbox was given** if you suspect it was compromised.
 
 ## Projects with only a Dockerfile
 

@@ -108,7 +108,7 @@ Real output from the secbox programs, captured from a terminal by `guide/screens
 
 ### A command that is not built yet
 
-`secbox diff`
+`secbox export`
 
 ![A command that is not built yet](../images/cli/not-built.png)
 
@@ -131,3 +131,9 @@ Real output from the secbox programs, captured from a terminal by `guide/screens
 `secbox`
 
 ![The full-screen interface: Traffic](../images/cli/tui-traffic.png)
+
+### The full-screen interface: Review, before comparing
+
+`secbox`
+
+![The full-screen interface: Review, before comparing](../images/cli/tui-review.png)

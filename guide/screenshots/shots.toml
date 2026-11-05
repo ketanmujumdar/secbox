@@ -109,7 +109,7 @@ group = "Other"
 
 [[shot]]
 name = "not-built"
-args = ["diff"]
+args = ["export"]
 title = "A command that is not built yet"
 group = "Other"
 
@@ -142,3 +142,13 @@ daemon = true
 cols = 100
 rows = 30
 keys = ["t"]
+
+[[shot]]
+name = "tui-review"
+args = []
+title = "The full-screen interface: Review, before comparing"
+group = "Full-screen interface"
+daemon = true
+cols = 100
+rows = 30
+keys = ["r"]

@@ -79,13 +79,13 @@ On every `secbox up`:
 
 Because the `tmpfs` disappears when the VM stops, this happens again on each start.
 
-`up` prints a **Where secrets could go** section in the plan, and a `Secrets` line per service once started.
+`up` prints a **Where secrets could go** section in the plan, and a `Secrets` line per service once started. It lists each secret, which service holds it, every host the sandbox can reach, and which of those hosts accept uploads from anyone. `secbox status` shows the same.
 
 ## What this does not protect
 
 - **A service can read every secret it was given**, and so can anything sharing its container.
-- **A service can print a secret**, and `secbox logs` shows it unmasked.
-- **`secbox exec` and `secbox shell` can read it.** So can an [AI agent](ai-agents.md) using the `exec` tool, and its model provider then sees it.
+- **Masking is only for accidents.** `secbox logs` and `secbox net blocked` show a secret's name, such as `[API_KEY]`, in place of its value, including base64, URL-encoded and hex forms. A value that has been encrypted or reworked is not recognised.
+- **`secbox exec` and `secbox shell` can read it, unmasked.** So can an [AI agent](ai-agents.md) using the `exec` tool, and its model provider then sees it.
 - **No privileged services.** A project with any secret assigned will not start if a service asks for a host mount, the Docker socket or `privileged`, because that service could read the others' secrets.
 
 After a suspected compromise, run `secbox down --destroy` and rotate every secret that sandbox was given.
