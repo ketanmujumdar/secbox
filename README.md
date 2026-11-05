@@ -18,6 +18,8 @@ exists in the code and has not been confirmed on a real guest.
 `docs/NEEDS_A_VM.md` lists everything that has to run on real hardware before
 any of it can be called working.
 
+`docs/PROTECTIONS.md` lists each protection against the real attack it answers, the test that proves it, and whether it has run on a real VM.
+
 | Command | State |
 | --- | --- |
 | `doctor` | Works. Checks the host, without needing Docker |
