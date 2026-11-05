@@ -339,6 +339,10 @@
       build: (body) => {
         for (const line of plan.summary) body.appendChild(el('p', line));
         section(body, 'Services', plan.services, 'None.');
+        if (plan.generated_compose.length) {
+          body.appendChild(el('h3', 'Compose file written for this Dockerfile'));
+          body.appendChild(el('pre', plan.generated_compose.join('\n'), 'mono'));
+        }
         body.appendChild(el('h3', 'Files'));
         body.appendChild(el('p', plan.commit ? 'From commit ' + plan.commit + '. Nothing uncommitted is copied in.' : 'From the working tree.', 'mono'));
         section(body, 'Ports to forward, on 127.0.0.1 only',

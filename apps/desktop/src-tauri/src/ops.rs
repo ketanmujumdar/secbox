@@ -249,6 +249,10 @@ pub struct PlanView {
     pub resources: ResourceView,
     pub findings: Vec<String>,
     pub warnings: Vec<String>,
+    /// For a project with only a Dockerfile, the Compose file the daemon wrote
+    /// for it, one escaped line per entry. Empty for a Compose project. It is
+    /// part of what the plan's digest covers, so it is shown before agreeing.
+    pub generated_compose: Vec<String>,
     /// Reasons it cannot start. When there are any, no start is offered.
     pub blockers: Vec<String>,
 }
@@ -294,6 +298,11 @@ pub fn plan_view(plan: &PlanReport) -> PlanView {
     PlanView {
         path: text::escape(&plan.project_path),
         digest: plan.digest.clone(),
+        generated_compose: plan
+            .generated_compose
+            .as_deref()
+            .map(|t| t.lines().map(text::escape).collect())
+            .unwrap_or_default(),
         summary: dialog_lines(plan, &ports),
         services: plan.services.iter().map(|s| text::escape(s)).collect(),
         commit: plan.snapshot.revision.as_deref().map(text::escape),
@@ -705,6 +714,17 @@ mod tests {
         assert!(view.notes.iter().any(|n| n.text.contains("No blocked hostnames")));
     }
 
+    #[test]
+    fn a_generated_compose_file_is_shown_line_by_line_and_escaped() {
+        let mut plan = sample_plan();
+        assert!(plan_view(&plan).generated_compose.is_empty());
+        plan.generated_compose = Some("services:\n  app:\n    image: \u{1b}[31mred\n".to_owned());
+        let view = plan_view(&plan);
+        assert_eq!(view.generated_compose.len(), 3);
+        assert_eq!(view.generated_compose[0], "services:");
+        assert!(view.generated_compose.iter().all(|line| !line.contains('\u{1b}')));
+    }
+
     fn sample_plan() -> PlanReport {
         PlanReport {
             project_id: "p".to_owned(),
@@ -712,6 +732,7 @@ mod tests {
             digest: "d1".to_owned(),
             kind: "compose".to_owned(),
             compose_files: vec!["compose.yaml".to_owned()],
+            generated_compose: None,
             services: vec!["web".to_owned()],
             ports: vec![proto::PortPlan {
                 service: "web".to_owned(),
