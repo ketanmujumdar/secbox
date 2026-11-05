@@ -40,6 +40,16 @@ performed it. Each line is a separate thing to confirm.
 - [ ] Restart: `down` then `up` on an existing sandbox, through `start` rather than `create`, with the stack and its data coming back.
 - [ ] `down` asking Compose to stop before the sandbox stops, and whether that is enough to avoid the crash recovery the spike saw.
 
+### Dockerfile-only projects
+
+Built on Nov 5, 2026 and tested only against `FakeEngine`, with `tests/fixtures/dockerfile-only`. **Never run on a real VM.** The tests show the plan, the approval and the generated file reaching the engine's copy; they say nothing about Compose or Docker accepting it.
+
+- [ ] Compose v5.7.0 in the guest accepting the generated `compose.yaml` and building `app` from `/work` with `/work/Dockerfile`.
+- [ ] The long-syntax ports (`target`, `published` as a string, `protocol: tcp`) publishing as expected, and an approved port reaching the app on `127.0.0.1` with its number unchanged. `tests/fixtures/dockerfile-only` answers on 3000 and 8080.
+- [ ] `ps`, `logs`, `shell app`, `exec --service app` and `down` finding the generated file by name in `/work`.
+- [ ] Restart: `down` then `up` reusing the file already in the guest.
+- [ ] The heredoc in the fixture building, which needs BuildKit's Dockerfile 1.4 syntax in the guest's Docker.
+
 ### Ports, resources, rules
 
 - [ ] Ports the daemon approved appearing on `127.0.0.1` only, with their numbers unchanged, and gone after `down`.

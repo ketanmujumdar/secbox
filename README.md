@@ -21,14 +21,14 @@ any of it can be called working.
 | Command | State |
 | --- | --- |
 | `doctor` | Works. Checks the host, without needing Docker |
-| `check [path]` | Works. Reads a project's Compose file as data and reports what it asks for |
+| `check [path]` | Works. Reads a project's Compose file as data and reports what it asks for. For a project with only a Dockerfile, reads its `EXPOSE` lines |
 | `open`, `checks` | Works. Editor safety checks, and the gate before launching an editor |
 | `resources [path]` | Works. Shows requested and resolved limits, but nothing applies them yet |
 | `secrets import/set/list/rm` | Works, with the OS keychain. Assigned secrets are delivered on each `up`, but not by the proxy route, which is refused |
 | `net check <policy> <METHOD> <url>` | Works. Explains a policy decision, but nothing enforces it yet |
 | `net blocked [--project PATH] [-f]` | Works, through the daemon, on a sandbox created since this was added. Blocked hostnames only. See [Blocked hostnames](#blocked-hostnames) |
 | `uninstall --purge` | Works. Removes the state folder only |
-| `up`, `down`, `status` | Built. They need the daemon |
+| `up`, `down`, `status` | Built, for Compose projects and projects with only a Dockerfile. They need the daemon |
 | `logs [SERVICE] [-f] [--tail N] [--project PATH]` | Works on a running sandbox, through the daemon. Removes terminal control codes. Does not mask secret values |
 | `shell [SERVICE]`, `exec [--service S] -- CMD...` | Work on a running sandbox, on your real terminal. Control codes can't be filtered there |
 | `diff`, `export` | Not built |
@@ -36,6 +36,15 @@ any of it can be called working.
 `up`, `down`, `status`, `logs`, `net blocked`, `shell` and `exec` send requests to a daemon,
 `secboxd`, which holds the secrets, the policy and the approvals. With no daemon
 running they say so.
+
+## What can be started
+
+Two kinds of project, and nothing else yet:
+
+- **A Compose project.** Its own Compose files are used as they are.
+- **A project with a `Dockerfile` at its root and no Compose file.** The daemon writes a one-service Compose file for it: a service named `app`, built from the project with that Dockerfile, with no volumes and no extra privileges. Ports come from the Dockerfile's `EXPOSE` lines in its last build stage, TCP only; variables, ranges, UDP and anything odd are listed in the plan and left out. Like any port, each is forwarded to the same number on `127.0.0.1` only if you approve it. The generated file is shown in the plan and covered by its approval. It lands at `/work/compose.yaml` in the sandbox, so a project that brings its own Compose file uses that instead.
+
+Dev containers and package manifests are recognized by `check` but refused by `up`. This has not yet run on a real VM: see `docs/NEEDS_A_VM.md`.
 
 ## Looking inside a sandbox
 
