@@ -276,6 +276,95 @@ impl ProjectMeta {
     }
 }
 
+/// A note that this project exists, and where it was last seen.
+///
+/// Written whenever a project is opened, so that a client can list the
+/// projects this machine knows about without being told about them. It holds
+/// no secret and nothing from inside a sandbox.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectRecord {
+    pub version: u32,
+    /// The canonical path, as the host resolved it.
+    pub path: String,
+    pub first_seen_unix: u64,
+    pub last_seen_unix: u64,
+}
+
+const PROJECT_FILE: &str = "project.json";
+
+impl ProjectRecord {
+    pub fn load(project_dir: &Path) -> Result<Option<Self>, String> {
+        let path = project_dir.join(PROJECT_FILE);
+        let Some(text) = read_limited(&path, MAX_META_BYTES)? else {
+            return Ok(None);
+        };
+        let record: Self = serde_json::from_str(&text)
+            .map_err(|_| "the project record is damaged or from another version".to_string())?;
+        if record.version != META_VERSION {
+            return Err("the project record is from another version".to_string());
+        }
+        Ok(Some(record))
+    }
+
+    /// Records this project at this path, keeping the time it was first seen.
+    pub fn touch(project_dir: &Path, canonical: &Path, now_unix: u64) -> Result<Self, String> {
+        let first_seen_unix = Self::load(project_dir)?.map_or(now_unix, |old| old.first_seen_unix);
+        let record = Self {
+            version: META_VERSION,
+            path: canonical.to_string_lossy().into_owned(),
+            first_seen_unix,
+            last_seen_unix: now_unix,
+        };
+        let text =
+            serde_json::to_vec_pretty(&record).map_err(|_| "cannot encode the record".to_string())?;
+        write_private(&project_dir.join(PROJECT_FILE), &text)?;
+        Ok(record)
+    }
+}
+
+/// Every project this machine knows about, by identity, most recently seen
+/// first. A folder with no readable record is left out rather than guessed at.
+pub fn known_projects(paths: &StatePaths) -> Vec<(ProjectId, ProjectRecord)> {
+    let Ok(entries) = fs::read_dir(paths.projects()) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(ProjectId, ProjectRecord)> = Vec::new();
+    for entry in entries.flatten().take(10_000) {
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let Ok(id) = ProjectId::new(entry.file_name().to_string_lossy().into_owned()) else {
+            continue;
+        };
+        if let Ok(Some(record)) = ProjectRecord::load(&entry.path()) {
+            found.push((id, record));
+        }
+    }
+    found.sort_by(|a, b| {
+        b.1.last_seen_unix
+            .cmp(&a.1.last_seen_unix)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    found
+}
+
+/// Reads a small regular file, or `None` when there is none.
+fn read_limited(path: &Path, limit: u64) -> Result<Option<String>, String> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => return Err("a state file is not a regular file".to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot inspect a state file: {}", e.kind())),
+    }
+    let file = fs::File::open(path).map_err(|e| format!("cannot open it: {}", e.kind()))?;
+    let mut text = String::new();
+    file.take(limit)
+        .read_to_string(&mut text)
+        .map_err(|e| format!("cannot read it: {}", e.kind()))?;
+    Ok(Some(text))
+}
+
 /// Reads one metadata file. A missing file is `None`.
 pub fn read_meta(project_dir: &Path) -> Result<Option<ProjectMeta>, String> {
     let path = project_dir.join(META_FILE);
@@ -352,6 +441,21 @@ mod tests {
         let hidden = project_id(Path::new("/x/.hidden")).unwrap();
         assert!(hidden.as_str().starts_with("p.hidden-"));
         assert!(project_id(Path::new("/")).is_ok());
+    }
+
+    #[test]
+    fn a_project_record_keeps_when_it_was_first_seen() {
+        let dir = std::env::temp_dir().join(format!("rec-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        DirBuilder::new().mode(0o700).create(&dir).unwrap();
+        assert_eq!(ProjectRecord::load(&dir).unwrap(), None);
+        let first = ProjectRecord::touch(&dir, Path::new("/p/one"), 100).unwrap();
+        assert_eq!(first.first_seen_unix, 100);
+        let later = ProjectRecord::touch(&dir, Path::new("/p/moved"), 200).unwrap();
+        assert_eq!(later.first_seen_unix, 100);
+        assert_eq!(later.last_seen_unix, 200);
+        assert_eq!(later.path, "/p/moved");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

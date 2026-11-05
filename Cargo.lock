@@ -314,6 +314,7 @@ dependencies = [
  "egress",
  "engine",
  "hoststate",
+ "nix",
  "projectcheck",
  "proto",
  "rpassword",

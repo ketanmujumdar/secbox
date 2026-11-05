@@ -150,6 +150,10 @@ impl Service {
         let id = hoststate::project_id(&root).map_err(internal)?;
         let dir = hoststate::prepare_project(&self.paths, &id).map_err(internal)?;
         let sandbox = sandbox_name(&id)?;
+        // Noting the project means a client can list what this machine knows
+        // about without being told, and it is where a later answer to "this
+        // project moved" will have to start.
+        hoststate::ProjectRecord::touch(&dir, &root, self.deps.now_unix()).map_err(internal)?;
         Ok(Project {
             id,
             root,

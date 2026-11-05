@@ -29,7 +29,7 @@ fn is_unsafe(c: char) -> bool {
             | '\u{FFF0}'..='\u{FFFC}')
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Good,
     Warn,

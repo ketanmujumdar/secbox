@@ -13,6 +13,7 @@ mod resources;
 mod secret_cmd;
 pub mod state;
 mod ui;
+mod tui;
 mod uninstall;
 mod vm;
 
@@ -70,7 +71,7 @@ pub(crate) use {say, tell};
 #[derive(Parser)]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -152,7 +153,12 @@ where
             return exit::USAGE;
         }
     };
-    match cli.command {
+    let Some(command) = cli.command else {
+        // No command at all opens the full-screen interface, which is one
+        // more client of the same daemon.
+        return tui::run(deps);
+    };
+    match command {
         Command::Doctor => doctor::run(deps),
         Command::Check(args) => check::run(&args, deps),
         Command::Open(args) => editor::open(&args, deps),
