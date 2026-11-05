@@ -6,8 +6,8 @@
 //! and rules a proper start would apply.
 //!
 //! Logs come from inside the sandbox, so they are filtered here before they
-//! reach any client. Known secret values are not masked, because no secret
-//! reaches a sandbox yet and this daemon holds none to compare against.
+//! reach any client. Secret values are not masked: a secret assigned to a service
+//! does reach its sandbox, so whatever that service prints can show the value.
 
 use std::time::Duration;
 

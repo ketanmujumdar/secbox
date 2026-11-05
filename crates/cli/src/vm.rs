@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use clap::Args;
 use proto::{
-    DownArgs, PlanArgs, PlanReport, ProjectArgs, Reply, Request, SandboxState, Source, UpArgs,
+    BlockedRecording, DownArgs, PlanArgs, PlanReport, ProjectArgs, Reply, Request, SandboxState, Source, UpArgs,
 };
 
 use crate::ui::{cell, esc, human_bytes, paint, Tone};
@@ -247,13 +247,50 @@ pub fn status(args: &StatusArgsCli, deps: &mut Deps) -> i32 {
     }
     show_services(&report.services, deps);
     say!(deps);
-    // Saying "0 blocked" would read as "nothing was blocked", which is a
-    // different and untrue claim while nothing is watching.
-    say!(
-        deps,
-        "Outbound requests are not recorded on the host yet, so none can be shown."
-    );
+    show_blocked(report.blocked.as_ref(), deps);
     exit::OK
+}
+
+/// Saying "0 blocked" would read as "nothing was blocked", which is a different
+/// and untrue claim, so a count of none is never put that way.
+fn show_blocked(summary: Option<&proto::BlockedSummary>, deps: &mut Deps) {
+    let Some(summary) = summary else {
+        field(
+            deps,
+            "Blocked",
+            &format!(
+                "unknown: the running daemon is older than this command. Restart {} to see this.",
+                brand::DAEMON_BIN
+            ),
+        );
+        return;
+    };
+    let cut = if summary.cut_off { ", older ones cut off" } else { "" };
+    let line = match (&summary.problem, summary.recording) {
+        (Some(problem), _) => paint(
+            deps.color,
+            Tone::Bad,
+            &format!("unknown: the log could not be read: {}", esc(problem)),
+        ),
+        (None, BlockedRecording::NotRecording) => {
+            paint(deps.color, Tone::Bad, &crate::blocked::not_recording_note())
+        }
+        (None, BlockedRecording::NoSandbox) => "nothing is being recorded: no sandbox".to_owned(),
+        (None, BlockedRecording::Recording) if summary.total == 0 => {
+            format!("no hostnames recorded so far{cut}")
+        }
+        (None, BlockedRecording::Recording) => format!(
+            "{} refused lookups of {} hostnames{cut}",
+            summary.total, summary.domains
+        ),
+    };
+    field(deps, "Blocked", &line);
+    if let Some((weight, text)) = crate::blocked::trust_note(&summary.trust) {
+        if weight == crate::blocked::Weight::Alert {
+            say!(deps, "{}", paint(deps.color, Tone::Bad, &text));
+        }
+    }
+    say!(deps, "{}", paint(deps.color, Tone::Warn, crate::blocked::HOSTNAMES_ONLY));
 }
 
 fn show_plan(plan: &PlanReport, deps: &mut Deps) {

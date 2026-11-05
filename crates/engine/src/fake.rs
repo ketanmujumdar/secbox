@@ -51,6 +51,8 @@ struct State {
     streams_stopped: usize,
     location: Option<EngineLocation>,
     inputs: Vec<(Vec<String>, String)>,
+    keeps_files: bool,
+    lookups_denied: u32,
 }
 
 /// In-memory [`Engine`]. `create` leaves a sandbox running, matching the CLI's
@@ -101,6 +103,59 @@ impl FakeEngine {
     /// place a client could run this engine from.
     pub fn set_location(&self, location: EngineLocation) {
         self.lock().location = Some(location);
+    }
+
+    /// Makes this engine keep files under its location as the real one does: the
+    /// logs and guest state appear on create and go on destroy.
+    pub fn keep_files(&self) {
+        self.lock().keeps_files = true;
+    }
+
+    /// Where this sandbox's log folder is, for a test that keeps files.
+    pub fn logs_dir(&self, name: &SandboxName) -> Option<PathBuf> {
+        self.lock()
+            .location
+            .as_ref()
+            .and_then(|location| location.sandbox_log_dirs(name).pop())
+    }
+
+    /// The guest looks up a name its network does not allow. As with the real
+    /// engine, this is refused either way, and it leaves a line in the log only
+    /// if the sandbox was created at a level that writes one.
+    pub fn deny_lookup(&self, name: &SandboxName, domain: &str) -> Result<()> {
+        let mut state = self.lock();
+        let entry = state.boxes.get(name).ok_or_else(|| not_found(name))?;
+        let args = crate::argv::create(&entry.spec)?;
+        let writes = args
+            .windows(2)
+            .any(|pair| pair[0] == "--log-level" && (pair[1] == "debug" || pair[1] == "trace"));
+        state.lookups_denied += 1;
+        let tick = state.lookups_denied;
+        let location = state.location.clone();
+        drop(state);
+        if !writes {
+            return Ok(());
+        }
+        let line = format!(
+            "2026-11-05T07:50:{:02}.{tick:06}Z DEBUG microsandbox_network::engine::dns::forwarder: DNS query denied by network policy domain={domain}\n",
+            tick / 60 % 60
+        );
+        let logs = location
+            .and_then(|location| location.sandbox_log_dirs(name).pop())
+            .ok_or(EngineError::NotSupported {
+                operation: "deny_lookup",
+                reason: "this fake has no location",
+            })?;
+        let io = |e: std::io::Error| EngineError::InvalidInput {
+            field: "fake log",
+            reason: e.to_string(),
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(logs.join("runtime.log"))
+            .map_err(io)?;
+        std::io::Write::write_all(&mut file, line.as_bytes()).map_err(io)
     }
 
     /// Makes the next operation fail with this error. The call is still recorded.
@@ -183,6 +238,21 @@ impl Engine for FakeEngine {
                 name: spec.name.to_string(),
             });
         }
+        if state.keeps_files {
+            if let Some(location) = &state.location {
+                if let Some(logs) = location.sandbox_log_dirs(&spec.name).pop() {
+                    std::fs::create_dir_all(&logs).map_err(|e| EngineError::InvalidInput {
+                        field: "fake files",
+                        reason: e.to_string(),
+                    })?;
+                    let guest = logs.with_file_name("guest-state");
+                    std::fs::create_dir_all(guest).map_err(|e| EngineError::InvalidInput {
+                        field: "fake files",
+                        reason: e.to_string(),
+                    })?;
+                }
+            }
+        }
         state.boxes.insert(
             spec.name.clone(),
             Box_ {
@@ -216,11 +286,14 @@ impl Engine for FakeEngine {
 
     fn destroy(&self, name: &SandboxName) -> Result<()> {
         let mut state = self.begin(FakeCall::Destroy(name.clone()))?;
-        state
-            .boxes
-            .remove(name)
-            .map(|_| ())
-            .ok_or_else(|| not_found(name))
+        state.boxes.remove(name).ok_or_else(|| not_found(name))?;
+        if state.keeps_files {
+            if let Some(location) = &state.location {
+                let dirs = location.sandbox_log_dirs(name);
+                let _ = std::fs::remove_dir_all(&dirs[2]);
+            }
+        }
+        Ok(())
     }
 
     fn status(&self, name: &SandboxName) -> Result<SandboxStatus> {
@@ -523,6 +596,33 @@ mod tests {
         e.copy_in(&name(), Path::new("/src"), &guest).unwrap();
         assert_eq!(e.copied(&name()), [(PathBuf::from("/src"), guest.clone())]);
         assert!(e.copy_in(&name(), Path::new("rel"), &guest).is_err());
+    }
+
+    /// The real rule, measured: at the default level a refused lookup leaves
+    /// nothing behind. Every sandbox made through the builder is at debug.
+    #[test]
+    fn a_refused_lookup_is_written_only_at_a_level_that_writes_it() {
+        let dir = std::env::temp_dir().join(format!("fake-logs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let e = FakeEngine::new();
+        e.set_location(EngineLocation {
+            binary: PathBuf::from("/nonexistent"),
+            home: dir.clone(),
+        });
+        e.keep_files();
+        e.create(&spec()).unwrap();
+        let logs = e.logs_dir(&name()).unwrap();
+        assert!(logs.is_dir());
+        e.deny_lookup(&name(), "blocked.example.net").unwrap();
+        let text = std::fs::read_to_string(logs.join("runtime.log")).unwrap();
+        assert!(text.ends_with("domain=blocked.example.net\n"), "{text}");
+        e.destroy(&name()).unwrap();
+        assert!(!logs.exists());
+        assert!(matches!(
+            e.deny_lookup(&name(), "x.example.net"),
+            Err(EngineError::NotFound { .. })
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

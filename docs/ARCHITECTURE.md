@@ -83,15 +83,35 @@ The tool can't judge whether code is safe. It keeps a compromise contained until
 
 ### Seeing what happens
 
-The gateway reports every network decision to the host daemon, so a compromised VM can't hide or edit that record. Query strings are dropped, and secret values never appear.
+**Built today: blocked hostnames, and nothing else.** `secbox net blocked [-f]`, the Traffic panel and a count in `secbox status` show the name lookups the engine refused. The daemon reads them from a file the engine writes on the host, `<engine home>/sandboxes/<name>/logs/runtime.log`, and from its renamed copies.
 
-- **Blocked requests:** `secbox net blocked -f` follows them live, with service, host, method and the rule responsible. `secbox up` and `status` show a count.
-- **All requests:** `secbox net log` also shows allowed requests, which is how misuse of an allowed host is spotted.
-- **Inside the app:** blocked HTTP requests get a clear error naming the blocked host and the command to review it, so a failure doesn't look like a random network bug.
-- **Notifications:** an optional desktop notification reports new blocked hosts, grouped so it can't flood the user.
-- **Allowing a host:** `secbox net allow` shows the exact rule and asks for system approval. An AI agent can only file a request, with `request_network`.
+Measured on engine 0.7.13:
 
-A blocked encrypted request shows only its host and port unless it passes through the intercepting proxy.
+| Fact | What follows |
+| --- | --- |
+| A refused lookup is logged at `--log-level debug`, and at the default level it is not | New sandboxes are created at debug. The level can't be changed later, but it survives a stop and start |
+| Attempts to raw IPs, the metadata address and UDP were blocked and not logged, at debug or trace | The list is hostnames only, and every view says an empty list doesn't mean nothing was tried |
+| The log grows by about 15 KB a second when idle, and renames at 10 MB to `.1` up to `.4`, deleting the oldest | About 50 MB is kept, or about an hour at best when idle. A guest making file activity pushed everything out in about 12 seconds, so views say when older events may be gone |
+| The engine writes a name in DNS text form: a newline is `\012`, a space `\040` | Crafted names we sent could not fake a line or a field. The parser takes only the exact line, and counts a near match instead of using it |
+| The guest's file shares are `guest-state` and a folder in `.bootstrap-rootfs`, both writable by it. `logs` is a sibling of those | As far as was measured, the guest cannot write this record. Crafted requests to the file share from a modified guest kernel were not tried |
+
+The daemon decides whether a sandbox is recording from `log_level` in its own `sandbox.json`, written when it creates a sandbox. A sandbox with no recorded level counts as not recording, and the daemon never fills one in. To record, an older sandbox must be recreated with `secbox down --destroy`, then `secbox up`, which deletes its data.
+
+The daemon checks each folder from the engine home down without following a link, and refuses a link, a pipe or a hard-linked file at the log. It reads at most 64 MB, and reads nothing under `guest-state`. If a folder on the way can be written by other accounts, every view says the record is not trustworthy.
+
+The renamed log files are mode `0666`, set by the engine. Only the owner-only state folder above them keeps other accounts out.
+
+The guest chooses every name it looks up, so a name shows what was asked for and proves nothing else.
+
+**Still the design, not built:** a gateway that reports every network decision to the host daemon, so a compromised VM can't hide or edit that record. Query strings would be dropped, and secret values would never appear.
+
+- **Blocked requests:** service, host, method and the rule responsible, including the raw IP and UDP attempts missing today. `secbox up` would also show a count.
+- **All requests:** `secbox net log` would also show allowed requests, which is how misuse of an allowed host is spotted.
+- **Inside the app:** blocked HTTP requests would get a clear error naming the blocked host and the command to review it, so a failure doesn't look like a random network bug.
+- **Notifications:** an optional desktop notification would report new blocked hosts, grouped so it can't flood the user.
+- **Allowing a host:** `secbox net allow` would show the exact rule and ask for system approval. An AI agent could only file a request, with `request_network`.
+
+A blocked encrypted request would show only its host and port unless it passes through the intercepting proxy.
 
 ## Compose and non-Docker projects
 
@@ -239,8 +259,10 @@ Building     registry-only network, no runtime secrets
 Ready        http://127.0.0.1:3000
 
 $ secbox net blocked
-api  203.0.113.7:443         host not on the allowlist
-web  PUT registry.npmjs.org  npm is read-only
+This shows blocked hostnames only. Raw IP, metadata and UDP attempts are blocked but not recorded, so an empty list doesn't mean nothing was tried.
+
+TIME (UTC)              COUNT  HOSTNAME
+2026-11-05 08:36:39         2  telemetry.example.com
 
 $ secbox diff
 FLAG  .claude/settings.json  new hook runs on the host

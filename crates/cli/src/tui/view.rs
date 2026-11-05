@@ -136,6 +136,8 @@ pub struct LogsPanel {
     pub lines: Vec<String>,
     /// Why there are no lines, or something else worth saying about them.
     pub note: Option<Line>,
+    /// How many lines back from the newest the view has been scrolled.
+    pub scroll: usize,
 }
 
 impl LogsPanel {
@@ -155,6 +157,14 @@ impl LogsPanel {
         let at = self.chosen_index();
         let next = at.saturating_add_signed(delta).min(self.services.len());
         self.chosen = next.checked_sub(1).map(|index| self.services[index].clone());
+        self.scroll = 0;
+    }
+
+    /// Moves back through the lines, or forward towards the newest. It stops
+    /// at the oldest line, so one key press back always moves something.
+    pub fn scroll_by(&mut self, delta: isize) {
+        let furthest = self.lines.len().saturating_sub(1);
+        self.scroll = self.scroll.saturating_add_signed(delta).min(furthest);
     }
 
     /// Where the choice is along All and the services, with All first.
@@ -163,6 +173,39 @@ impl LogsPanel {
             .as_ref()
             .and_then(|name| self.services.iter().position(|s| s == name))
             .map_or(0, |index| index + 1)
+    }
+}
+
+/// What the Traffic panel shows for the selected project.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrafficPanel {
+    /// The project all of this belongs to.
+    pub project: String,
+    /// What has to be said about the list. Never scrolled away.
+    pub notes: Vec<Line>,
+    /// One blocked hostname per row, the newest last.
+    pub rows: Vec<String>,
+    /// How many rows back from the newest the view has been scrolled.
+    pub scroll: usize,
+}
+
+impl TrafficPanel {
+    /// Clears everything if it belongs to another project, so that one
+    /// project's list is never drawn under another's name while reading.
+    pub fn belong_to(&mut self, project: &str) {
+        if self.project != project {
+            *self = Self {
+                project: project.to_owned(),
+                ..Self::default()
+            };
+        }
+    }
+
+    /// Moves back through the rows, or forward towards the newest, stopping at
+    /// the oldest so that one key press back always moves something.
+    pub fn scroll_by(&mut self, delta: isize) {
+        let furthest = self.rows.len().saturating_sub(1);
+        self.scroll = self.scroll.saturating_add_signed(delta).min(furthest);
     }
 }
 
@@ -176,6 +219,7 @@ pub struct Model {
     pub pane: PaneState,
     pub dialog: Option<Dialog>,
     pub logs: LogsPanel,
+    pub traffic: TrafficPanel,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -209,20 +253,13 @@ impl Model {
 /// otherwise read as "nothing happened".
 fn not_built(pane: Pane) -> &'static [&'static str] {
     match pane {
-        Pane::Projects | Pane::Logs => &[],
-        Pane::Traffic => &[
-            "Outbound requests are not recorded on the host yet.",
-            "",
-            "The engine blocks hosts that are not on the allowlist, but it",
-            "does not report them here. An empty panel does not mean nothing",
-            "was blocked: it means nothing is being shown yet.",
-        ],
+        Pane::Projects | Pane::Logs | Pane::Traffic => &[],
         Pane::Secrets => &[
-            "Secrets are stored, but nothing delivers them to a sandbox.",
+            "Secrets are stored, and assigned ones are delivered on each start.",
             "",
-            "Use the secrets command to add and assign them. A secret held by",
-            "the proxy also needs the gateway to terminate TLS, which is not",
-            "settled, so a plan carrying one is refused.",
+            "Use the secrets command to add and assign them. A service can read",
+            "what it is given. A secret held by the proxy also needs the gateway",
+            "to terminate TLS, which is not settled, so a plan with one is refused.",
         ],
         Pane::Review => &[
             "Reviewing changes out of a sandbox is not built.",
@@ -338,6 +375,10 @@ fn body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, h: usi
         logs_body(model, screen, x, y, w, room);
         return;
     }
+    if model.pane.0 == Pane::Traffic {
+        traffic_body(model, screen, x, y, w, room);
+        return;
+    }
     if model.pane.0 != Pane::Projects {
         for (offset, text) in not_built(model.pane.0).iter().take(room).enumerate() {
             screen.text_cut(x + 1, y + offset, text, w - 2, Style::Window);
@@ -427,7 +468,7 @@ fn logs_body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, r
     screen.text_cut(
         x + 1,
         y + 2,
-        "[ ] choose  5 refresh. From inside the sandbox, so they can be wrong.",
+        "<- -> service  Up Down scroll  5 newest. Output can be wrong.",
         w - 2,
         Style::WindowDim,
     );
@@ -442,9 +483,86 @@ fn logs_body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, r
         at += 1;
     }
     let fits = bottom.saturating_sub(at);
-    let first = panel.lines.len().saturating_sub(fits);
-    for line in &panel.lines[first..] {
+    let end = panel.lines.len().saturating_sub(panel.scroll);
+    let first = end.saturating_sub(fits);
+    for line in &panel.lines[first..end] {
         screen.text_cut(x + 1, at, line, w - 2, Style::Window);
+        at += 1;
+    }
+}
+
+/// Breaks text at spaces to fit a width. A word longer than that is left whole,
+/// for the drawing to cut, since these words are all this program's own.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// What the list cannot show comes first and stays there, whatever the scroll,
+/// and is wrapped rather than cut. The rows get whatever room is left.
+fn traffic_body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, room: usize) {
+    let panel = &model.traffic;
+    let bottom = y + room;
+    let mut at = y;
+    let width = w - 2;
+    let say = |screen: &mut Screen, at: &mut usize, text: &str, style: Style| {
+        for piece in wrap(text, width) {
+            if *at < bottom {
+                screen.text_cut(x + 1, *at, &piece, width, style);
+                *at += 1;
+            }
+        }
+    };
+    if let Some(row) = model.selected_row() {
+        screen.text_cut(x + 1, at, &row.name, width, Style::WindowDim);
+        at += 1;
+    }
+    // An alert first, then what is always true, which needs no answer from the
+    // daemon and so stands even when there is none.
+    for note in panel.notes.iter().filter(|n| n.style == Style::WindowAlert) {
+        say(screen, &mut at, &note.text, note.style);
+    }
+    say(screen, &mut at, crate::blocked::HOSTNAMES_ONLY, Style::WindowWarn);
+    for note in panel.notes.iter().filter(|n| n.style != Style::WindowAlert) {
+        say(screen, &mut at, &note.text, note.style);
+    }
+    if model.selected_row().is_none() {
+        say(
+            screen,
+            &mut at,
+            "No project has been started on this machine.",
+            Style::Window,
+        );
+        return;
+    }
+    if at + 2 > bottom {
+        return;
+    }
+    screen.rule(x - 1, at, w + 2, Style::Frame);
+    at += 1;
+    if panel.rows.is_empty() {
+        return;
+    }
+    screen.text_cut(x + 1, at, &crate::blocked::header(), width, Style::WindowDim);
+    at += 1;
+    let fits = bottom.saturating_sub(at);
+    let end = panel.rows.len().saturating_sub(panel.scroll);
+    let first = end.saturating_sub(fits);
+    for row in &panel.rows[first..end] {
+        screen.text_cut(x + 1, at, row, width, Style::Window);
         at += 1;
     }
 }
@@ -521,6 +639,8 @@ pub enum Key {
     Help,
     PreviousService,
     NextService,
+    PageUp,
+    PageDown,
     Yes,
     No,
     Other,
@@ -530,8 +650,10 @@ pub enum Key {
 /// and the letters work too, because not every terminal sends every one.
 pub fn key(bytes: &[u8]) -> Key {
     match bytes {
-        b"\x1b[A" | b"k" => Key::Up,
-        b"\x1b[B" | b"j" => Key::Down,
+        b"\x1b[A" | b"\x1bOA" | b"k" => Key::Up,
+        b"\x1b[B" | b"\x1bOB" | b"j" => Key::Down,
+        b"\x1b[5~" => Key::PageUp,
+        b"\x1b[6~" => Key::PageDown,
         b"\t" | b"6" | b"\x1bOU" | b"\x1b[17~" => Key::Tab,
         b"q" | b"0" | b"\x03" | b"\x1b[21~" => Key::Quit,
         // The red letter in the menu always opens that panel, so a key someone
@@ -546,8 +668,8 @@ pub fn key(bytes: &[u8]) -> Key {
         b"2" | b"u" | b"\x1bOQ" => Key::Start,
         b"3" | b"\x1bOR" => Key::Stop,
         b"x" => Key::Destroy,
-        b"[" => Key::PreviousService,
-        b"]" => Key::NextService,
+        b"[" | b"\x1b[D" | b"\x1bOD" => Key::PreviousService,
+        b"]" | b"\x1b[C" | b"\x1bOC" => Key::NextService,
         b"?" | b"1" | b"\x1bOP" => Key::Help,
         b"y" | b"Y" => Key::Yes,
         b"n" | b"N" | b"\x1b" => Key::No,
@@ -555,9 +677,58 @@ pub fn key(bytes: &[u8]) -> Key {
     }
 }
 
+/// How many bytes the first key takes. A held key can arrive as several in one
+/// read, and each one has to count.
+pub fn first_key_len(bytes: &[u8]) -> usize {
+    match bytes {
+        [0x1b, b'[', rest @ ..] => rest
+            .iter()
+            .position(|byte| (0x40..=0x7e).contains(byte))
+            .map_or(bytes.len(), |end| end + 3),
+        [0x1b, b'O', _, ..] => 3,
+        [] => 0,
+        _ => 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_that_arrive_together_are_taken_one_at_a_time() {
+        assert_eq!(first_key_len(b"\x1b[A\x1b[A"), 3);
+        assert_eq!(first_key_len(b"\x1b[5~j"), 4);
+        assert_eq!(first_key_len(b"\x1bOAj"), 3);
+        assert_eq!(first_key_len(b"jk"), 1);
+        assert_eq!(first_key_len(b"\x1b"), 1);
+    }
+
+    #[test]
+    fn the_side_arrows_choose_a_service_and_the_page_keys_are_known() {
+        assert_eq!(key(b"\x1b[D"), Key::PreviousService);
+        assert_eq!(key(b"\x1b[C"), Key::NextService);
+        assert_eq!(key(b"\x1b[5~"), Key::PageUp);
+        assert_eq!(key(b"\x1b[6~"), Key::PageDown);
+    }
+
+    #[test]
+    fn the_logs_panel_scrolls_back_and_stops_at_each_end() {
+        let mut m = logs_model();
+        m.logs.lines = (0..500).map(|n| format!("line-{n:03}")).collect();
+        m.logs.scroll_by(100);
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("line-399"), "{text}");
+        assert!(!text.contains("line-400"), "{text}");
+        m.logs.scroll_by(100_000);
+        assert_eq!(m.logs.scroll, 499);
+        assert!(plain(&m, 80, 24).contains("line-000"));
+        m.logs.scroll_by(-100_000);
+        assert_eq!(m.logs.scroll, 0);
+        m.logs.scroll_by(5);
+        m.logs.choose(1);
+        assert_eq!(m.logs.scroll, 0);
+    }
 
     fn model() -> Model {
         Model {
@@ -669,8 +840,7 @@ mod tests {
     #[test]
     fn every_panel_that_is_not_built_says_so_rather_than_looking_empty() {
         for (pane, phrase) in [
-            (Pane::Traffic, "are not recorded on the host yet"),
-            (Pane::Secrets, "nothing delivers them to a sandbox"),
+            (Pane::Secrets, "delivered on each start"),
             (Pane::Review, "is not built"),
         ] {
             let mut m = model();
@@ -695,7 +865,8 @@ mod tests {
         assert!(!text.contains("is not built"), "{text}");
         assert!(text.contains(" All  api  web "), "{text}");
         assert!(text.contains("api-1  | hello there"), "{text}");
-        assert!(text.contains("[ ] choose"), "{text}");
+        assert!(text.contains("<- -> service"), "{text}");
+        assert!(text.contains("Output can be wrong"), "{text}");
         assert!(text.contains("╡ Logs ╞"), "{text}");
     }
 
@@ -779,11 +950,102 @@ mod tests {
         assert_eq!(key(b"5"), Key::Refresh);
     }
 
-    #[test]
-    fn the_traffic_panel_says_an_empty_list_is_not_proof() {
+    fn traffic_model() -> Model {
         let mut m = model();
         m.pane = PaneState(Pane::Traffic);
-        assert!(plain(&m, 80, 24).contains("nothing is being shown yet"));
+        m
+    }
+
+    /// The words that matter, whatever was or was not read, and however small
+    /// the screen: they are broken across rows, never cut off.
+    #[test]
+    fn the_traffic_panel_always_says_what_it_cannot_show() {
+        for (width, height) in [(80, 24), (60, 14), (200, 60)] {
+            let mut m = traffic_model();
+            let text = flat(&m, width, height);
+            for phrase in ["hostnames only", "Raw IP, metadata and UDP", "doesn't mean nothing was tried"] {
+                assert!(text.contains(phrase), "{width}x{height}: {phrase}: {text}");
+            }
+            m.traffic.rows = (0..500).map(|n| format!("row-{n:03}")).collect();
+            m.traffic.scroll_by(200);
+            let text = flat(&m, width, height);
+            assert!(text.contains("doesn't mean nothing was tried"), "{width}x{height}");
+        }
+    }
+
+    /// The screen's text with its frame and line breaks taken out, so a phrase
+    /// broken across rows can still be found.
+    fn flat(model: &Model, width: usize, height: usize) -> String {
+        plain(model, width, height)
+            .lines()
+            .map(|line| line.replace(['║', '▒', '░', '█'], " "))
+            .map(|line| line.trim().to_owned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn a_sandbox_that_records_nothing_says_so_even_on_the_smallest_screen() {
+        let mut m = traffic_model();
+        m.traffic.notes = vec![Line::styled(
+            crate::blocked::not_recording_note(),
+            Style::WindowAlert,
+        )];
+        for (width, height) in [(80, 24), (60, 14)] {
+            let text = flat(&m, width, height);
+            assert!(text.contains("Nothing is being recorded"), "{text}");
+        }
+        let text = flat(&m, 80, 24);
+        assert!(text.contains("down --destroy"), "{text}");
+        assert!(text.contains("deletes its data"), "{text}");
+    }
+
+    #[test]
+    fn the_traffic_panel_keeps_the_newest_rows_and_scrolls_back_and_stops_at_each_end() {
+        let mut m = traffic_model();
+        m.traffic.rows = (0..500).map(|n| format!("row-{n:03}")).collect();
+        let text = plain(&m, 100, 24);
+        assert!(text.contains("row-499"), "{text}");
+        assert!(!text.contains("row-000"), "{text}");
+        assert!(text.contains("HOSTNAME"), "{text}");
+        m.traffic.scroll_by(100);
+        let text = plain(&m, 100, 24);
+        assert!(text.contains("row-399"), "{text}");
+        assert!(!text.contains("row-400"), "{text}");
+        m.traffic.scroll_by(100_000);
+        assert_eq!(m.traffic.scroll, 499);
+        assert!(plain(&m, 100, 24).contains("row-000"));
+        m.traffic.scroll_by(-100_000);
+        assert_eq!(m.traffic.scroll, 0);
+    }
+
+    #[test]
+    fn a_long_hostname_cannot_break_the_frame() {
+        let mut m = traffic_model();
+        m.traffic.rows = vec!["x".repeat(5000)];
+        for line in plain(&m, 80, 24).lines() {
+            assert_eq!(line.chars().count(), 80);
+        }
+    }
+
+    #[test]
+    fn another_project_starts_with_an_empty_traffic_panel() {
+        let mut panel = TrafficPanel {
+            project: "/p/one".to_owned(),
+            rows: vec!["from one".to_owned()],
+            ..TrafficPanel::default()
+        };
+        panel.belong_to("/p/one");
+        assert_eq!(panel.rows, ["from one"]);
+        panel.belong_to("/p/two");
+        assert!(panel.rows.is_empty());
+    }
+
+    #[test]
+    fn wrapping_breaks_at_spaces_and_keeps_every_word() {
+        assert_eq!(wrap("one two three", 7), ["one two", "three"]);
+        assert_eq!(wrap("", 7), Vec::<String>::new());
+        assert_eq!(wrap("longerthanwidth x", 4), ["longerthanwidth", "x"]);
     }
 
     #[test]

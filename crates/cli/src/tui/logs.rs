@@ -27,7 +27,7 @@ const KEPT_LINES: usize = 2000;
 const KEPT_LINE_CHARS: usize = 1000;
 const TAB: &str = "    ";
 
-pub const HELP: &str = "Logs: [ ] choose a service or All, 5 reads again, arrows change project.";
+pub const HELP: &str = "Logs: left and right choose a service or All, up, down, PgUp and PgDn scroll, 5 reads the newest.";
 
 pub fn status(client: &dyn DaemonClient, path: &str) -> Result<StatusReport, CallError> {
     match client.stream(
@@ -125,6 +125,7 @@ impl Lines {
 pub fn refresh(client: &dyn DaemonClient, panel: &mut LogsPanel, path: &str) {
     panel.lines.clear();
     panel.note = None;
+    panel.scroll = 0;
     let report = match status(client, path) {
         Ok(report) => report,
         Err(error) => {
@@ -192,7 +193,7 @@ pub fn refresh(client: &dyn DaemonClient, panel: &mut LogsPanel, path: &str) {
     };
 }
 
-fn failure(error: &CallError) -> Line {
+pub(super) fn failure(error: &CallError) -> Line {
     let message = match error {
         CallError::TimedOut => "The daemon did not answer in time. Press 5 to try again.".to_owned(),
         other => text::escape(&other.message().replace('\n', " ")),
@@ -266,6 +267,7 @@ mod tests {
                     ports: Vec::new(),
                     resources: None,
                     blocked_count: 0,
+                    blocked: None,
                 })),
                 Request::Logs(args) => {
                     if self.state != SandboxState::Running {

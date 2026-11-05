@@ -13,6 +13,7 @@ mod logs;
 mod screen;
 mod style;
 mod term;
+mod traffic;
 mod view;
 
 use std::io::{BufRead, IsTerminal};
@@ -30,6 +31,9 @@ struct Pending {
     digest: String,
     ports: Vec<u16>,
 }
+
+/// How many lines the page keys move through the logs.
+const LOG_PAGE: isize = 20;
 
 pub fn run(deps: &mut Deps) -> i32 {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
@@ -54,10 +58,21 @@ pub fn run(deps: &mut Deps) -> i32 {
     let mut confirming: Option<bool> = None;
     load_projects(deps, &mut model);
 
+    let mut queued: Vec<u8> = Vec::new();
     loop {
         draw(deps, &model);
-        let Some(bytes) = read_key(deps.input) else { break };
-        let key = view::key(&bytes);
+        // A question is answered by a key pressed after it was seen, never by
+        // one already on its way, such as from a paste.
+        if confirming.is_some() || pending.is_some() {
+            queued.clear();
+        }
+        if queued.is_empty() {
+            let Some(bytes) = read_key(deps.input) else { break };
+            queued = bytes;
+        }
+        let taken = view::first_key_len(&queued);
+        let key = view::key(&queued[..taken]);
+        queued.drain(..taken);
 
         if let Some(destroy) = confirming {
             match key {
@@ -95,34 +110,42 @@ pub fn run(deps: &mut Deps) -> i32 {
 
         match key {
             Key::Quit => break,
+            Key::Up if model.pane.0 == Pane::Logs => model.logs.scroll_by(1),
+            Key::Down if model.pane.0 == Pane::Logs => model.logs.scroll_by(-1),
+            Key::PageUp if model.pane.0 == Pane::Logs => model.logs.scroll_by(LOG_PAGE),
+            Key::PageDown if model.pane.0 == Pane::Logs => model.logs.scroll_by(-LOG_PAGE),
+            Key::Up if model.pane.0 == Pane::Traffic => model.traffic.scroll_by(1),
+            Key::Down if model.pane.0 == Pane::Traffic => model.traffic.scroll_by(-1),
+            Key::PageUp if model.pane.0 == Pane::Traffic => model.traffic.scroll_by(LOG_PAGE),
+            Key::PageDown if model.pane.0 == Pane::Traffic => model.traffic.scroll_by(-LOG_PAGE),
             Key::Up => {
                 model.move_by(-1);
                 show_selected(deps, &mut model);
-                refresh_logs_if_showing(deps, &mut model);
+                refresh_panel_if_showing(deps, &mut model);
             }
             Key::Down => {
                 model.move_by(1);
                 show_selected(deps, &mut model);
-                refresh_logs_if_showing(deps, &mut model);
+                refresh_panel_if_showing(deps, &mut model);
             }
             Key::Tab => {
                 model.pane = PaneState(model.pane.0.next());
                 model.message = None;
-                refresh_logs_if_showing(deps, &mut model);
+                refresh_panel_if_showing(deps, &mut model);
             }
             Key::Refresh => {
                 load_projects(deps, &mut model);
-                refresh_logs_if_showing(deps, &mut model);
+                refresh_panel_if_showing(deps, &mut model);
             }
             Key::PreviousService | Key::NextService if model.pane.0 == Pane::Logs => {
                 model.logs.choose(if key == Key::NextService { 1 } else { -1 });
-                refresh_logs_if_showing(deps, &mut model);
+                refresh_panel_if_showing(deps, &mut model);
             }
             Key::Start => pending = propose_start(deps, &mut model),
             Key::Open(pane) => {
                 model.pane = PaneState(pane);
                 model.message = None;
-                refresh_logs_if_showing(deps, &mut model);
+                refresh_panel_if_showing(deps, &mut model);
             }
             Key::Stop => {
                 if let Some(row) = model.selected_row().cloned() {
@@ -153,13 +176,22 @@ pub fn run(deps: &mut Deps) -> i32 {
             Key::Help if model.pane.0 == Pane::Logs => {
                 model.message = Some(logs::HELP.to_owned());
             }
+            Key::Help if model.pane.0 == Pane::Traffic => {
+                model.message = Some(traffic::HELP.to_owned());
+            }
             Key::Help => {
                 model.message = Some(
                     "Red letters open panels. Arrows move. 2 starts, 3 stops, x destroys, 5 refreshes, tab changes panel, q quits."
                         .to_owned(),
                 );
             }
-            Key::PreviousService | Key::NextService | Key::Yes | Key::No | Key::Other => {}
+            Key::PreviousService
+            | Key::NextService
+            | Key::PageUp
+            | Key::PageDown
+            | Key::Yes
+            | Key::No
+            | Key::Other => {}
         }
     }
     drop(raw);
@@ -250,12 +282,30 @@ fn status_of(deps: &mut Deps, path: &str) -> Option<proto::StatusReport> {
     logs::status(deps.daemon, path).ok()
 }
 
-/// Reads the logs if that panel is showing. This waits for the daemon, but only
-/// up to the limits in [`logs`], so a slow sandbox cannot freeze the interface.
-fn refresh_logs_if_showing(deps: &mut Deps, model: &mut Model) {
-    if model.pane.0 != Pane::Logs {
-        return;
+/// Reads whatever the showing panel needs. This waits for the daemon, but only
+/// up to the limits in [`logs`] and [`traffic`], so a slow sandbox cannot freeze
+/// the interface.
+fn refresh_panel_if_showing(deps: &mut Deps, model: &mut Model) {
+    match model.pane.0 {
+        Pane::Logs => refresh_logs(deps, model),
+        Pane::Traffic => refresh_traffic(deps, model),
+        Pane::Projects | Pane::Secrets | Pane::Review => {}
     }
+}
+
+fn refresh_traffic(deps: &mut Deps, model: &mut Model) {
+    let Some(row) = model.selected_row().cloned() else {
+        model.traffic = view::TrafficPanel::default();
+        return;
+    };
+    model.traffic.belong_to(&row.path);
+    model.busy = Some("Reading blocked hostnames.".to_owned());
+    draw(deps, model);
+    traffic::refresh(deps.daemon, &mut model.traffic, &row.path);
+    model.busy = None;
+}
+
+fn refresh_logs(deps: &mut Deps, model: &mut Model) {
     let Some(row) = model.selected_row().cloned() else {
         model.logs = view::LogsPanel::default();
         return;

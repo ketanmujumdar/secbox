@@ -76,10 +76,10 @@ pub fn up(
         )));
     }
 
-    let ports = approved_ports(service, project, &plan, args)?;
+    let state = status_of(service, project)?;
+    let ports = approved_ports(service, project, &plan, args, state)?;
 
     progress.step("sandbox", None);
-    let state = status_of(service, project)?;
     let fresh = matches!(state, SandboxState::None);
     match state {
         SandboxState::None => create(service, project, &plan, &ports, args)?,
@@ -154,6 +154,7 @@ fn approved_ports(
     project: &Project,
     plan: &PlanReport,
     args: &UpArgs,
+    state: SandboxState,
 ) -> Result<Vec<u16>, ApiError> {
     let mut approved: Vec<u16> = Vec::new();
     for port in &args.approve_ports {
@@ -173,6 +174,26 @@ fn approved_ports(
         }
     }
     approved.sort_unstable();
+    // Ports are fixed when a sandbox is created, and the engine cannot add the
+    // rule that lets one in afterwards. Saying a port was forwarded when nothing
+    // changed would be worse than refusing.
+    if !matches!(state, SandboxState::None) {
+        if let Some(record) = SandboxRecord::load(&project.dir).map_err(internal)? {
+            let mut existing = record.ports.clone();
+            existing.sort_unstable();
+            if existing != approved {
+                let open = if existing.is_empty() {
+                    "no ports".to_owned()
+                } else {
+                    existing.iter().map(u16::to_string).collect::<Vec<_>>().join(", ")
+                };
+                return Err(wrong_state(format!(
+                    "this sandbox already exists with {open} forwarded, and ports can only be set when a sandbox is created. To change them, run: {} down --destroy, which deletes its data, then start it again",
+                    brand::CLI_BIN
+                )));
+            }
+        }
+    }
     for port in &approved {
         service.record(
             audit::entry(service.deps().now_unix(), audit::Action::PortForwarded)
@@ -261,6 +282,7 @@ fn create(
         build_memory_bytes: plan.resources.build_memory_bytes,
         ports: ports.to_vec(),
         plan_digest: args.plan_digest.clone(),
+        log_level: Some(crate::blocked::created_level()),
     }
     .save(&project.dir)
     .map_err(internal)?;
@@ -529,6 +551,7 @@ pub fn status(service: &Service, project: &Project) -> Result<StatusReport, ApiE
     } else {
         Vec::new()
     };
+    let blocked = crate::blocked::summary(service, project, state);
     Ok(StatusReport {
         project_id: project.id.as_str().to_owned(),
         project_path: text::escape_path(&project.root),
@@ -542,9 +565,10 @@ pub fn status(service: &Service, project: &Project) -> Result<StatusReport, ApiE
             build_memory_bytes: r.build_memory_bytes,
             clamped: false,
         }),
-        // Nothing records outbound decisions on the host yet, so this is not
-        // "no requests were blocked": it is "nothing is watching".
-        blocked_count: 0,
+        // Not "no requests were blocked", even at zero: only hostname lookups
+        // are ever recorded, and only by a sandbox created to record them.
+        blocked_count: blocked.total,
+        blocked: Some(blocked),
     })
 }
 

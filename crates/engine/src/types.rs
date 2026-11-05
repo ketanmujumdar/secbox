@@ -227,6 +227,19 @@ pub struct EngineLocation {
     pub home: PathBuf,
 }
 
+impl EngineLocation {
+    /// Each folder from the engine's home down to a sandbox's logs, in order, so
+    /// that a caller can check every one before believing what is inside. The
+    /// name was validated when it was made, so it cannot climb out of here. The
+    /// guest's own state folder is a sibling of the logs and is not on this path.
+    pub fn sandbox_log_dirs(&self, name: &SandboxName) -> Vec<PathBuf> {
+        let sandboxes = self.home.join("sandboxes");
+        let sandbox = sandboxes.join(name.as_str());
+        let logs = sandbox.join("logs");
+        vec![self.home.clone(), sandboxes, sandbox, logs]
+    }
+}
+
 /// Which log entries to return.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LogOptions {

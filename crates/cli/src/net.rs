@@ -1,4 +1,5 @@
-//! `net check`: explains one decision. Nothing is sent, and no name is looked up.
+//! `net check` explains one decision: nothing is sent, and no name is looked up.
+//! `net blocked` is in [`crate::blocked`].
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -21,6 +22,8 @@ pub struct NetArgs {
 enum NetCommand {
     /// Explain whether a policy file allows one request
     Check(CheckArgs),
+    /// Show blocked hostnames recorded for a project. Raw IP, metadata and UDP attempts are not recorded
+    Blocked(crate::blocked::BlockedArgsCli),
 }
 
 #[derive(Args)]
@@ -34,7 +37,13 @@ struct CheckArgs {
 }
 
 pub fn run(args: &NetArgs, deps: &mut Deps) -> i32 {
-    let NetCommand::Check(args) = &args.command;
+    match &args.command {
+        NetCommand::Check(args) => check(args, deps),
+        NetCommand::Blocked(args) => crate::blocked::run(args, deps),
+    }
+}
+
+fn check(args: &CheckArgs, deps: &mut Deps) -> i32 {
     let policy = match load_policy(args, deps) {
         Ok(policy) => policy,
         Err(reason) => {

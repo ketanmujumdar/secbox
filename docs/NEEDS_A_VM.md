@@ -97,20 +97,38 @@ Rerun all six scenarios before trusting the spike's tables again: the IPv6
 probe was rewritten and the allowlist widened, so the recorded results are no
 longer exactly reproducible.
 
+## Blocked hostnames
+
+Ran on a real VM, on engine 0.7.13 on macOS, in throwaway sandboxes:
+
+- Through a test daemon and `secbox up`, at 512M: `net blocked`, `net blocked -f`, the count in `status`, the Traffic panel on a pty, a stop and start, and `down --destroy`. A lookup from a nested Compose container appeared too.
+- Crafted DNS queries sent by hand, with a newline, a space, ` domain=`, an escape code and a NUL in the name. The engine escaped each one.
+- A flood of file activity that pushed all earlier events out in about 12 seconds. `-f` still showed the event after it.
+- Attempts on the logs folder from inside the guest as root: through both file shares, and through a symlink. All failed.
+- An `--env` value and a value on standard input were sent through `exec`, and neither appeared in `runtime.log` at debug. An `--env` value printed by the guest did appear in `exec.log`, as all exec output does, at any level.
+
+Not run, or not known:
+
+- Any other engine version. The line format, the rename rule and the shares could all change, and a changed line would show as an empty list.
+- Linux.
+- Crafted requests to the file share from a modified guest kernel. The kernel appears to have no module support, but the guest has `/dev/mem`.
+- `demo_shop` at debug. How fast its build fills the 50 MB is unmeasured. One small Compose start wrote about 5 MB.
+- The cost of debug logging. One tight file-activity loop ran about 9% slower than at the default level, from one run of each.
+
 ## Not built at all
 
 Nothing below exists, so there is nothing to test yet.
 
-- The network gateway and the proxy. **The rule engine in `crates/egress` decides nothing today, because nothing calls it on real traffic.** `status` says outbound requests are not recorded, rather than reporting none.
+- The network gateway and the proxy. **The rule engine in `crates/egress` decides nothing today, because nothing calls it on real traffic.** Blocked hostnames come from the engine's own log instead, with the limits above.
 - Secret delivery by the proxy route. Held back on purpose: it needs the gateway to terminate TLS, and a plan carrying one is refused with that reason.
 - A snapshot that includes uncommitted changes. The flag exists and refuses.
-- `logs`, `shell`, `exec`, `sync`.
-- `net blocked`, `net log`, `net allow`, and a clear error inside the app for a blocked request.
+- `sync`.
+- `net log`, `net allow`, a record of blocked raw IP, metadata and UDP attempts, and a clear error inside the app for a blocked request.
 - `rebuild`, its review steps and rollback.
 - `diff` and `export`. They still exit 69.
 - A Touch ID approver, and a passphrase approver for headless Linux.
 - Git history between a sandbox's commits and a real remote, and SSH remotes.
-- Everything under AI, MCP, and the terminal interface.
+- Everything under AI and MCP.
 
 ## One more thing that is a design question, not a test
 

@@ -66,6 +66,12 @@ fn validate_env_name(name: &str) -> Result<()> {
 /// The variable that tells the CLI where its state directory is.
 pub const HOME_VAR: &str = "MSB_HOME";
 
+/// The level new sandboxes run at. At this level the engine writes each refused
+/// name lookup to the sandbox's log on the host, and at its default it writes
+/// none. Measured on v0.7.13, the level survives a stop and start, the log grows
+/// by about 15 KB a second when idle, and the engine keeps about 50 MB of it.
+pub const CREATE_LOG_LEVEL: &str = "debug";
+
 pub fn version() -> Vec<String> {
     strings(["--version"])
 }
@@ -83,6 +89,8 @@ pub fn create(spec: &CreateSpec) -> Result<Vec<String>> {
     let r = spec.resources;
     let mut args = strings(["create", "--quiet", "--name", spec.name.as_str()]);
     args.extend([
+        "--log-level".to_owned(),
+        CREATE_LOG_LEVEL.to_owned(),
         "--memory".to_owned(),
         format!("{}M", r.memory_mib),
         "--cpus".to_owned(),
@@ -367,6 +375,8 @@ mod tests {
                 "--quiet",
                 "--name",
                 "demo",
+                "--log-level",
+                "debug",
                 "--memory",
                 "6144M",
                 "--cpus",
@@ -381,6 +391,30 @@ mod tests {
                 "docker:dind",
             ]
         );
+    }
+
+    /// A sandbox cannot be given a log level later, so every new one gets it
+    /// whatever its network, and restarting one is not asked to set it again.
+    #[test]
+    fn every_new_sandbox_is_created_at_the_level_that_records_refused_lookups() {
+        for network in [
+            NetworkPolicy::DenyAll,
+            NetworkPolicy::PublicInternet,
+            NetworkPolicy::AllowHosts {
+                hosts: vec!["a.b".into()],
+                tls: TlsMode::ServerNameOnly,
+            },
+        ] {
+            let mut s = spec();
+            s.network = network;
+            let args = create(&s).unwrap();
+            let at = args.iter().position(|a| a == "--log-level").unwrap();
+            assert_eq!(args[at + 1], CREATE_LOG_LEVEL);
+            assert_eq!(args.iter().filter(|a| *a == "--log-level").count(), 1);
+            assert!(at < args.iter().position(|a| a == "docker:dind").unwrap());
+        }
+        assert_eq!(CREATE_LOG_LEVEL, "debug");
+        assert!(!start(&name()).iter().any(|a| a == "--log-level"));
     }
 
     #[test]

@@ -78,6 +78,8 @@ pub enum Request {
     Logs(LogsArgs),
     /// Ask how to open a terminal in a running sandbox. Never starts anything.
     Terminal(TerminalArgs),
+    /// Read the blocked hostnames recorded for a project. Never starts anything.
+    Blocked(BlockedArgs),
 }
 
 /// The most log lines one request may ask for from each service.
@@ -123,6 +125,23 @@ pub struct TerminalArgs {
     pub project: String,
     /// The service the terminal is for, which the daemon checks and records.
     pub service: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlockedArgs {
+    pub project: String,
+    /// Only what was written after this point, from an earlier report's `next`.
+    pub after: Option<BlockedCursor>,
+}
+
+/// A place in the log. It names the file as well as the offset, because the
+/// engine renames the file when it grows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlockedCursor {
+    pub file: u64,
+    pub offset: u64,
 }
 
 /// Naming a project. The daemon canonicalises the path itself and derives the
@@ -219,6 +238,78 @@ pub enum Reply {
     Status(StatusReport),
     Logs(LogsReport),
     Terminal(TerminalReport),
+    Blocked(BlockedReport),
+}
+
+/// Whether a project's sandbox is writing down what it is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockedRecording {
+    /// The host's record says it was created at a level that writes them.
+    Recording,
+    /// It exists, and either its level writes nothing or no level is on record.
+    /// An empty list from this sandbox would say nothing at all.
+    NotRecording,
+    NoSandbox,
+}
+
+/// What can be said about who could have written the record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogTrust {
+    /// Nothing was read, so there is nothing to say.
+    NotRead,
+    /// Only the host's engine writes it, as far as was measured and checked.
+    HostOnly,
+    /// Something else could have written it, for this reason. Do not believe it.
+    Doubtful(String),
+}
+
+/// One hostname and how often it was refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlockedEvent {
+    /// When it was last refused, in UTC, as the engine wrote it.
+    pub time: String,
+    /// A name in DNS text form, already checked and safe to print. The guest
+    /// chose it, so it is a thing that was asked for and proves nothing else.
+    pub domain: String,
+    pub count: u64,
+}
+
+/// Blocked hostnames only: most blocked traffic leaves no record at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlockedReport {
+    pub recording: BlockedRecording,
+    /// The level on the host's record, if there is one.
+    pub log_level: Option<String>,
+    /// The newest last.
+    pub events: Vec<BlockedEvent>,
+    /// Every refusal counted, including any in `omitted_domains`.
+    pub total: u64,
+    /// Older events exist or may exist that this did not see.
+    pub cut_off: bool,
+    /// How many of the oldest names were left out of `events`.
+    pub omitted_domains: u64,
+    /// Lines in the place of an event that failed the check, so were not used.
+    pub rejected_lines: u64,
+    pub trust: LogTrust,
+    /// Where to ask from next, to get only what is new.
+    pub next: Option<BlockedCursor>,
+}
+
+/// The short form of [`BlockedReport`], for `status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlockedSummary {
+    pub recording: BlockedRecording,
+    pub total: u64,
+    pub domains: u64,
+    pub cut_off: bool,
+    pub trust: LogTrust,
+    /// Why the log could not be read, when it could not.
+    pub problem: Option<String>,
 }
 
 /// How a log request ended. The output itself came in [`Frame::Output`].
@@ -466,8 +557,12 @@ pub struct StatusReport {
     pub services: Vec<ServiceState>,
     pub ports: Vec<u16>,
     pub resources: Option<ResourcePlan>,
-    /// Blocked outbound requests the host recorded for this project.
+    /// Blocked hostname lookups the host's log holds for this project. Raw IP,
+    /// metadata and UDP attempts are never in it, so zero proves nothing.
     pub blocked_count: u64,
+    /// `None` from a daemon too old to send it, which is not the same as zero.
+    #[serde(default)]
+    pub blocked: Option<BlockedSummary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -532,6 +627,48 @@ mod tests {
             project: "/p".to_owned(),
             service: None,
         }));
+        round_trip(Request::Blocked(BlockedArgs {
+            project: "/p".to_owned(),
+            after: Some(BlockedCursor { file: 7, offset: 9 }),
+        }));
+    }
+
+    #[test]
+    fn a_blocked_report_survives_the_wire() {
+        let frame = Frame::Done(Outcome::Ok {
+            reply: Reply::Blocked(BlockedReport {
+                recording: BlockedRecording::Recording,
+                log_level: Some("debug".to_owned()),
+                events: vec![BlockedEvent {
+                    time: "2026-11-05T07:50:52.406636Z".to_owned(),
+                    domain: "a.example.net".to_owned(),
+                    count: 2,
+                }],
+                total: 2,
+                cut_off: true,
+                omitted_domains: 1,
+                rejected_lines: 1,
+                trust: LogTrust::Doubtful("why".to_owned()),
+                next: Some(BlockedCursor { file: 1, offset: 2 }),
+            }),
+        });
+        let mut buffer = Vec::new();
+        write_frame(&mut buffer, &frame).unwrap();
+        let back: Frame = read_frame(&mut buffer.as_slice()).unwrap().unwrap();
+        assert_eq!(back, frame);
+    }
+
+    /// A daemon started before this field existed still has to be understood, or
+    /// every client would fail on `status` until the daemon was restarted.
+    #[test]
+    fn a_status_from_an_older_daemon_is_still_understood() {
+        let json = br#"{"frame":"done","outcome":"ok","reply":{"reply":"status","project_id":"p","project_path":"/p","sandbox":"running","services":[],"ports":[],"resources":null,"blocked_count":0}}
+"#;
+        let frame: Frame = read_frame(&mut json.as_slice()).unwrap().unwrap();
+        let Frame::Done(Outcome::Ok { reply: Reply::Status(report) }) = frame else {
+            panic!("expected a status");
+        };
+        assert_eq!(report.blocked, None);
     }
 
     #[test]

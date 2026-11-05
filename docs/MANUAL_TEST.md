@@ -241,20 +241,74 @@ secbox shell --project "$P"
 
 `exit 3` leaves it, and `echo $?` on the host shows 3. Typing into a shell writes a history file inside the sandbox, as any shell does. `secbox shell postgres --project "$P"` opens one in that container.
 
-In the full-screen interface, press `l` for Logs, `[` and `]` to choose a service or All, `5` to read again, `1` for help and `q` to quit. Do not press `3` or `x`, and answer `n` if a box appears.
+In the full-screen interface, press `l` for Logs, the left and right arrows or `[` and `]` to choose a service or All, up, down, PgUp and PgDn to scroll, `5` to read again, `1` for help and `q` to quit. Do not press `3` or `x`, and answer `n` if a box appears.
 
 On a project that is stopped, every command above refuses, says how to start it, and starts nothing. Check with `secbox status` afterwards.
 
 After a daemon built before these commands, they say the daemon is older and needs a restart. `status` keeps working.
+
+## Blocked hostnames
+
+Run these against a sandbox you can afford to lose, because seeing events on an older project means recreating it.
+
+First, a sandbox created before this was added. `sandbox.json` in its project's state folder has no `log_level`:
+
+```sh
+secbox net blocked --project "$P"
+secbox status "$P"
+```
+
+Both say nothing is being recorded, and that the sandbox must be recreated with `down --destroy`, then `up`, which deletes its data. `secbox net blocked -f --project "$P"` says the same, then stops with exit 1.
+
+The daemon must be new enough. An older one makes `net blocked` say so and `status` show the count as unknown. Restarting it leaves its sandboxes running.
+
+Then recreate it. This deletes the sandbox's data:
+
+```sh
+secbox down --destroy "$P"
+secbox up "$P"
+```
+
+Ask for some blocked names and a few things that are never recorded:
+
+```sh
+secbox exec --project "$P" -- sh -c '
+  nslookup blocked-one.example.net
+  nslookup blocked-two.example.net
+  nslookup blocked-two.example.net
+  wget -T 2 -q -O- http://1.1.1.1/
+  wget -T 2 -q -O- http://169.254.169.254/
+  echo x | nc -u -w1 9.9.9.9 53'
+secbox net blocked --project "$P"
+secbox status "$P"
+```
+
+You should see each hostname once, with its time and count, and the newest last. The counts are usually doubled, because each lookup asks for IPv4 and IPv6. **`1.1.1.1`, `169.254.169.254` and `9.9.9.9` do not appear.** The output says this every time, and an empty list proves nothing. `status` shows the totals as refused lookups.
+
+Keep it open with `secbox net blocked -f --project "$P"` and run another lookup from a second terminal. It appears within about two seconds, and Ctrl-C ends it.
+
+In the full-screen interface, press `t` for Traffic. Up, down, PgUp and PgDn scroll, `5` reads the newest, and the warning stays on screen while you scroll.
+
+A crafted name stays on one line, with its odd characters shown as `\040` and the like. To try it, send your own DNS packet with `nc -u` to port 53 of the nameserver in the sandbox's `/etc/resolv.conf`.
+
+### Attacking a running sandbox
+
+This attacks a running sandbox from inside and reports what got out. It writes nothing in the sandbox and does not stop it. `SERVICE` is a Compose service with `wget`, by default `web`:
+
+```sh
+python3 -I tests/leak/check-running.py [SERVICE]
+```
+
+PASS means the attempt was stopped and a control proved the probe can work. FAIL means something got out. GAP is a known limit. SKIPPED proves nothing. It exits 0 only when nothing failed or was skipped.
 
 ## What can't be tested yet
 
 These are not built, so nothing above tests them, and no output above is evidence of protection:
 
 - Starting a project in a VM, stopping it and resource limits actually applying (`up`, `down`, `status`).
-- Masking secret values in `logs`, which is not built. No secret reaches a sandbox yet.
+- Masking secret values in `logs`, which is not built. A service given a secret can print it, and `logs` shows it.
 - Network enforcement. `net check` explains a policy, and no proxy applies it.
-- Delivering secrets to a VM by proxy, injection or build secret. Assignments are only recorded.
+- Delivering secrets to a VM by proxy, which is refused, or by build secret. Delivery by environment and file is built, and `docs/NEEDS_A_VM.md` lists what has to be confirmed on a real guest.
 - Git review and export (`diff`, `export`).
 - Leak tests through this CLI. The probes in `tests/leak` are run separately, not by any command here.
 - `brew install`, since no tap exists. The formula template has only had a Ruby syntax check.

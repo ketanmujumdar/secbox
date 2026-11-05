@@ -8,10 +8,12 @@ secbox is being built to run a project and its AI agent inside a disposable micr
 
 **Do not rely on this tool to contain anything.** A microVM has been shown to
 run a Compose project with its network constrained, in one spike on one Mac
-(`docs/spikes/0001-engine-compose.md`). The commands below were built and
-tested against a fake engine in a Linux container with no KVM, so no sandbox
-has ever booted through them. Nothing enforces network rules on real traffic
-yet, and no secret reaches a sandbox by any route.
+(`docs/spikes/0001-engine-compose.md`). Most commands below were built against
+a fake engine, and only some have run on a real VM. On real traffic, the only
+network rule is the engine's own hostname allowlist: the rule engine in
+`crates/egress` is not connected to anything. Secrets assigned to a service are
+delivered into its sandbox on each start, by environment or file. That route
+exists in the code and has not been confirmed on a real guest.
 
 `docs/NEEDS_A_VM.md` lists everything that has to run on real hardware before
 any of it can be called working.
@@ -22,15 +24,16 @@ any of it can be called working.
 | `check [path]` | Works. Reads a project's Compose file as data and reports what it asks for |
 | `open`, `checks` | Works. Editor safety checks, and the gate before launching an editor |
 | `resources [path]` | Works. Shows requested and resolved limits, but nothing applies them yet |
-| `secrets import/set/list/rm` | Works, with the OS keychain. Nothing delivers secrets to a VM yet |
+| `secrets import/set/list/rm` | Works, with the OS keychain. Assigned secrets are delivered on each `up`, but not by the proxy route, which is refused |
 | `net check <policy> <METHOD> <url>` | Works. Explains a policy decision, but nothing enforces it yet |
+| `net blocked [--project PATH] [-f]` | Works, through the daemon, on a sandbox created since this was added. Blocked hostnames only. See [Blocked hostnames](#blocked-hostnames) |
 | `uninstall --purge` | Works. Removes the state folder only |
 | `up`, `down`, `status` | Built. They need the daemon |
 | `logs [SERVICE] [-f] [--tail N] [--project PATH]` | Works on a running sandbox, through the daemon. Removes terminal control codes. Does not mask secret values |
 | `shell [SERVICE]`, `exec [--service S] -- CMD...` | Work on a running sandbox, on your real terminal. Control codes can't be filtered there |
 | `diff`, `export` | Not built |
 
-`up`, `down`, `status`, `logs`, `shell` and `exec` send requests to a daemon,
+`up`, `down`, `status`, `logs`, `net blocked`, `shell` and `exec` send requests to a daemon,
 `secboxd`, which holds the secrets, the policy and the approvals. With no daemon
 running they say so.
 
@@ -49,7 +52,26 @@ Add `--project PATH` to name a project from another folder. None of these starts
 
 There is no SSH server and no open port in the VM. For `shell` and `exec` the daemon checks the sandbox is running and tells the CLI where the engine is, and the CLI runs the engine with a cleared environment. Anything you paste into that shell is inside the sandbox.
 
-`logs` masks nothing yet, because no secret reaches a sandbox yet. If that changes, it has to change too.
+`logs` masks nothing. A service given a secret can print it, and `logs` will then show it.
+
+## Blocked hostnames
+
+```sh
+secbox net blocked              # time, count and hostname, newest last
+secbox net blocked -f           # keep checking; Ctrl-C stops
+secbox status                   # includes a count
+```
+
+The Traffic panel in the full-screen interface shows the same list. Press `t` to open it, `5` to read again, and up, down, PgUp and PgDn to scroll.
+
+Read this before relying on the list:
+
+- **It shows blocked hostnames only.** Raw IP, metadata and UDP attempts are blocked but not recorded, so an empty list doesn't mean nothing was tried.
+- **Only a sandbox created since this was added records anything.** A sandbox's log level can't be changed later. An older one says nothing is being recorded. To record, recreate it with `secbox down --destroy`, then `secbox up`, which deletes its data.
+- **Events can be lost.** The engine keeps about 50 MB of this log. On an idle sandbox that is about an hour at best. A busy or hostile sandbox can push events out within seconds, and the output says so when older events are cut off. `-f` sees events as they arrive, so it loses far fewer.
+- **The count is of refused queries.** One lookup is usually two, for IPv4 and IPv6. The guest chooses each name, so a name shows what was asked for and nothing more.
+
+The record comes from the engine's log on the host, read by the daemon. As measured on engine 0.7.13, the guest could not write to the folder holding it. If a check on that folder fails, the output says the record is not trustworthy.
 
 ## Quick start
 

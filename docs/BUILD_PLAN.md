@@ -10,7 +10,7 @@ secbox is not protecting anything yet. Do not describe a feature as working unti
 - Never write the product name in Rust code outside `crates/brand`. A test enforces this, including comments.
 - No `unsafe`. Keep dependencies few and commit `Cargo.lock`.
 - Never pass secret values as command-line arguments, print them, or put them in errors or logs.
-- Host code must never follow paths under the engine's guest state, because a guest-made symlink becomes a real host symlink.
+- Host code must never follow paths under the engine's guest state or its `.bootstrap-rootfs`, because the guest can write to both and a guest-made symlink becomes a real host symlink.
 - Host code must never run Git in a `.git` written by the VM.
 - Automated tests never touch the real keychain.
 - Never use the engine's `allow@dns` option, because it opens a channel for sending data out.
@@ -40,10 +40,10 @@ Most cloud environments are Linux and may have no KVM, so they can't run the VM 
 | `egress` | Rule engine done | No proxy; no CONNECT pre-check; method-override headers and keys in query strings not handled. **Nothing calls it on real traffic** |
 | `gitbroker` | Done | No real HTTPS push; no SSH remotes; no Touch ID approver; no working-tree snapshot |
 | `engine` | Done on macOS | Secrets need TLS interception; Linux untested |
-| `proto` | Done | The API covers `plan`, `up`, `down`, `status`, `logs` and terminal access only |
+| `proto` | Done | The API covers `plan`, `up`, `down`, `status`, `logs`, blocked hostnames and terminal access only |
 | `hoststate` | Done | Project identity still hashes the full path, so moving a project loses its secrets |
-| `daemon` | Core done, against `FakeEngine` | Only partly run on a real VM; no gateway log; the proxy secret route waits on milestone 0 |
-| `cli` | `up`, `down`, `status`, `open`, `checks`, `logs`, `shell` and `exec` done | `diff` and `export` refuse; no `sync`, `net` or `rebuild` |
+| `daemon` | Core done, against `FakeEngine` | Only partly run on a real VM; blocked hostnames come from the engine's log, with no record of raw IP, metadata or UDP attempts and no gateway log; the proxy secret route waits on milestone 0 |
+| `cli` | `up`, `down`, `status`, `open`, `checks`, `logs`, `shell`, `exec` and `net blocked` done | `diff` and `export` refuse; no `sync`, `net log`, `net allow` or `rebuild` |
 
 `docs/NEEDS_A_VM.md` is the standing list of what has not run on real hardware.
 
@@ -75,9 +75,10 @@ Done when: `secbox up` runs `demo_shop` in a VM with no real secrets, on a Mac, 
 
 ## Milestone 2: daily use
 
-- `secbox logs`, `shell` and `exec` are built, and ran against a real VM. `logs` strips control codes. **It does not mask secret values yet:** no secret reaches a sandbox and the daemon loads none to compare against, so add masking with secret delivery.
+- `secbox logs`, `shell` and `exec` are built, and ran against a real VM. `logs` strips control codes. **It does not mask secret values yet.** Assigned secrets now reach a sandbox, so a service that prints one shows it in `logs`. Masking still has to be added.
 - `secbox sync`.
-- `secbox net blocked`, `net log` and `net allow`, with decisions recorded on the host, and a system approval to loosen policy. Blocked HTTP requests get a clear error.
+- `secbox net blocked` is built, and ran against a real VM. It reads refused name lookups from the engine's log on the host, for sandboxes created at `--log-level debug`. Raw IP, metadata and UDP attempts are not in that log at any level, so a complete record still needs a gateway on the host.
+- `net log` and `net allow`, with every decision recorded on the host, and a system approval to loosen policy. Blocked HTTP requests get a clear error.
 - `secbox rebuild`, with the review steps, rollback and the five actions in the architecture doc.
 - `secbox uninstall --purge` must keep refusing while a sandbox is running.
 

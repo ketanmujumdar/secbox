@@ -14,6 +14,7 @@
 //! and never a reason to widen a rule.
 
 pub mod audit;
+pub mod blocked;
 pub mod debug;
 pub mod gitref;
 pub mod plan;
@@ -146,6 +147,10 @@ impl Service {
                 debug::check_terminal_args(args)?;
                 let project = self.open(&args.project)?;
                 debug::terminal(self, &project, args).map(Reply::Terminal)
+            }
+            Request::Blocked(args) => {
+                let project = self.open(&args.project)?;
+                blocked::report(self, &project, args).map(Reply::Blocked)
             }
         }
     }

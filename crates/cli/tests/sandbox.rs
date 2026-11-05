@@ -266,11 +266,309 @@ fn choosing_both_a_commit_and_uncommitted_changes_is_a_usage_error() {
 }
 
 #[test]
-fn status_says_that_outbound_requests_are_not_recorded_rather_than_showing_none() {
+fn status_says_what_is_not_recorded_rather_than_showing_none() {
     let h = harness();
     let text = h.run(&["status"], "").all();
-    assert!(text.contains("not recorded on the host yet"), "{text}");
+    assert!(text.contains("nothing is being recorded: no sandbox"), "{text}");
+    assert!(text.contains("Raw IP, metadata and UDP"), "{text}");
     assert!(!text.contains("0 blocked"), "{text}");
+}
+
+/// A project started through the real daemon logic, whose fake engine keeps the
+/// files the real one keeps, in a folder that lasts as long as the test.
+fn recording() -> (Harness, Arc<Facts>, tempfile::TempDir, engine::SandboxName) {
+    let (h, facts) = harness_and_facts();
+    let home = tempfile::tempdir().unwrap();
+    facts.engine.set_location(EngineLocation {
+        binary: PathBuf::from("/nonexistent"),
+        home: home.path().join("msb"),
+    });
+    facts.engine.keep_files();
+    let done = h.run(&["up", "--all-ports"], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    let name = facts
+        .engine
+        .calls()
+        .iter()
+        .find_map(|call| match call {
+            FakeCall::Create(spec) => Some(spec.name.clone()),
+            _ => None,
+        })
+        .unwrap();
+    (h, facts, home, name)
+}
+
+fn drop_recorded_level(h: &Harness) {
+    let projects = h.state().join("projects");
+    for entry in std::fs::read_dir(projects).unwrap() {
+        let path = entry.unwrap().path().join("sandbox.json");
+        if path.exists() {
+            let text = std::fs::read_to_string(&path).unwrap();
+            let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            value.as_object_mut().unwrap().remove("log_level");
+            std::fs::write(&path, value.to_string()).unwrap();
+        }
+    }
+}
+
+#[test]
+fn net_blocked_shows_time_count_and_name_with_the_newest_last() {
+    let (h, facts, _home, name) = recording();
+    for domain in ["old.example.net", "new.example.net", "OLD.example.net", "new.example.net", "new.example.net"] {
+        facts.engine.deny_lookup(&name, domain).unwrap();
+    }
+    let done = h.run(&["net", "blocked"], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    let text = done.out;
+    assert!(text.contains("HOSTNAME"), "{text}");
+    let old = text.find("old.example.net").expect(&text);
+    let new = text.find("new.example.net").expect(&text);
+    assert!(old < new, "the newest must be last: {text}");
+    assert!(text.contains("2026-11-05 07:50:00"), "{text}");
+    assert!(text.lines().any(|l| l.contains("old.example.net") && l.contains(" 2  ")), "{text}");
+    assert!(text.lines().any(|l| l.contains("new.example.net") && l.contains(" 3  ")), "{text}");
+    assert!(text.contains("Raw IP, metadata and UDP"), "{text}");
+    assert!(text.contains("doesn't mean nothing was tried"), "{text}");
+    assert!(text.contains("the guest cannot write"), "{text}");
+}
+
+#[test]
+fn net_blocked_says_the_list_is_empty_only_as_far_as_it_goes() {
+    let (h, _facts, _home, _name) = recording();
+    let text = h.run(&["net", "blocked"], "").all();
+    assert!(text.contains("No blocked hostnames are recorded so far"), "{text}");
+    assert!(text.contains("doesn't mean nothing was tried"), "{text}");
+}
+
+/// A sandbox made before the level was kept: nothing is known to be recording,
+/// even if its log holds what looks like events, and nothing is written to its
+/// record as a guess.
+#[test]
+fn a_sandbox_with_no_recorded_level_is_not_recording_and_stays_that_way() {
+    let (h, facts, _home, name) = recording();
+    facts.engine.deny_lookup(&name, "there.example.net").unwrap();
+    drop_recorded_level(&h);
+
+    let done = h.run(&["net", "blocked"], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    let text = done.all();
+    assert!(text.contains("Nothing is being recorded"), "{text}");
+    assert!(text.contains("down --destroy"), "{text}");
+    assert!(text.contains("deletes its data"), "{text}");
+    assert!(!text.contains("there.example.net"), "{text}");
+    assert!(!text.contains("recorded so far"), "{text}");
+
+    let status = h.run(&["status"], "").all();
+    assert!(status.contains("Nothing is being recorded"), "{status}");
+    assert!(!status.contains("refused lookups"), "{status}");
+
+    let projects = h.state().join("projects");
+    for entry in std::fs::read_dir(projects).unwrap() {
+        let path = entry.unwrap().path().join("sandbox.json");
+        if path.exists() {
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(!text.contains("log_level"), "something guessed: {text}");
+        }
+    }
+}
+
+#[test]
+fn following_something_that_can_never_show_anything_says_so_and_stops() {
+    let (h, _facts, _home, _name) = recording();
+    drop_recorded_level(&h);
+    let done = h.run(&["net", "blocked", "-f"], "");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(done.err.contains("not following"), "{}", done.all());
+    assert!(done.out.contains("Nothing is being recorded"), "{}", done.all());
+}
+
+#[test]
+fn a_new_sandbox_is_recorded_as_created_at_the_level_that_records() {
+    let (h, facts, _home, name) = recording();
+    assert!(matches!(
+        facts.engine.calls().iter().find(|c| matches!(c, FakeCall::Create(_))),
+        Some(FakeCall::Create(spec)) if engine::argv::create(spec)
+            .unwrap()
+            .windows(2)
+            .any(|pair| pair[0] == "--log-level" && pair[1] == "debug")
+    ));
+    facts.engine.deny_lookup(&name, "a.example.net").unwrap();
+    let text = h.run(&["status"], "").all();
+    assert!(text.contains("1 refused lookups of 1 hostnames"), "{text}");
+    assert!(text.contains("Raw IP, metadata and UDP"), "{text}");
+}
+
+#[test]
+fn a_link_at_the_log_is_refused_and_status_keeps_working() {
+    let (h, facts, home, name) = recording();
+    let logs = facts.engine.logs_dir(&name).unwrap();
+    let planted = home.path().join("planted");
+    std::fs::write(&planted, "x\n").unwrap();
+    std::os::unix::fs::symlink(&planted, logs.join("runtime.log")).unwrap();
+
+    let done = h.run(&["net", "blocked"], "");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(done.err.contains("symbolic link"), "{}", done.all());
+
+    let status = h.run(&["status"], "");
+    assert_eq!(status.code, 0, "{}", status.all());
+    assert!(status.all().contains("could not be read"), "{}", status.all());
+    assert!(status.all().contains("running"), "{}", status.all());
+}
+
+#[test]
+fn a_hostile_name_on_a_real_shaped_line_is_shown_harmlessly_or_not_at_all() {
+    let (h, facts, _home, name) = recording();
+    facts.engine.deny_lookup(&name, r"a\040domain\=fake.example.net").unwrap();
+    facts.engine.deny_lookup(&name, "a b\u{1b}[2J.example.net").unwrap();
+    let done = h.run(&["net", "blocked"], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    let text = done.all();
+    assert!(!text.contains('\u{1b}'), "{text}");
+    assert!(text.contains(r"a\040domain\=fake.example.net"), "{text}");
+    assert!(text.contains("1 log lines looked like blocked events"), "{text}");
+}
+
+/// Answers the first calls, then stops, so that following can be shown to end.
+struct Scripted {
+    answers: std::sync::Mutex<std::collections::VecDeque<Result<Reply, CallError>>>,
+    limits: std::sync::Mutex<Vec<Option<Duration>>>,
+    afters: std::sync::Mutex<Vec<Option<proto::BlockedCursor>>>,
+}
+
+impl DaemonClient for Scripted {
+    fn call(
+        &self,
+        request: Request,
+        _progress: &mut dyn FnMut(&str, Option<&str>),
+    ) -> Result<Reply, CallError> {
+        self.stream(request, &mut |_, _| true, None)
+    }
+
+    fn stream(
+        &self,
+        request: Request,
+        _output: &mut dyn FnMut(proto::OutputStream, &str) -> bool,
+        limit: Option<Duration>,
+    ) -> Result<Reply, CallError> {
+        self.limits.lock().unwrap().push(limit);
+        if let Request::Blocked(args) = request {
+            self.afters.lock().unwrap().push(args.after);
+        }
+        self.answers
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| Err(CallError::Transport("the script ended".to_owned())))
+    }
+}
+
+fn blocked_answer(domain: Option<&str>, offset: u64) -> Result<Reply, CallError> {
+    Ok(Reply::Blocked(proto::BlockedReport {
+        recording: proto::BlockedRecording::Recording,
+        log_level: Some("debug".to_owned()),
+        events: domain
+            .map(|domain| proto::BlockedEvent {
+                time: "2026-11-05T07:50:52.406636Z".to_owned(),
+                domain: domain.to_owned(),
+                count: 1,
+            })
+            .into_iter()
+            .collect(),
+        total: u64::from(domain.is_some()),
+        cut_off: false,
+        omitted_domains: 0,
+        rejected_lines: 0,
+        trust: proto::LogTrust::HostOnly,
+        next: Some(proto::BlockedCursor { file: 1, offset }),
+    }))
+}
+
+#[test]
+fn following_asks_from_where_it_left_off_prints_only_what_is_new_and_has_a_limit_each_time() {
+    let script = Arc::new(Scripted {
+        answers: std::sync::Mutex::new(
+            [
+                blocked_answer(Some("first.example.net"), 100),
+                blocked_answer(None, 100),
+                Err(CallError::TimedOut),
+                blocked_answer(Some("second.example.net"), 200),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        limits: std::sync::Mutex::default(),
+        afters: std::sync::Mutex::default(),
+    });
+    struct Shared(Arc<Scripted>);
+    impl DaemonClient for Shared {
+        fn call(
+            &self,
+            request: Request,
+            progress: &mut dyn FnMut(&str, Option<&str>),
+        ) -> Result<Reply, CallError> {
+            self.0.call(request, progress)
+        }
+        fn stream(
+            &self,
+            request: Request,
+            output: &mut dyn FnMut(proto::OutputStream, &str) -> bool,
+            limit: Option<Duration>,
+        ) -> Result<Reply, CallError> {
+            self.0.stream(request, output, limit)
+        }
+    }
+    let h = Harness::new().with_daemon(Box::new(Shared(Arc::clone(&script))));
+    let done = h.run(&["net", "blocked", "-f"], "");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert_eq!(done.out.matches("first.example.net").count(), 1, "{}", done.out);
+    assert_eq!(done.out.matches("second.example.net").count(), 1, "{}", done.out);
+    assert!(done.err.contains("Still trying"), "{}", done.err);
+    assert!(done.err.contains("the script ended"), "{}", done.err);
+    assert!(script.limits.lock().unwrap().iter().all(Option::is_some));
+    let offsets: Vec<_> = script
+        .afters
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|after| after.map(|cursor| cursor.offset))
+        .collect();
+    assert_eq!(offsets, [None, Some(100), Some(100), Some(100), Some(200)]);
+}
+
+#[test]
+fn status_on_an_older_daemon_says_the_count_is_unknown_rather_than_zero() {
+    struct Older;
+    impl DaemonClient for Older {
+        fn call(
+            &self,
+            _request: Request,
+            _progress: &mut dyn FnMut(&str, Option<&str>),
+        ) -> Result<Reply, CallError> {
+            Ok(Reply::Status(proto::StatusReport {
+                project_id: "p".to_owned(),
+                project_path: "/p".to_owned(),
+                sandbox: proto::SandboxState::Running,
+                services: Vec::new(),
+                ports: Vec::new(),
+                resources: None,
+                blocked_count: 0,
+                blocked: None,
+            }))
+        }
+        fn stream(
+            &self,
+            _request: Request,
+            _output: &mut dyn FnMut(proto::OutputStream, &str) -> bool,
+            _limit: Option<Duration>,
+        ) -> Result<Reply, CallError> {
+            unreachable!("status has no output")
+        }
+    }
+    let h = Harness::new().with_daemon(Box::new(Older));
+    let text = h.run(&["status"], "").all();
+    assert!(text.contains("unknown"), "{text}");
+    assert!(text.contains("older than this command"), "{text}");
 }
 
 #[test]

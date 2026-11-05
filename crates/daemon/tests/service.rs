@@ -349,6 +349,21 @@ fn an_approval_for_a_plan_that_has_since_changed_is_refused() {
     assert!(error.message.contains("changed"));
 }
 
+/// Ports are fixed at creation, so approving more later must not claim success.
+#[test]
+fn changing_the_ports_of_an_existing_sandbox_is_refused_and_not_reported_as_done() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    let wanted = f.plan().ports[0].host_port;
+    let error = f.up(vec![wanted]).unwrap_err();
+    assert_eq!(error.code, ErrorCode::WrongState);
+    assert!(error.message.contains("down --destroy"), "{}", error.message);
+    let audit = std::fs::read_to_string(f.service.audit().path()).unwrap();
+    assert!(!audit.contains("port_forwarded"), "{audit}");
+    // The same ports again is an ordinary restart.
+    f.up(vec![]).unwrap();
+}
+
 #[test]
 fn a_project_that_is_not_compose_is_refused_rather_than_guessed_at() {
     let state = tempfile::tempdir().unwrap();
@@ -427,6 +442,136 @@ fn status_after_starting_reports_what_the_sandbox_was_given() {
     // Nothing records outbound decisions yet, so this must not read as "none
     // were blocked".
     assert_eq!(report.blocked_count, 0);
+}
+
+fn blocked(f: &Fixture) -> Result<proto::BlockedReport, proto::ApiError> {
+    match f.call(Request::Blocked(proto::BlockedArgs {
+        project: f.path(),
+        after: None,
+    }))? {
+        Reply::Blocked(report) => Ok(report),
+        other => panic!("expected a blocked report, got {other:?}"),
+    }
+}
+
+/// A project started on an engine that keeps real files, with the folder they
+/// live in, and that sandbox's name.
+fn recording_fixture() -> (Fixture, tempfile::TempDir, engine::SandboxName) {
+    let f = fixture();
+    let home = tempfile::tempdir().unwrap();
+    f.deps.engine.set_location(EngineLocation {
+        binary: std::path::PathBuf::from("/nonexistent"),
+        home: home.path().join("msb"),
+    });
+    f.deps.engine.keep_files();
+    f.up(Vec::new()).unwrap();
+    let name = engine::SandboxName::new(sandbox_name_of(&f)).unwrap();
+    (f, home, name)
+}
+
+#[test]
+fn a_project_with_no_sandbox_is_not_recording_and_reads_nothing() {
+    let f = fixture();
+    let report = blocked(&f).unwrap();
+    assert_eq!(report.recording, proto::BlockedRecording::NoSandbox);
+    assert_eq!(report.trust, proto::LogTrust::NotRead);
+    assert!(report.events.is_empty());
+}
+
+#[test]
+fn a_new_sandbox_records_and_its_level_is_on_the_hosts_record() {
+    let (f, _home, name) = recording_fixture();
+    f.deps.engine.deny_lookup(&name, "a.example.net").unwrap();
+    f.deps.engine.deny_lookup(&name, "A.example.net").unwrap();
+    f.deps.engine.deny_lookup(&name, "b.example.net").unwrap();
+    let report = blocked(&f).unwrap();
+    assert_eq!(report.recording, proto::BlockedRecording::Recording);
+    assert_eq!(report.log_level.as_deref(), Some("debug"));
+    assert_eq!(report.trust, proto::LogTrust::HostOnly);
+    assert_eq!(report.total, 3);
+    let names: Vec<(&str, u64)> = report
+        .events
+        .iter()
+        .map(|e| (e.domain.as_str(), e.count))
+        .collect();
+    assert_eq!(names, [("a.example.net", 2), ("b.example.net", 1)]);
+
+    let Reply::Status(status) = f
+        .call(Request::Status(ProjectArgs { project: f.path() }))
+        .unwrap()
+    else {
+        panic!("expected a status")
+    };
+    assert_eq!(status.blocked_count, 3);
+    assert_eq!(status.blocked.unwrap().domains, 2);
+}
+
+#[test]
+fn a_stopped_sandbox_can_still_be_read_and_following_gets_only_what_is_new() {
+    let (f, _home, name) = recording_fixture();
+    f.deps.engine.deny_lookup(&name, "a.example.net").unwrap();
+    let first = blocked(&f).unwrap();
+    f.deps.engine.deny_lookup(&name, "b.example.net").unwrap();
+    f.call(Request::Down(DownArgs {
+        project: f.path(),
+        destroy: false,
+    }))
+    .unwrap();
+    let Reply::Blocked(second) = f
+        .call(Request::Blocked(proto::BlockedArgs {
+            project: f.path(),
+            after: first.next,
+        }))
+        .unwrap()
+    else {
+        panic!("expected a blocked report")
+    };
+    assert_eq!(second.total, 1);
+    assert_eq!(second.events[0].domain, "b.example.net");
+    // Reading does not start anything.
+    assert!(!f
+        .deps
+        .engine
+        .calls()
+        .iter()
+        .rev()
+        .take(2)
+        .any(|c| matches!(c, FakeCall::Start(_) | FakeCall::Exec(..))));
+}
+
+#[test]
+fn destroying_forgets_the_level_and_the_log() {
+    let (f, _home, name) = recording_fixture();
+    f.deps.engine.deny_lookup(&name, "a.example.net").unwrap();
+    f.call(Request::Down(DownArgs {
+        project: f.path(),
+        destroy: true,
+    }))
+    .unwrap();
+    let report = blocked(&f).unwrap();
+    assert_eq!(report.recording, proto::BlockedRecording::NoSandbox);
+    assert!(report.events.is_empty());
+}
+
+#[test]
+fn a_link_in_place_of_the_logs_folder_is_refused_and_named() {
+    let (f, home, name) = recording_fixture();
+    let logs = f.deps.engine.logs_dir(&name).unwrap();
+    std::fs::remove_dir_all(&logs).unwrap();
+    std::os::unix::fs::symlink(home.path(), &logs).unwrap();
+    let error = blocked(&f).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Refused);
+    assert!(error.message.contains("symbolic link"), "{}", error.message);
+}
+
+/// An engine that cannot say where its files are has nothing to read, and that
+/// is said rather than shown as an empty list.
+#[test]
+fn an_engine_with_no_files_says_so() {
+    let f = fixture();
+    f.up(Vec::new()).unwrap();
+    let error = blocked(&f).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported);
 }
 
 #[test]

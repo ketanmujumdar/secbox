@@ -146,6 +146,10 @@ pub struct SandboxRecord {
     pub ports: Vec<u16>,
     /// The plan the person approved when it was created.
     pub plan_digest: String,
+    /// The engine log level it was created at. A sandbox older than this field
+    /// has none, and is treated as recording nothing rather than guessed at.
+    #[serde(default)]
+    pub log_level: Option<String>,
 }
 
 const RECORD_FILE: &str = "sandbox.json";
@@ -275,12 +279,27 @@ mod tests {
             build_memory_bytes: 4 * GIB,
             ports: vec![3000],
             plan_digest: "abc".to_owned(),
+            log_level: Some("debug".to_owned()),
         };
         record.save(dir.path()).unwrap();
         assert_eq!(SandboxRecord::load(dir.path()).unwrap(), Some(record));
         SandboxRecord::remove(dir.path()).unwrap();
         assert_eq!(SandboxRecord::load(dir.path()).unwrap(), None);
         SandboxRecord::remove(dir.path()).unwrap();
+    }
+
+    /// Sandboxes made before the level was recorded have a file like this one.
+    #[test]
+    fn a_record_from_before_the_level_was_kept_has_no_level() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(RECORD_FILE),
+            br#"{"version":1,"created_unix":1,"memory_bytes":1,"millicpus":1,"disk_bytes":1,
+                 "build_memory_bytes":1,"ports":[],"plan_digest":"abc"}"#,
+        )
+        .unwrap();
+        let record = SandboxRecord::load(dir.path()).unwrap().unwrap();
+        assert_eq!(record.log_level, None);
     }
 
     #[test]

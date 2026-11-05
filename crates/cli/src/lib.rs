@@ -3,6 +3,7 @@
 //! command in-process with a memory store. There is no flag or variable that
 //! swaps the store in the real binary.
 
+mod blocked;
 mod check;
 pub mod client;
 mod debug;
@@ -89,7 +90,7 @@ enum Command {
     Resources(resources::ResourcesArgs),
     /// Manage per-project secrets in the OS keychain
     Secrets(secret_cmd::SecretsArgs),
-    /// Explain network policy decisions
+    /// Explain network policy decisions, and show blocked hostnames
     Net(net::NetArgs),
     /// Remove the state folder (needs --purge)
     Uninstall(uninstall::UninstallArgs),
