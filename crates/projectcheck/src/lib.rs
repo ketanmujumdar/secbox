@@ -3,6 +3,8 @@
 //!
 //! - [`detect`] finds what kind of project a directory holds.
 //! - [`compose`] reads a Compose file as data and reports what it asks for.
+//! - [`dockerfile`] reads a Dockerfile's ports and writes the Compose file a
+//!   project with only a Dockerfile runs as.
 //! - [`resources`] reads the repo's resource requests and fits them to the
 //!   user's limits and the host.
 //!
@@ -10,6 +12,7 @@
 
 pub mod compose;
 pub mod detect;
+pub mod dockerfile;
 pub mod resources;
 
 mod safe_fs;

@@ -11,8 +11,13 @@ use proto::{
 };
 use proto::{text, ApiError};
 
-use projectcheck::compose::{check_project, Interface, Service as ComposeService};
-use projectcheck::detect::{detect, ProjectKind};
+use std::path::{Path, PathBuf};
+
+use projectcheck::compose::{
+    check_project, parse_str, ComposeModel, Interface, Service as ComposeService,
+};
+use projectcheck::detect::{detect, ProjectKind, COMPOSE_OVERRIDE_FILES};
+use projectcheck::dockerfile;
 use projectcheck::resources::{self, HostResources};
 use secrets::Delivery;
 
@@ -51,8 +56,14 @@ pub fn build(
     let detection = detect(&project.root)
         .map_err(|e| bad(format!("cannot read the project: {}", text::escape(&e.to_string()))))?;
 
-    let (compose_file, compose_overrides) = match &detection.kind {
-        ProjectKind::Compose { file, overrides } => (file.clone(), overrides.clone()),
+    let mut blockers: Vec<String> = Vec::new();
+    let files = match &detection.kind {
+        // Detection picks a Compose file over a Dockerfile, so a project with
+        // both runs its own Compose file.
+        ProjectKind::Compose { file, overrides } => {
+            compose_project(project, file, overrides, &mut blockers)?
+        }
+        ProjectKind::Dockerfile { file } => dockerfile_project(project, file, &mut blockers)?,
         ProjectKind::Unsupported { reason, .. } => {
             return Err(unsupported(format!(
                 "this project needs macOS, so a Linux sandbox cannot protect it: {}",
@@ -61,44 +72,30 @@ pub fn build(
         }
         _ => {
             return Err(unsupported(
-                "only Compose projects can be started so far. Other kinds come after the first release",
+                "only Compose projects and projects with a Dockerfile can be started. Other kinds come after the first release",
             ))
         }
     };
 
-    let report = check_project(&project.root, &compose_file).map_err(|e| {
-        bad(format!(
-            "cannot read the Compose file: {}",
-            text::escape(&e.to_string())
-        ))
-    })?;
-
-    let mut blockers: Vec<String> = Vec::new();
-
-    // Every file Compose would merge on its own, in the same order, so that
-    // naming them explicitly does not change what the project asks for.
-    let mut compose_files = Vec::new();
-    for file in std::iter::once(&compose_file).chain(compose_overrides.iter()) {
-        match relative_name(file) {
-            Some(name) => compose_files.push(name),
-            None => blockers.push(format!(
-                "a Compose file is not inside the project: {}",
-                text::escape_path(file)
-            )),
-        }
-    }
-    let default_services: Vec<&ComposeService> = report.model.default_services().collect();
+    let default_services: Vec<&ComposeService> = files.model.default_services().collect();
     let services: Vec<String> = default_services
         .iter()
         .map(|s| text::escape(&s.name))
         .collect();
 
-    let ports = plan_ports(&default_services, &mut blockers);
-    let resources = plan_resources(service, project, &report.model, &mut blockers)?;
+    let mut ports = plan_ports(&default_services, &mut blockers);
+    if files.generated_compose.is_some() {
+        // The host chose to publish these on every interface inside the
+        // sandbox. The project itself asked for nothing.
+        for port in &mut ports {
+            port.was_all_interfaces = false;
+        }
+    }
+    let resources = plan_resources(service, project, &files.model, &mut blockers)?;
     let secrets = plan_secrets(project, &mut blockers)?;
     let network = plan_network(project, &secrets, &mut blockers)?;
 
-    let findings: Vec<Finding> = report
+    let findings: Vec<Finding> = files
         .findings
         .iter()
         .map(|f| Finding {
@@ -122,8 +119,8 @@ pub fn build(
         project_id: project.id.as_str().to_owned(),
         project_path: text::escape_path(&project.root),
         digest: String::new(),
-        kind: "compose".to_owned(),
-        compose_files,
+        kind: files.kind.to_owned(),
+        compose_files: files.compose_files,
         services,
         ports,
         resources,
@@ -132,9 +129,106 @@ pub fn build(
         snapshot,
         findings,
         blockers,
+        generated_compose: files.generated_compose,
     };
     plan.digest = digest(&plan)?;
     Ok(plan)
+}
+
+/// What a project's own files say it runs, whichever kind it is.
+struct ProjectFiles {
+    kind: &'static str,
+    compose_files: Vec<String>,
+    model: ComposeModel,
+    findings: Vec<projectcheck::compose::Finding>,
+    generated_compose: Option<String>,
+}
+
+fn compose_project(
+    project: &Project,
+    compose_file: &Path,
+    overrides: &[PathBuf],
+    blockers: &mut Vec<String>,
+) -> Result<ProjectFiles, ApiError> {
+    let report = check_project(&project.root, compose_file).map_err(|e| {
+        bad(format!(
+            "cannot read the Compose file: {}",
+            text::escape(&e.to_string())
+        ))
+    })?;
+    // Every file Compose would merge on its own, in the same order, so that
+    // naming them explicitly does not change what the project asks for.
+    let mut compose_files = Vec::new();
+    for file in std::iter::once(compose_file).chain(overrides.iter().map(PathBuf::as_path)) {
+        match relative_name(file) {
+            Some(name) => compose_files.push(name),
+            None => blockers.push(format!(
+                "a Compose file is not inside the project: {}",
+                text::escape_path(file)
+            )),
+        }
+    }
+    Ok(ProjectFiles {
+        kind: "compose",
+        compose_files,
+        model: report.model,
+        findings: report.findings,
+        generated_compose: None,
+    })
+}
+
+/// A project with a Dockerfile and no Compose file runs as a one-service
+/// Compose project that the host writes. Its ports come from the Dockerfile's
+/// `EXPOSE` lines and go through the same planning and approval as a Compose
+/// project's: none is forwarded unless a person approves it.
+///
+/// The generated text is read back with the same Compose checks, so the
+/// services, ports and build memory in the plan come from exactly the text
+/// that will run. The text itself is in the plan, so the digest, and with it
+/// the approval, covers it. Its own findings are not shown, because they
+/// would describe the host's file rather than the project; the Dockerfile's
+/// are.
+///
+/// Where the file goes is decided in `run`, at
+/// [`crate::run::GENERATED_COMPOSE_FILE`].
+fn dockerfile_project(
+    project: &Project,
+    file: &Path,
+    blockers: &mut Vec<String>,
+) -> Result<ProjectFiles, ApiError> {
+    let report = dockerfile::check_dockerfile(&project.root, file).map_err(|e| {
+        bad(format!(
+            "cannot read the Dockerfile: {}",
+            text::escape(&e.to_string())
+        ))
+    })?;
+    let generated = dockerfile::generate_compose(file, &report.exposed).map_err(|e| {
+        bad(format!(
+            "cannot run this Dockerfile: {}",
+            text::escape(&e.to_string())
+        ))
+    })?;
+    let model = parse_str(&generated)
+        .map_err(|_| internal("the generated Compose file does not read back"))?
+        .model;
+
+    // Compose merges any of these into the generated file in the commands
+    // that find their files by name, such as `logs` and `exec`. One with no
+    // main file to change is not something to guess about.
+    for name in COMPOSE_OVERRIDE_FILES {
+        if std::fs::symlink_metadata(project.root.join(name)).is_ok() {
+            blockers.push(format!(
+                "{name} is in the project, but there is no Compose file for it to change. Remove it, or add a Compose file."
+            ));
+        }
+    }
+    Ok(ProjectFiles {
+        kind: "dockerfile",
+        compose_files: vec![crate::run::GENERATED_COMPOSE_FILE.to_owned()],
+        model,
+        findings: report.findings,
+        generated_compose: Some(generated),
+    })
 }
 
 /// A Compose file's path as it will be named inside the sandbox. Anything
@@ -215,7 +309,7 @@ fn plan_ports(services: &[&ComposeService], blockers: &mut Vec<String>) -> Vec<P
 fn plan_resources(
     service: &Service,
     project: &Project,
-    model: &projectcheck::compose::ComposeModel,
+    model: &ComposeModel,
     blockers: &mut Vec<String>,
 ) -> Result<ResourcePlan, ApiError> {
     let request = resources::load(&project.root).map_err(|e| {

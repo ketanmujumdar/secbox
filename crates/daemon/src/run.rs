@@ -23,6 +23,8 @@ use proto::{
     UpArgs, UpReport,
 };
 
+use projectcheck::detect::{COMPOSE_FILES, COMPOSE_OVERRIDE_FILES};
+
 use crate::secret::{self, Delivered};
 use crate::settings::{Approvals, SandboxRecord};
 use crate::{
@@ -33,6 +35,28 @@ use crate::{
 const IMAGE: &str = "docker:dind";
 /// Where the project's files live inside the guest.
 pub(crate) const WORK_DIR: &str = "/work";
+/// Where the Compose file for a project with only a Dockerfile goes: the root
+/// of the host's snapshot copy, written after the snapshot is taken and before
+/// it is uploaded, so it lands at `/work/compose.yaml` in the guest.
+///
+/// Why there, and not on the guest's `tmpfs` with the secret override:
+///
+/// - `ps`, `stop`, `logs` and `exec` run `docker compose` in the work folder
+///   and let Compose find its file by name, as they do for a Compose project.
+///   A file anywhere else would leave those with no project to talk to, and
+///   would make the build context and project name differ from a Compose
+///   project's.
+/// - The snapshot copy is in the daemon's own staging folder, made fresh for
+///   this start, before anything has run. Writing there never touches the
+///   engine's guest state, so no path the guest could have made is followed.
+///   The file is created new, so a link or file already at that name, from a
+///   project or a commit that has its own Compose file after all, makes the
+///   start fail rather than be written through or replaced.
+///
+/// Once in the guest the file can be changed by the guest, exactly like a
+/// Compose project's own files. That changes nothing the host relies on: the
+/// approved ports and the network policy are fixed on the sandbox itself.
+pub const GENERATED_COMPOSE_FILE: &str = "compose.yaml";
 /// How long to wait for the Docker daemon inside the guest. The spike saw it
 /// ready in 2.2 to 3.1 seconds.
 const DOCKER_READY_LIMIT: Duration = Duration::from_secs(90);
@@ -104,7 +128,7 @@ pub fn up(
 
     if fresh {
         progress.step("snapshot", None);
-        if let Err(error) = copy_in_snapshot(service, project, args) {
+        if let Err(error) = copy_in_snapshot(service, project, &plan, args) {
             // Code is copied only into a new sandbox, so one left behind here
             // would be reused empty by the next start. It holds nothing yet.
             let _ = service.deps().engine().destroy(&project.sandbox);
@@ -302,7 +326,12 @@ fn spec_host_count(spec: &CreateSpec) -> usize {
     }
 }
 
-fn copy_in_snapshot(service: &Service, project: &Project, args: &UpArgs) -> Result<(), ApiError> {
+fn copy_in_snapshot(
+    service: &Service,
+    project: &Project,
+    plan: &PlanReport,
+    args: &UpArgs,
+) -> Result<(), ApiError> {
     let staging = tempdir_in_state(service)?;
     // The snapshot creates its own destination and refuses one that exists.
     let snapshot = staging.path().join("snapshot");
@@ -317,6 +346,9 @@ fn copy_in_snapshot(service: &Service, project: &Project, args: &UpArgs) -> Resu
                 .subject(&excluded.path)
                 .detail(&excluded.reason),
         );
+    }
+    if let Some(generated) = &plan.generated_compose {
+        write_generated_compose(&snapshot, generated)?;
     }
     let guest = GuestPath::new(WORK_DIR).map_err(|e| internal(e.to_string()))?;
     service
@@ -333,6 +365,31 @@ fn copy_in_snapshot(service: &Service, project: &Project, args: &UpArgs) -> Resu
             }),
     );
     Ok(())
+}
+
+/// Puts the generated Compose file into the snapshot copy. See
+/// [`GENERATED_COMPOSE_FILE`] for why it goes here.
+fn write_generated_compose(snapshot: &std::path::Path, generated: &str) -> Result<(), ApiError> {
+    use std::io::Write;
+    // The plan was made from the working tree, but the snapshot can be of a
+    // commit. If that has a Compose file of its own, the plan is not about it.
+    for name in COMPOSE_FILES.iter().chain(COMPOSE_OVERRIDE_FILES.iter()) {
+        if std::fs::symlink_metadata(snapshot.join(name)).is_ok() {
+            return Err(refused(format!(
+                "the snapshot has its own {name}, but the plan was made for a project with only a Dockerfile. Look at the plan again."
+            )));
+        }
+    }
+    // Created new: an existing file or link at this name is an error, never
+    // written through.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(snapshot.join(GENERATED_COMPOSE_FILE))
+        .map_err(|e| internal(format!("cannot write the generated Compose file: {}", e.kind())))?;
+    file.write_all(generated.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|e| internal(format!("cannot write the generated Compose file: {}", e.kind())))
 }
 
 fn tempdir_in_state(service: &Service) -> Result<tempfile::TempDir, ApiError> {
