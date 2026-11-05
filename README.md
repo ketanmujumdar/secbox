@@ -2,6 +2,8 @@
 
 secbox is being built to run a project and its AI agent inside a disposable microVM, so that a compromised dependency or a tricked agent stays away from your machine. `docs/ARCHITECTURE.md` has the design.
 
+**User documentation:** <https://ketanmujumdar.github.io/secbox/>, built from [`guide/`](guide/src/index.md). It is also available as [`llms.txt`](https://ketanmujumdar.github.io/secbox/llms.txt) and [`llms-full.txt`](https://ketanmujumdar.github.io/secbox/llms-full.txt) for AI assistants.
+
 `secbox` is a working name. See [Changing the name](#changing-the-name).
 
 ## Status: early, and not protecting anything yet
@@ -73,7 +75,7 @@ There is no SSH server and no open port in the VM. For `shell` and `exec` the da
 The code is in the sandbox, so an agent on your machine can't see it. `secbox mcp serve` is an MCP server the agent starts as a child process. It speaks over stdin and stdout, never a port, and is bound to one project. Its tools (`status`, `logs`, `exec`, `read_file`, `write_file`) act only inside that project's sandbox, through the daemon, with the same checks as `secbox exec`.
 
 ```sh
-secbox up --project ~/code/myapp
+secbox up ~/code/myapp
 secbox mcp setup claude ~/agents/myapp --project ~/code/myapp
 cd ~/agents/myapp && claude
 ```

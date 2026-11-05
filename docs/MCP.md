@@ -61,7 +61,7 @@ You need the daemon running and a sandbox started for the project:
 
 ```sh
 secboxd &                         # or the desktop app, which keeps it running
-secbox up --project ~/code/myapp
+secbox up ~/code/myapp
 ```
 
 ### Claude Code
@@ -142,7 +142,7 @@ Read this before relying on it.
 | --- | --- |
 | `/mcp` shows the server as failed | Run the command from `.mcp.json` by hand in a terminal. It prints one line to stderr and then waits for input, which means it works. Ctrl-D ends it |
 | A tool says the daemon is not running | Start `secboxd`. If you use `SECBOX_HOME`, check that `.mcp.json` passes the same value (setup copies it) |
-| A tool says the sandbox is stopped, or there is none | Run `secbox up --project PATH`. The tools never start one |
+| A tool says the sandbox is stopped, or there is none | Run `secbox up PATH`. The tools never start one |
 | A tool says the daemon is older than this command | Restart `secboxd`. Its sandboxes keep running |
 | The program moved, for example after reinstalling | `.mcp.json` holds its absolute path. Delete the agent folder and run setup again, or pass `--binary` |
 | Claude Code asks to use `Bash` or `Read` anyway | It was started outside the agent folder, or the settings were edited. Start it from the folder setup made |
