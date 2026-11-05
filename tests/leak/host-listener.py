@@ -2,7 +2,8 @@
 """Throwaway host-side listener for leak tests. Binds 127.0.0.1 only.
 
 TCP: logs what arrives, and answers HTTP requests with a token.
-UDP: logs what arrives.
+UDP: logs what arrives, and answers with the token, so a probe that needs a UDP
+     round trip (the QUIC probe) has something on the host that replies.
 Usage: host-listener.py LOG_FILE PORT_FILE TOKEN
 """
 import socket
@@ -36,8 +37,15 @@ class Tcp(socketserver.StreamRequestHandler):
 
 
 class Udp(socketserver.BaseRequestHandler):
+    max_packet_size = 8192
+
     def handle(self):
-        record("udp", self.client_address, self.request[0])
+        data, sock = self.request
+        record("udp", self.client_address, data)
+        try:
+            sock.sendto((TOKEN + "\n").encode(), self.client_address)
+        except OSError:
+            pass
 
 
 class TcpServer(socketserver.ThreadingTCPServer):

@@ -77,6 +77,7 @@ check_tcp() {
 # fetch URL [HEADER]: body goes to FETCH_BODY file.
 # 0 got a response, 1 could not connect, 2 no tool, 3 ambiguous failure.
 fetch() {
+    FETCH_ERR=
     FETCH_BODY=$(mktemp 2>/dev/null) || return 2
     _err=$(mktemp 2>/dev/null) || return 2
     if have curl; then
@@ -86,6 +87,7 @@ fetch() {
             curl -sS -m "$PROBE_TIMEOUT" --connect-timeout "$PROBE_TIMEOUT" "$1" >"$FETCH_BODY" 2>"$_err"
         fi
         _rc=$?
+        FETCH_ERR=$(head -c 400 "$_err" 2>/dev/null)
         rm -f "$_err"
         case $_rc in
             0) return 0 ;;
@@ -123,16 +125,28 @@ fetch() {
 # with this policy error, so a connect there proves nothing. Seen on v0.7.13.
 GATEWAY_DENY_MARKER=network_policy_denied
 
-# raw_http HOST PORT PATH: response goes to FETCH_BODY. Using nc keeps the body of
-# error responses, which wget throws away.
+# raw_request METHOD HOST PORT PATH HOST_HEADER [BODY]: a cleartext HTTP request
+# written by hand, so the method, the Host header and the body are all ours to
+# choose. The whole response, headers included, goes to FETCH_BODY, which keeps
+# the body of error responses that wget throws away.
 # 0 got bytes, 1 could not connect, 2 no nc, 3 connected but no bytes.
-raw_http() {
+raw_request() {
     have nc || return 2
     FETCH_BODY=$(mktemp 2>/dev/null) || return 2
+    _rq_body=${6:-}
+    _rq_len=$(printf '%s' "$_rq_body" | wc -c | tr -d ' ')
     # stdin stays open: BusyBox nc half-closes at stdin EOF, and some servers then
     # hang up without replying. The sleep is left to expire after nc exits.
-    { printf 'GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n' "$3" "$1"; sleep "$PROBE_TIMEOUT"; } |
-        nc -w "$PROBE_TIMEOUT" "$1" "$2" >"$FETCH_BODY" 2>/dev/null &
+    {
+        printf '%s %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n' "$1" "$4" "$5"
+        if [ -n "$_rq_body" ]; then
+            printf 'Content-Type: application/json\r\nContent-Length: %s\r\n\r\n%s' \
+                "$_rq_len" "$_rq_body"
+        else
+            printf '\r\n'
+        fi
+        sleep "$PROBE_TIMEOUT"
+    } | nc -w "$PROBE_TIMEOUT" "$2" "$3" >"$FETCH_BODY" 2>/dev/null &
     _nc=$!
     (sleep "$((PROBE_TIMEOUT + 2))"; kill "$_nc" 2>/dev/null) >/dev/null 2>&1 &
     _wd=$!
@@ -143,6 +157,12 @@ raw_http() {
     [ -s "$FETCH_BODY" ] && return 0
     [ "$_rc" -eq 0 ] && return 3
     return 1
+}
+
+# raw_http HOST PORT PATH [HOST_HEADER]: a plain GET. HOST_HEADER defaults to the
+# host connected to; passing a different one is the cleartext fronting case.
+raw_http() {
+    raw_request GET "$1" "$2" "$3" "${4:-$1}"
 }
 
 # check_http NAME HOST PORT: for targets with no token. The gateway's own error is
@@ -239,6 +259,177 @@ check_token() {
     rm -f "$FETCH_BODY"
 }
 
+# BLOCKED only when this check's own control passed as well as the context's.
+# A check whose own control failed cannot tell blocking from a broken setup.
+gated_block_if() { # NAME EXTRA_OK DETAIL
+    if [ "${2:-0}" = 1 ]; then
+        gated_block "$1" "$3"
+    else
+        emit "$1" SKIPPED "no-positive-control:$3"
+    fi
+}
+
+# check_any_response NAME URL [EXTRA_OK]: for targets whose content we cannot
+# predict, such as an IPv6 literal. The gateway's own denial is BLOCKED. A bare
+# 403 is SKIPPED, because the gateway answers with 403 too and wget drops the
+# body that would tell them apart.
+check_any_response() {
+    if [ -z "$2" ]; then emit "$1" SKIPPED "url-not-configured"; return; fi
+    fetch "$2"
+    _rc=$?
+    if { [ "$_rc" -eq 0 ] || [ "$_rc" -eq 4 ]; } && {
+        { [ -s "${FETCH_BODY:-/dev/null}" ] && grep -q "$GATEWAY_DENY_MARKER" "$FETCH_BODY"; } ||
+            printf '%s' "${FETCH_ERR:-}" | grep -q "$GATEWAY_DENY_MARKER"
+    }; then
+        emit "$1" BLOCKED "gateway-denied:$2"
+    else
+        case $_rc in
+            0) emit "$1" REACHED "response:$2" ;;
+            4)
+                if printf '%s' "${FETCH_ERR:-}" | grep -q '403'; then
+                    emit "$1" SKIPPED "http-403-could-be-the-gateway:$2"
+                else
+                    emit "$1" REACHED "http-status:$(printf '%s' "${FETCH_ERR:-}" | tail -n 1)"
+                fi
+                ;;
+            1) gated_block_if "$1" "${3:-1}" "connect-failed:$2" ;;
+            2) emit "$1" SKIPPED "no-http-tool" ;;
+            *) emit "$1" SKIPPED "no-response:$(printf '%s' "${FETCH_ERR:-}" | tail -n 1)" ;;
+        esac
+    fi
+    rm -f "${FETCH_BODY:-}"
+}
+
+# http_send METHOD URL [BODY] [HEADER]: a request with a method of our choosing,
+# which is what a write or a purchase is. Body goes to FETCH_BODY, error text to
+# FETCH_ERR. Returns as fetch does, plus 5 when nothing here can send this method
+# (BusyBox wget does GET and POST only).
+http_send() {
+    FETCH_ERR=
+    FETCH_BODY=$(mktemp 2>/dev/null) || return 2
+    _err=$(mktemp 2>/dev/null) || return 2
+    if have curl; then
+        if [ -n "${4:-}" ]; then
+            curl -sS -m "$PROBE_TIMEOUT" --connect-timeout "$PROBE_TIMEOUT" \
+                -X "$1" -H 'Content-Type: application/json' -H "$4" \
+                --data-binary "${3:-}" "$2" >"$FETCH_BODY" 2>"$_err"
+        else
+            curl -sS -m "$PROBE_TIMEOUT" --connect-timeout "$PROBE_TIMEOUT" \
+                -X "$1" -H 'Content-Type: application/json' \
+                --data-binary "${3:-}" "$2" >"$FETCH_BODY" 2>"$_err"
+        fi
+        _rc=$?
+        FETCH_ERR=$(head -c 400 "$_err" 2>/dev/null)
+        rm -f "$_err"
+        case $_rc in
+            0) return 0 ;;
+            6|7|28) return 1 ;;
+            *) return 3 ;;
+        esac
+    fi
+    if have wget && [ "$1" = POST ]; then
+        if [ -n "${4:-}" ]; then
+            # shellcheck disable=SC2086
+            wget -q -T "$PROBE_TIMEOUT" ${PROBE_WGET_INSECURE:+--no-check-certificate} \
+                -O - --header="${4:-}" --post-data="${3:-}" "$2" >"$FETCH_BODY" 2>"$_err"
+        else
+            # shellcheck disable=SC2086
+            wget -q -T "$PROBE_TIMEOUT" ${PROBE_WGET_INSECURE:+--no-check-certificate} \
+                -O - --post-data="${3:-}" "$2" >"$FETCH_BODY" 2>"$_err"
+        fi
+        _rc=$?
+        FETCH_ERR=$(head -c 400 "$_err" 2>/dev/null)
+        rm -f "$_err"
+        [ "$_rc" -eq 0 ] && return 0
+        printf '%s' "$FETCH_ERR" | grep -q 'server returned error' && return 4
+        printf '%s' "$FETCH_ERR" |
+            grep -qiE 'refused|timed out|bad address|unreachable|could not resolve|unable to resolve' && return 1
+        return 3
+    fi
+    rm -f "$_err"
+    have wget && return 5
+    return 2
+}
+
+# write_result NAME RC MARKER EXTRA_OK: turns an attempted write or purchase into
+# a result. MARKER is content that only the real service would send back, so
+# REACHED means the write left the sandbox and the service judged it, not that it
+# succeeded. The gateway's own denial is BLOCKED on its own; everything else
+# needs both controls.
+write_result() {
+    if { [ -s "${FETCH_BODY:-/dev/null}" ] && grep -q "$GATEWAY_DENY_MARKER" "$FETCH_BODY"; } ||
+        printf '%s' "${FETCH_ERR:-}" | grep -q "$GATEWAY_DENY_MARKER"; then
+        emit "$1" BLOCKED "refused-by-policy:gateway-denied"
+        return
+    fi
+    case $2 in
+        0 | 4)
+            if { [ -n "$3" ] && [ -s "${FETCH_BODY:-/dev/null}" ] && grep -qiF "$3" "$FETCH_BODY"; } ||
+                { [ -n "$3" ] && printf '%s' "${FETCH_ERR:-}" | grep -qiF "$3"; }; then
+                emit "$1" REACHED "write-reached-the-service:marker-seen"
+            elif [ "$2" = 4 ]; then
+                # Only a status, no body: the gateway answers 403 as well, so
+                # there is no telling it from the service's own refusal.
+                emit "$1" SKIPPED "refused-by-http-status-source-unknown:$(printf '%s' "${FETCH_ERR:-}" | tail -n 1)"
+            else
+                emit "$1" SKIPPED "response-without-marker"
+            fi
+            ;;
+        1) gated_block_if "$1" "$4" "connect-failed" ;;
+        2) emit "$1" SKIPPED "no-http-tool" ;;
+        5) emit "$1" SKIPPED "no-tool-for-this-method" ;;
+        *) emit "$1" SKIPPED "ambiguous-failure:$(printf '%s' "${FETCH_ERR:-}" | tail -n 1)" ;;
+    esac
+}
+
+# One QUIC Initial carrying version 0x0a0a0a0a, which no server implements, so a
+# server that is really there answers with a Version Negotiation packet. Padded,
+# because a server may discard an Initial smaller than 1200 bytes.
+quic_packet() {
+    printf '\300\012\012\012\012'
+    printf '\010SBXPROBE'
+    printf '\010sbxprobe'
+    if have dd; then
+        dd if=/dev/zero bs=1177 count=1 2>/dev/null
+    else
+        head -c 1177 /dev/zero 2>/dev/null
+    fi
+}
+
+# quic_try HOST PORT: bytes coming back prove UDP to that port reached something
+# that speaks QUIC. Silence proves nothing on its own, so it needs the control.
+# 0 answered, 1 silent, 2 no usable tool.
+quic_try() {
+    have nc || return 2
+    if ! have dd && ! have head; then return 2; fi
+    _q=$(mktemp 2>/dev/null) || return 2
+    # stdin is held open past the packet: nc quits at EOF and would miss the reply.
+    { quic_packet; sleep "$PROBE_TIMEOUT"; } |
+        nc -u -w "$PROBE_TIMEOUT" "$1" "$2" >"$_q" 2>/dev/null &
+    _nc=$!
+    (sleep "$((PROBE_TIMEOUT + 2))"; kill "$_nc" 2>/dev/null) >/dev/null 2>&1 &
+    _wd=$!
+    wait "$_nc"
+    kill "$_wd" 2>/dev/null
+    wait "$_wd" 2>/dev/null
+    if [ -s "$_q" ]; then rm -f "$_q"; return 0; fi
+    rm -f "$_q"
+    return 1
+}
+
+# dns_resolves NAME: 0 the resolver answered with an address, 1 no answer, 2 no
+# nslookup. BusyBox nslookup prints the answer section after a "Name:" line.
+dns_resolves() {
+    have nslookup || return 2
+    _dns_out=$(nslookup "$1" 2>&1)
+    _dns_rc=$?
+    if [ "$_dns_rc" -eq 0 ] &&
+        printf '%s\n' "$_dns_out" | sed -n '/^Name:/,$p' | grep -q '^Address'; then
+        return 0
+    fi
+    return 1
+}
+
 sha256_of() {
     if have sha256sum; then
         printf '%s' "$1" | sha256sum | cut -d' ' -f1
@@ -278,7 +469,15 @@ write_env_file() {
         PROBE_SECRET_ALLOWED_URL PROBE_SECRET_DENIED_URL PROBE_HOST_UDP_PORT \
         PROBE_GUEST_GATEWAY PROBE_RUN_ID PROBE_DENIED_URL PROBE_DENIED_MARKER \
         PROBE_ALLOWED_URL PROBE_ALLOWED_MARKER PROBE_WGET_INSECURE PROBE_LAN_ROUTER \
-        PROBE_DENIED_HTTPS_URL PROBE_ALLOWED_HTTPS_URL PROBE_SECRET_PLAIN_URL; do
+        PROBE_DENIED_HTTPS_URL PROBE_ALLOWED_HTTPS_URL PROBE_SECRET_PLAIN_URL \
+        PROBE_IPV6_CONTROL_URL PROBE_IPV6_TARGET_URL PROBE_IPV6_METADATA_URL \
+        PROBE_QUIC_CONTROL PROBE_QUIC_TARGET PROBE_QUIC_IP \
+        PROBE_DNS_CONTROL_NAME PROBE_DNS_TUNNEL_BASE PROBE_DNS_TUNNEL_COUNT \
+        PROBE_FRONT_URL PROBE_FRONT_MARKER PROBE_FRONT_HOST PROBE_FRONT_HOST_MARKER \
+        PROBE_FRONT_PLAIN_TARGET PROBE_FRONT_PLAIN_PATH \
+        PROBE_NPM_READ_URL PROBE_NPM_READ_MARKER \
+        PROBE_NPM_PUT_URL PROBE_NPM_PUT_MARKER PROBE_PAYMENT_URL PROBE_PAYMENT_MARKER \
+        PROBE_PAYMENT_PLAIN_TARGET PROBE_PAYMENT_PLAIN_PATH; do
         eval "_val=\${$_v:-}"
         [ -n "$_val" ] && printf '%s=%s\n' "$_v" "$_val" >>"$1"
     done
