@@ -44,6 +44,13 @@ pub enum Action {
     /// A client was told how to open a terminal in a running sandbox. What
     /// happens in that terminal is not recorded.
     TerminalOpened,
+    /// The host made a commit of the snapshot to compare later changes with.
+    BaselineMade,
+    /// No such commit could be made, so changes in this sandbox cannot be
+    /// compared. The sandbox starts anyway.
+    BaselineMissing,
+    /// A bundle from a sandbox was reviewed on the host. Counts only.
+    ChangesReviewed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -22,7 +22,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent};
 
 use client::{CallError, Client, Stopper};
-use ops::{BlockedView, PlanView, ProjectRow, ShownPlans, StatusView};
+use ops::{BlockedView, DiffView, PlanView, ProjectRow, ShownPlans, StatusView};
 
 const TRAY_ID: &str = "main";
 const WINDOW: &str = "main";
@@ -368,6 +368,19 @@ async fn blocked(project: String, state: State<'_, Arc<AppState>>) -> Result<Blo
     .await
 }
 
+/// Compares the project's running sandbox with the snapshot it was given.
+/// Nothing is copied out: the daemon reviews a bundle and sends the findings.
+#[tauri::command]
+async fn diff(project: String, state: State<'_, Arc<AppState>>) -> Result<DiffView, String> {
+    let state = Arc::clone(&state);
+    blocking(move || {
+        ops::diff(&state.client, &project)
+            .map(|r| ops::diff_view(&r))
+            .map_err(message)
+    })
+    .await
+}
+
 /// What the menu bar icon shows.
 #[derive(Clone, PartialEq, Eq)]
 struct TraySnapshot {
@@ -560,6 +573,7 @@ pub fn run() {
             logs,
             logs_stop,
             blocked,
+            diff,
         ])
         .build(tauri::generate_context!())
         .expect("the app could not start");
