@@ -4,7 +4,7 @@
 //! the interface stops early. A terminal left in raw mode is a broken shell,
 //! which is worse than any error message.
 
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::os::fd::AsFd;
 
 use nix::sys::termios::{self, LocalFlags, SetArg, Termios};
@@ -50,18 +50,22 @@ impl Drop for RawMode {
 
 /// The window size.
 ///
-/// The portable way to ask without a system call this crate is allowed to
-/// make is to ask the terminal: put the cursor far past the bottom right,
-/// where it stops at the real corner, then ask where it is. A terminal that
-/// does not answer gets the fallback.
-pub fn size() -> (u16, u16) {
+/// Both handles are passed in. Nothing here may reach for the process's own
+/// standard input, because the caller already holds a lock on it: taking that
+/// lock a second time deadlocks, and a deadlocked full-screen interface
+/// cannot even be quit.
+///
+/// The portable way to ask is to ask the terminal: put the cursor far past
+/// the bottom right, where it stops at the real corner, then ask where it is.
+/// A terminal that does not answer gets the fallback.
+pub fn size(input: &mut dyn BufRead, out: &mut dyn Write) -> (u16, u16) {
     const FALLBACK: (u16, u16) = (80, 24);
     if let (Ok(columns), Ok(rows)) = (var("COLUMNS"), var("LINES")) {
         if columns >= 40 && rows >= 10 {
             return (columns, rows);
         }
     }
-    match ask_the_terminal() {
+    match ask(input, out) {
         Some((columns, rows)) if columns >= 40 && rows >= 10 => (columns, rows),
         _ => FALLBACK,
     }
@@ -74,23 +78,20 @@ fn var(name: &str) -> Result<u16, ()> {
         .map_err(|_| ())
 }
 
-fn ask_the_terminal() -> Option<(u16, u16)> {
-    use std::io::Read;
-    // Without a terminal on both sides there is nobody to answer, and the
-    // read below would block for ever waiting for one.
+fn ask(input: &mut dyn BufRead, out: &mut dyn Write) -> Option<(u16, u16)> {
+    // Without a terminal there is nobody to answer, and the read below would
+    // wait for ever.
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return None;
     }
-    let mut out = io::stdout();
     out.write_all(b"\x1b[s\x1b[999;999H\x1b[6n").ok()?;
     out.flush().ok()?;
     let mut reply = Vec::new();
     let mut byte = [0u8; 1];
-    let mut stdin = io::stdin();
-    // The reply ends in `R`. A terminal that never sends one would otherwise
-    // hold this open, so the read is capped.
+    // The reply ends in `R`, and is capped so that a terminal which sends
+    // something else cannot hold this open.
     for _ in 0..32 {
-        if stdin.read_exact(&mut byte).is_err() {
+        if input.read_exact(&mut byte).is_err() {
             break;
         }
         if byte[0] == b'R' {
@@ -107,20 +108,32 @@ fn ask_the_terminal() -> Option<(u16, u16)> {
 
 #[cfg(test)]
 mod tests {
-    /// The query path needs a terminal, so a test can only reach the
-    /// environment branch and the fallback. That is also the property that
-    /// matters: with nobody to answer, this must return rather than wait.
+    use std::io::Cursor;
+
+    fn size_with(reply: &str) -> (u16, u16) {
+        let mut input = Cursor::new(reply.as_bytes().to_vec());
+        let mut out: Vec<u8> = Vec::new();
+        super::size(&mut input, &mut out)
+    }
+
     #[test]
-    fn a_size_the_interface_cannot_use_falls_back() {
-        // Driven through the environment, which is the branch a test can
-        // reach without a terminal.
-        std::env::set_var("COLUMNS", "10");
-        std::env::set_var("LINES", "4");
-        assert_eq!(super::size(), (80, 24));
+    fn the_environment_is_used_when_it_gives_a_usable_size() {
         std::env::set_var("COLUMNS", "120");
         std::env::set_var("LINES", "40");
-        assert_eq!(super::size(), (120, 40));
+        assert_eq!(size_with(""), (120, 40));
         std::env::remove_var("COLUMNS");
         std::env::remove_var("LINES");
+    }
+
+    /// A size too small to draw in, and a terminal that says nothing, both
+    /// have to end in the fallback rather than a wait.
+    #[test]
+    fn an_unusable_size_falls_back_without_waiting() {
+        std::env::set_var("COLUMNS", "10");
+        std::env::set_var("LINES", "4");
+        assert_eq!(size_with(""), (80, 24));
+        std::env::remove_var("COLUMNS");
+        std::env::remove_var("LINES");
+        assert_eq!(size_with(""), (80, 24));
     }
 }

@@ -12,7 +12,7 @@
 mod term;
 mod view;
 
-use std::io::{IsTerminal, Read};
+use std::io::IsTerminal;
 
 use proto::{DownArgs, PlanArgs, PlanReport, ProjectArgs, Reply, Request, SandboxState, Source};
 
@@ -51,7 +51,7 @@ pub fn run(deps: &mut Deps) -> i32 {
 
     loop {
         draw(deps, &model);
-        let Some(bytes) = read_key() else { break };
+        let Some(bytes) = read_key(deps.input) else { break };
         if let Some(waiting) = pending.take() {
             match bytes.as_slice() {
                 b"y" | b"Y" => start(deps, &mut model, waiting),
@@ -85,7 +85,7 @@ pub fn run(deps: &mut Deps) -> i32 {
 }
 
 fn draw(deps: &mut Deps, model: &Model) {
-    let (width, height) = term::size();
+    let (width, height) = term::size(deps.input, deps.out);
     let lines = view::render(model, width as usize, height as usize);
     let mut screen = String::from("\x1b[H\x1b[2J");
     for line in lines {
@@ -98,9 +98,13 @@ fn draw(deps: &mut Deps, model: &Model) {
 
 /// Reads one keystroke. An escape sequence usually arrives in one read, so
 /// the whole buffer is handed to the key reader rather than one byte.
-fn read_key() -> Option<Vec<u8>> {
+///
+/// This reads the input handle it was given, never the process's own standard
+/// input. The caller holds a lock on that, and taking it again deadlocks the
+/// interface on the first keystroke, with no way left to quit.
+fn read_key(input: &mut dyn std::io::BufRead) -> Option<Vec<u8>> {
     let mut buffer = [0u8; 8];
-    match std::io::stdin().read(&mut buffer) {
+    match input.read(&mut buffer) {
         Ok(0) | Err(_) => None,
         Ok(read) => Some(buffer[..read].to_vec()),
     }
