@@ -6,13 +6,23 @@
 
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::os::fd::AsFd;
+use std::time::{Duration, Instant};
 
-use nix::sys::termios::{self, LocalFlags, SetArg, Termios};
+use nix::sys::termios::{self, LocalFlags, SetArg, SpecialCharacterIndices, Termios};
+
+/// How long a read waits for a key before giving the interface a turn, in
+/// tenths of a second, which is the unit the terminal counts in. Short enough
+/// that a followed log looks live, long enough not to spin.
+const TICK_TENTHS: u8 = 2;
 
 /// Restores the terminal when dropped.
 pub struct RawMode {
     original: Termios,
+    raw: Termios,
 }
+
+const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[?25l";
+const LEAVE_SCREEN: &[u8] = b"\x1b[0m\x1b[?25h\x1b[?1049l";
 
 impl RawMode {
     /// Enters raw mode, or returns why it could not.
@@ -28,13 +38,38 @@ impl RawMode {
         // usual interrupt keys are left alone so that Ctrl-C still works.
         raw.local_flags
             .remove(LocalFlags::ECHO | LocalFlags::ICANON);
+        // A read returns after a tick even if nothing was typed, so the screen
+        // can change between keystrokes. The terminal does the timing, which
+        // keeps bytes the reader already holds in its buffer from being missed
+        // the way a separate wait on the file would miss them.
+        raw.control_chars[SpecialCharacterIndices::VMIN as usize] = 0;
+        raw.control_chars[SpecialCharacterIndices::VTIME as usize] = TICK_TENTHS;
         termios::tcsetattr(fd, SetArg::TCSANOW, &raw)
             .map_err(|e| format!("cannot set the terminal: {e}"))?;
         let mut out = io::stdout();
         // Alternate screen, cursor hidden.
-        let _ = out.write_all(b"\x1b[?1049h\x1b[?25l");
+        let _ = out.write_all(ENTER_SCREEN);
         let _ = out.flush();
-        Ok(Self { original })
+        Ok(Self { original, raw })
+    }
+
+    /// Hands the terminal back as it was found, for a program that needs it,
+    /// such as a shell. The interface stays paused until [`RawMode::resume`].
+    pub fn pause(&self) {
+        let mut out = io::stdout();
+        let _ = out.write_all(LEAVE_SCREEN);
+        let _ = out.flush();
+        let _ = termios::tcsetattr(io::stdin().as_fd(), SetArg::TCSANOW, &self.original);
+    }
+
+    /// Takes the terminal back after a pause. The caller draws everything
+    /// again, because the screen it left is not guaranteed to be there.
+    pub fn resume(&self) {
+        let _ = termios::tcsetattr(io::stdin().as_fd(), SetArg::TCSANOW, &self.raw);
+        let mut out = io::stdout();
+        let _ = out.write_all(ENTER_SCREEN);
+        let _ = out.write_all(b"\x1b[2J");
+        let _ = out.flush();
     }
 }
 
@@ -42,9 +77,60 @@ impl Drop for RawMode {
     fn drop(&mut self) {
         let mut out = io::stdout();
         // Leave the alternate screen, show the cursor, reset colour.
-        let _ = out.write_all(b"\x1b[0m\x1b[?25h\x1b[?1049l");
+        let _ = out.write_all(LEAVE_SCREEN);
         let _ = out.flush();
         let _ = termios::tcsetattr(io::stdin().as_fd(), SetArg::TCSANOW, &self.original);
+    }
+}
+
+/// What one read of the keyboard found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Input {
+    Bytes(Vec<u8>),
+    /// A tick passed with nothing typed.
+    Idle,
+    /// The terminal has gone.
+    Closed,
+}
+
+/// Reads the keyboard, waiting at most a tick.
+///
+/// A read that finds nothing looks the same whether a tick passed or the
+/// terminal hung up, so the time it took tells them apart: a terminal that has
+/// gone answers at once, every time, and would otherwise spin the interface.
+#[derive(Default)]
+pub struct Keyboard {
+    instant_empties: u32,
+}
+
+impl Keyboard {
+    /// This reads the input handle it was given, never the process's own
+    /// standard input. The caller holds a lock on that, and taking it again
+    /// deadlocks the interface on the first keystroke, with no way left to quit.
+    pub fn read(&mut self, input: &mut dyn BufRead) -> Input {
+        const GONE_AFTER: u32 = 50;
+        let started = Instant::now();
+        let mut buffer = [0u8; 64];
+        match input.read(&mut buffer) {
+            Ok(0) => {
+                if started.elapsed() < Duration::from_millis(u64::from(TICK_TENTHS) * 50) {
+                    self.instant_empties += 1;
+                } else {
+                    self.instant_empties = 0;
+                }
+                if self.instant_empties >= GONE_AFTER {
+                    Input::Closed
+                } else {
+                    Input::Idle
+                }
+            }
+            Ok(read) => {
+                self.instant_empties = 0;
+                Input::Bytes(buffer[..read].to_vec())
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => Input::Idle,
+            Err(_) => Input::Closed,
+        }
     }
 }
 
@@ -150,6 +236,24 @@ mod tests {
         let mut input = Cursor::new(Vec::new());
         let mut out: Vec<u8> = Vec::new();
         super::size(&env, &mut input, &mut out)
+    }
+
+    #[test]
+    fn keys_are_read_and_a_terminal_that_has_gone_ends_the_interface() {
+        let mut keyboard = super::Keyboard::default();
+        let mut input = Cursor::new(b"q".to_vec());
+        assert_eq!(keyboard.read(&mut input), super::Input::Bytes(b"q".to_vec()));
+        // An empty read that comes back at once, again and again, is a
+        // terminal that has gone, not a quiet one.
+        let mut gone = Cursor::new(Vec::new());
+        let mut last = super::Input::Idle;
+        for _ in 0..100 {
+            last = keyboard.read(&mut gone);
+            if last == super::Input::Closed {
+                break;
+            }
+        }
+        assert_eq!(last, super::Input::Closed);
     }
 
     #[test]

@@ -241,7 +241,11 @@ secbox shell --project "$P"
 
 `exit 3` leaves it, and `echo $?` on the host shows 3. Typing into a shell writes a history file inside the sandbox, as any shell does. `secbox shell postgres --project "$P"` opens one in that container.
 
-In the full-screen interface, press `l` for Logs, the left and right arrows or `[` and `]` to choose a service or All, up, down, PgUp and PgDn to scroll, `5` to read again, `1` for help and `q` to quit. Do not press `3` or `x`, and answer `n` if a box appears.
+In the full-screen interface, press `l` for Logs, the left and right arrows or `[` and `]` to choose a service or All, up, down, PgUp and PgDn to scroll, `5` to read again, `1` for help and `q` to quit. The bar along the bottom changes with the panel: on Logs it shows Service, Scroll, Follow and Shell, and no Start, Stop or Destroy. Pressing `2`, `3` or `x` there does nothing; they work only on Projects.
+
+The Logs panel follows on its own, and says `Following` at the top right. From a second terminal, make a service write a line, for example `secbox exec --service api --project "$P" -- sh -c 'echo hello > /proc/1/fd/1'`. It appears within about a second without a key being pressed. Press up: the tag changes to `Paused`, the view stays still while more lines arrive, and the tag counts them. `f` or End, or scrolling back down to the newest line, follows again. Choosing another service or panel, or quitting, ends the log command inside the sandbox: check with the `ps` line above, which should print 0 once you are back on Projects.
+
+Still in the interface, choose `postgres` on Logs and press `e`. The interface goes, the shell notice is printed, and you are in that container. `exit 3` brings the interface back, redrawn, saying the shell ended with exit code 3. On Projects, `e` opens a shell in the sandbox itself, in `/work`. On a stopped project, `e` says there is no running sandbox and the screen stays as it was.
 
 On a project that is stopped, every command above refuses, says how to start it, and starts nothing. Check with `secbox status` afterwards.
 
@@ -288,6 +292,12 @@ You should see each hostname once, with its time and count, and the newest last.
 Keep it open with `secbox net blocked -f --project "$P"` and run another lookup from a second terminal. It appears within about two seconds, and Ctrl-C ends it.
 
 In the full-screen interface, press `t` for Traffic. Up, down, PgUp and PgDn scroll, `5` reads the newest, and the warning stays on screen while you scroll.
+
+Press `p` for Projects. The Blocked box on the right has a red frame, gives the same totals as `status` with "t to see them", and never says "0". Beside it are Services with each one's health or state, Ports as `127.0.0.1:PORT`, and Resources, with the warning that the services came from inside the sandbox underneath. Shrink the terminal to 60 by 14: the boxes stack and drop, Blocked last, and nothing breaks the frame.
+
+Press `s` for Secrets. It lists the same names, sources and services as `secbox secrets list --project "$P"`, with no values, and macOS does not ask for keychain access. Up and down move to another project's list.
+
+On a stopped project, press `2` and answer `y`. A grey box titled `Starting` lists each step as the daemon reports it, the newest marked and the earlier ones ticked, the same steps `secbox up` prints. Keys do nothing until it ends; then the box goes and the bottom line says how long it took.
 
 A crafted name stays on one line, with its odd characters shown as `\040` and the like. To try it, send your own DNS packet with `nc -u` to port 53 of the nameserver in the sandbox's `/etc/resolv.conf`.
 

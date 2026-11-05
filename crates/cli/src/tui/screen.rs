@@ -134,6 +134,32 @@ impl Screen {
         }
     }
 
+    /// A single-ruled box inside a window, with its title near the left of the
+    /// top rule, which is how the period grouped related things.
+    pub fn group_box(&mut self, at: Rect, style: Style, title: &str, title_style: Style) {
+        let Rect { x, y, w, h } = at;
+        if w < 2 || h < 2 {
+            return;
+        }
+        let (right, bottom) = (x + w - 1, y + h - 1);
+        self.put(x, y, '┌', style);
+        self.put(right, y, '┐', style);
+        self.put(x, bottom, '└', style);
+        self.put(right, bottom, '┘', style);
+        for col in x + 1..right {
+            self.put(col, y, '─', style);
+            self.put(col, bottom, '─', style);
+        }
+        for row in y + 1..bottom {
+            self.put(x, row, '│', style);
+            self.put(right, row, '│', style);
+        }
+        if !title.is_empty() && w > 6 {
+            let label = format!(" {} ", cut(title, w - 6));
+            self.text(x + 2, y, &label, title_style);
+        }
+    }
+
     /// A single-ruled divider across the inside of a window.
     pub fn rule(&mut self, x: usize, y: usize, w: usize, style: Style) {
         if w < 2 {

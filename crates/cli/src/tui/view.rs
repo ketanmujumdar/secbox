@@ -69,6 +69,17 @@ impl RowState {
         }
     }
 
+    /// A mark for the list, where a word would take the room a name needs. A
+    /// tape deck's play and stop, which needs no legend.
+    fn mark(self) -> char {
+        match self {
+            RowState::Running => '►',
+            RowState::Stopped => '■',
+            RowState::None => '·',
+            RowState::Unknown => '?',
+        }
+    }
+
     fn style(self) -> Style {
         match self {
             RowState::Running => Style::WindowGood,
@@ -116,11 +127,96 @@ impl Line {
     }
 }
 
+/// One line in a box on the Projects panel: a name on the left and, if there
+/// is one, a value set to the right in `style`. With no value the whole line
+/// takes `style`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub left: String,
+    pub right: String,
+    pub style: Style,
+}
+
+impl Entry {
+    pub fn new(left: impl Into<String>, right: impl Into<String>, style: Style) -> Self {
+        Self {
+            left: left.into(),
+            right: right.into(),
+            style,
+        }
+    }
+}
+
+/// What the Projects panel shows about the selected project, from its status
+/// report. Every string is already escaped.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Overview {
+    pub path: String,
+    /// Why there is nothing else to show, such as a daemon that did not answer.
+    pub problem: Option<String>,
+    pub services: Vec<Entry>,
+    pub ports: Vec<Entry>,
+    pub resources: Vec<Entry>,
+    pub blocked: Vec<Entry>,
+    /// Whether the Blocked box is drawn in alert colour.
+    pub blocked_alert: bool,
+}
+
+/// The steps of a start so far, shown in a box while it runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Progress {
+    pub title: String,
+    /// Oldest first, escaped and cut, and only the most recent kept.
+    pub steps: Vec<String>,
+}
+
+impl Progress {
+    /// The most steps kept. Only the last few are ever on screen.
+    const KEPT: usize = 200;
+    /// The longest a step is kept, before the box cuts it to its width.
+    const LONGEST: usize = 300;
+
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            steps: Vec::new(),
+        }
+    }
+
+    /// Adds a step as the daemon reported it. A step can name things from
+    /// the project or the sandbox, so it is escaped and cut here, and a line
+    /// break inside one becomes a space rather than a broken box.
+    pub fn push(&mut self, step: &str, detail: Option<&str>) {
+        let text = match detail {
+            Some(detail) => format!("{step}: {detail}"),
+            None => step.to_owned(),
+        };
+        let flat = text.replace(['\n', '\r'], " ");
+        self.steps
+            .push(cut(&proto::text::escape(&flat), Self::LONGEST));
+        if self.steps.len() > Self::KEPT {
+            self.steps.remove(0);
+        }
+    }
+}
+
 /// A question waiting for an answer, drawn over everything else.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dialog {
     pub title: String,
     pub lines: Vec<String>,
+}
+
+/// Whether new lines are arriving by themselves.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Live {
+    /// Read once, so nothing more will arrive until it is read again.
+    #[default]
+    Off,
+    /// New lines are added as the sandbox writes them.
+    Following,
+    /// Following stopped, for the reason in the note.
+    Ended,
 }
 
 /// What the Logs panel shows for the selected project.
@@ -136,8 +232,12 @@ pub struct LogsPanel {
     pub lines: Vec<String>,
     /// Why there are no lines, or something else worth saying about them.
     pub note: Option<Line>,
-    /// How many lines back from the newest the view has been scrolled.
+    /// How many lines back from the newest the view has been scrolled. Above
+    /// zero, following is paused: new lines are kept but the view stays put.
     pub scroll: usize,
+    pub live: Live,
+    /// Lines that arrived while paused, so the person knows there are some.
+    pub unseen: usize,
 }
 
 impl LogsPanel {
@@ -157,14 +257,48 @@ impl LogsPanel {
         let at = self.chosen_index();
         let next = at.saturating_add_signed(delta).min(self.services.len());
         self.chosen = next.checked_sub(1).map(|index| self.services[index].clone());
-        self.scroll = 0;
+        self.jump_to_newest();
     }
 
     /// Moves back through the lines, or forward towards the newest. It stops
     /// at the oldest line, so one key press back always moves something.
+    /// Reaching the newest line again resumes following.
     pub fn scroll_by(&mut self, delta: isize) {
         let furthest = self.lines.len().saturating_sub(1);
         self.scroll = self.scroll.saturating_add_signed(delta).min(furthest);
+        if self.scroll == 0 {
+            self.unseen = 0;
+        }
+    }
+
+    /// Jumps to the newest line, which resumes following.
+    pub fn jump_to_newest(&mut self) {
+        self.scroll = 0;
+        self.unseen = 0;
+    }
+
+    pub fn paused(&self) -> bool {
+        self.scroll > 0
+    }
+
+    /// Adds one line at the newest end. While paused the view is moved back by
+    /// one too, so what the person is reading does not slide away under them.
+    pub fn push_line(&mut self, line: String) {
+        self.lines.push(line);
+        if self.paused() {
+            self.scroll += 1;
+            self.unseen += 1;
+        }
+    }
+
+    /// Drops the oldest lines beyond `keep`. The view counts from the newest,
+    /// so it only moves if it was among the lines dropped.
+    pub fn trim(&mut self, keep: usize) {
+        let over = self.lines.len().saturating_sub(keep);
+        if over > 0 {
+            self.lines.drain(..over);
+            self.scroll = self.scroll.min(self.lines.len().saturating_sub(1));
+        }
     }
 
     /// Where the choice is along All and the services, with All first.
@@ -174,6 +308,24 @@ impl LogsPanel {
             .and_then(|name| self.services.iter().position(|s| s == name))
             .map_or(0, |index| index + 1)
     }
+}
+
+/// One secret on the Secrets panel. Never its value.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecretRow {
+    pub name: String,
+    /// How it was stored: typed at a prompt, or imported from a file.
+    pub source: String,
+    /// The services it is assigned to, and how it reaches them.
+    pub goes_to: String,
+}
+
+/// What the Secrets panel shows for the selected project.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecretsPanel {
+    pub rows: Vec<SecretRow>,
+    /// Why there are no rows, when there are none.
+    pub note: Option<Line>,
 }
 
 /// What the Traffic panel shows for the selected project.
@@ -213,13 +365,17 @@ impl TrafficPanel {
 pub struct Model {
     pub projects: Vec<Row>,
     pub selected: usize,
+    /// What stops the selected project starting, shown in place of its boxes.
     pub detail: Vec<Line>,
+    pub overview: Option<Overview>,
     pub message: Option<String>,
     pub busy: Option<String>,
     pub pane: PaneState,
     pub dialog: Option<Dialog>,
+    pub progress: Option<Progress>,
     pub logs: LogsPanel,
     pub traffic: TrafficPanel,
+    pub secrets: SecretsPanel,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -253,14 +409,7 @@ impl Model {
 /// otherwise read as "nothing happened".
 fn not_built(pane: Pane) -> &'static [&'static str] {
     match pane {
-        Pane::Projects | Pane::Logs | Pane::Traffic => &[],
-        Pane::Secrets => &[
-            "Secrets are stored, and assigned ones are delivered on each start.",
-            "",
-            "Use the secrets command to add and assign them. A service can read",
-            "what it is given. A secret held by the proxy also needs the gateway",
-            "to terminate TLS, which is not settled, so a plan with one is refused.",
-        ],
+        Pane::Projects | Pane::Logs | Pane::Traffic | Pane::Secrets => &[],
         Pane::Review => &[
             "Reviewing changes out of a sandbox is not built.",
             "",
@@ -270,16 +419,63 @@ fn not_built(pane: Pane) -> &'static [&'static str] {
     }
 }
 
-/// The bar along the bottom. A number and a word, as every program of the
-/// period had.
-const KEYS: [(&str, &str); 6] = [
-    ("1", "Help"),
-    ("2", "Start"),
-    ("3", "Stop"),
-    ("5", "Refresh"),
-    ("6", "Panel"),
-    ("10", "Quit"),
-];
+/// One entry in the bar along the bottom: the key, then what it does.
+pub type KeyLabel = (&'static str, &'static str);
+
+/// The bar along the bottom, as every program of the period had: a key and a
+/// word. It lists only what works on the panel showing, so that nothing on it
+/// is a key that does nothing, and the keys that act on a sandbox appear only
+/// where they work, on Projects.
+pub fn keys_for(pane: Pane) -> &'static [KeyLabel] {
+    match pane {
+        Pane::Projects => &[
+            ("1", "Help"),
+            ("2", "Start"),
+            ("3", "Stop"),
+            ("x", "Destroy"),
+            ("e", "Shell"),
+            ("5", "Refresh"),
+            ("6", "Panel"),
+            ("10", "Quit"),
+        ],
+        Pane::Logs => &[
+            ("1", "Help"),
+            ("←→", "Service"),
+            ("↑↓", "Scroll"),
+            ("f", "Follow"),
+            ("e", "Shell"),
+            ("5", "Refresh"),
+            ("6", "Panel"),
+            ("10", "Quit"),
+        ],
+        Pane::Traffic => &[
+            ("1", "Help"),
+            ("↑↓", "Scroll"),
+            ("5", "Refresh"),
+            ("6", "Panel"),
+            ("10", "Quit"),
+        ],
+        Pane::Secrets => &[
+            ("1", "Help"),
+            ("↑↓", "Project"),
+            ("5", "Refresh"),
+            ("6", "Panel"),
+            ("10", "Quit"),
+        ],
+        Pane::Review => &[("1", "Help"), ("6", "Panel"), ("10", "Quit")],
+    }
+}
+
+/// What `?` says on each panel. It names the same keys as the bar, in words.
+pub fn help_for(pane: Pane) -> &'static str {
+    match pane {
+        Pane::Projects => "Up and down choose. 2 starts, 3 stops, x destroys, e opens a shell, 5 reads again. Red letters open panels, tab moves on, q quits.",
+        Pane::Logs => "New lines follow by themselves. Left and right choose a service or All. Up and PgUp scroll back and pause; f or End follows again. e opens a shell in the chosen service. 5 reads again.",
+        Pane::Traffic => "Up, down, PgUp and PgDn scroll. 5 reads the newest.",
+        Pane::Secrets => "Names and where they go, never values. Up and down choose the project, 5 reads again. Change them with the secrets command.",
+        Pane::Review => "Reviewing changes is not built yet. Red letters open panels, tab moves on, q quits.",
+    }
+}
 
 const MIN_WIDTH: usize = 60;
 const MIN_HEIGHT: usize = 14;
@@ -298,7 +494,7 @@ pub fn compose(model: &Model, width: usize, height: usize) -> Screen {
     let mut screen = Screen::new(width, height, '▒', Style::Desktop);
 
     menu_bar(&mut screen, model.pane.0);
-    status_bar(&mut screen);
+    status_bar(&mut screen, model.pane.0);
 
     let window = Rect::new(1, 1, width - 4, height - 4);
     screen.shadow(window);
@@ -311,27 +507,53 @@ pub fn compose(model: &Model, width: usize, height: usize) -> Screen {
     let inner_h = window.h - 2;
     body(model, &mut screen, inner_x, inner_y, inner_w, inner_h);
 
-    // The last line inside the window always carries whatever matters most.
+    // The last line inside the window is for what just happened, or what is
+    // happening now. The standing warning has its own place in the menu bar.
     let note_y = inner_y + inner_h - 1;
-    let (note, style) = match (&model.busy, &model.message) {
-        (Some(busy), _) => (busy.clone(), Style::WindowWarn),
-        (None, Some(message)) => (message.clone(), Style::WindowWarn),
-        (None, None) => (
-            "Early build. Do not rely on it for untrusted code.".to_owned(),
-            Style::WindowAlert,
-        ),
-    };
-    screen.fill(inner_x, note_y, inner_w, 1, ' ', style);
-    screen.text_cut(inner_x + 1, note_y, &note, inner_w - 2, style);
+    let note = model.busy.as_ref().or(model.message.as_ref());
+    if let Some(note) = note {
+        screen.fill(inner_x, note_y, inner_w, 1, ' ', Style::WindowWarn);
+        screen.text_cut(inner_x + 1, note_y, note, inner_w - 2, Style::WindowWarn);
+    }
 
+    if let Some(progress) = &model.progress {
+        draw_progress(&mut screen, progress);
+    }
     if let Some(dialog) = &model.dialog {
         draw_dialog(&mut screen, dialog);
     }
     screen
 }
 
+/// That this is an early build, longest first. It sits at the right of the
+/// menu bar, where nothing else needs the room, so that it is on screen at all
+/// times and the line at the bottom of the window is free for messages.
+const WARNINGS: [&str; 3] = [
+    "Early build. Do not rely on it for untrusted code.",
+    "Early build. Do not rely on it.",
+    "Early build",
+];
+
 fn menu_bar(screen: &mut Screen, active: Pane) {
     screen.fill(0, 0, screen.width(), 1, ' ', Style::MenuBar);
+    let menu = |gap: usize| -> usize {
+        1 + Pane::ALL
+            .iter()
+            .map(|pane| pane.label().chars().count() + gap)
+            .sum::<usize>()
+    };
+    // The entries close up before the warning is shortened, and the
+    // shortest warning always has room, even on the narrowest screen.
+    let fits = |text: &str, gap: usize| menu(gap) + text.chars().count() + 3 <= screen.width();
+    let (warning, gap) = WARNINGS
+        .iter()
+        .flat_map(|text| [(*text, 3), (*text, 2)])
+        .find(|(text, gap)| fits(text, *gap))
+        .unwrap_or((WARNINGS[WARNINGS.len() - 1], 2));
+    let tag = format!(" {warning} ");
+    let tag_x = screen.width().saturating_sub(tag.chars().count() + 1);
+    screen.text(tag_x, 0, &tag, Style::MenuAlert);
+
     let mut x = 1;
     for pane in Pane::ALL {
         let label = pane.label();
@@ -350,21 +572,38 @@ fn menu_bar(screen: &mut Screen, active: Pane) {
         screen.text(x + 1, 0, &label[..1], hot);
         screen.text(x + 2, 0, &label[1..], style);
         screen.put(x + 1 + label.len(), 0, ' ', style);
-        x += label.chars().count() + 3;
+        x += label.chars().count() + gap;
     }
 }
 
-fn status_bar(screen: &mut Screen) {
+/// Draws the panel's keys. When they do not all fit, the gaps close up first,
+/// then the least needed go, from the middle of the list: help and quitting
+/// stay at the two ends, where they always were.
+fn status_bar(screen: &mut Screen, pane: Pane) {
     let y = screen.height() - 1;
     screen.fill(0, y, screen.width(), 1, ' ', Style::StatusLabel);
+    let mut keys: Vec<KeyLabel> = keys_for(pane).to_vec();
+    let room = screen.width().saturating_sub(2);
+    let needed = |keys: &[KeyLabel], gap: usize| -> usize {
+        let text: usize = keys
+            .iter()
+            .map(|(key, word)| key.chars().count() + word.chars().count())
+            .sum();
+        text + gap * keys.len().saturating_sub(1)
+    };
+    let mut gap = 2;
+    if needed(&keys, gap) > room {
+        gap = 1;
+    }
+    while needed(&keys, gap) > room && keys.len() > 2 {
+        // Just before Quit is the least needed, so it goes first.
+        keys.remove(keys.len() - 2);
+    }
     let mut x = 1;
-    for (number, word) in KEYS {
-        if x + number.len() + word.len() + 2 >= screen.width() {
-            break;
-        }
-        x += screen.text(x, y, number, Style::StatusKey);
+    for (key, word) in keys {
+        x += screen.text(x, y, key, Style::StatusKey);
         x += screen.text(x, y, word, Style::StatusLabel);
-        x += 2;
+        x += gap;
     }
 }
 
@@ -377,6 +616,10 @@ fn body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, h: usi
     }
     if model.pane.0 == Pane::Traffic {
         traffic_body(model, screen, x, y, w, room);
+        return;
+    }
+    if model.pane.0 == Pane::Secrets {
+        secrets_body(model, screen, x, y, w, room);
         return;
     }
     if model.pane.0 != Pane::Projects {
@@ -403,50 +646,245 @@ fn body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, h: usi
         return;
     }
 
-    // At least three rows, so the list always has a scrollbar to sit beside
-    // and does not jump about as projects come and go.
-    let list_h = (room / 2).clamp(3, room.max(1));
+    // A narrow list down the left, and the selected project on the right.
+    let list_w = (w / 4).clamp(20, 30);
+    project_list(model, screen, Rect::new(x, y, list_w, room));
+    for row in y..y + room {
+        screen.put(x + list_w, row, '│', Style::Frame);
+    }
+    let right = Rect::new(x + list_w + 2, y, w - list_w - 3, room);
+    project_detail(model, screen, right);
+}
+
+/// One row per project: a mark for its state and its name. The mark is in the
+/// state's colour, and the selected row is highlighted rather than marked.
+fn project_list(model: &Model, screen: &mut Screen, at: Rect) {
+    // At least three rows, so the list always has a scrollbar to sit beside.
+    let list_h = at.h.max(3);
     let first = model.selected.saturating_sub(list_h.saturating_sub(1));
-    let bar_x = x + w - 1;
-    for offset in 0..list_h {
+    let line_w = at.w - 1;
+    for offset in 0..list_h.min(at.h) {
         let Some(row) = model.projects.get(first + offset) else {
             break;
         };
         let selected = first + offset == model.selected;
-        let line_y = y + offset;
-        let line_w = w - 1;
+        let line_y = at.y + offset;
         if selected {
-            screen.fill(x, line_y, line_w, 1, ' ', Style::Selected);
+            screen.fill(at.x, line_y, line_w, 1, ' ', Style::Selected);
         }
-        let name_style = if selected { Style::Selected } else { Style::Window };
-        let state_style = if selected {
-            Style::Selected
+        let (name_style, mark_style) = if selected {
+            (Style::Selected, Style::Selected)
         } else {
-            row.state.style()
+            (Style::Window, row.state.style())
         };
-        let word = row.state.word();
-        let name_room = line_w.saturating_sub(word.chars().count() + 4);
-        screen.text(x + 1, line_y, &cut(&row.name, name_room), name_style);
-        screen.text(
-            x + line_w - word.chars().count() - 1,
-            line_y,
-            word,
-            state_style,
-        );
+        screen.put(at.x + 1, line_y, row.state.mark(), mark_style);
+        screen.text_cut(at.x + 3, line_y, &row.name, line_w.saturating_sub(4), name_style);
     }
-    screen.scrollbar(bar_x, y, list_h, first, list_h, model.projects.len());
+    screen.scrollbar(at.x + at.w - 1, at.y, at.h, first, at.h, model.projects.len());
+}
 
-    let mut at = y + list_h;
-    if at < y + room {
-        screen.rule(x - 1, at, w + 2, Style::Frame);
-        at += 1;
-    }
-    for line in &model.detail {
-        if at >= y + room {
-            break;
+/// The selected project's name and state, then its services, ports,
+/// resources and blocked lookups in boxes. On a small screen the boxes stack,
+/// and the ones that matter least go first.
+fn project_detail(model: &Model, screen: &mut Screen, at: Rect) {
+    let Some(row) = model.selected_row() else {
+        return;
+    };
+    let bottom = at.y + at.h;
+    let word = row.state.word();
+    let name_room = at.w.saturating_sub(word.chars().count() + 2);
+    let name = cut(&row.name, name_room);
+    screen.text(at.x, at.y, &name, Style::Title);
+    screen.text(at.x + name.chars().count() + 2, at.y, word, row.state.style());
+    let mut y = at.y + 1;
+
+    // A plan that cannot start says why, in place of everything else.
+    if !model.detail.is_empty() {
+        for line in &model.detail {
+            for piece in wrap(&line.text, at.w) {
+                if y < bottom {
+                    screen.text_cut(at.x, y, &piece, at.w, line.style);
+                    y += 1;
+                }
+            }
         }
-        screen.text_cut(x + 1, at, &line.text, w - 2, line.style);
-        at += 1;
+        return;
+    }
+    let Some(overview) = &model.overview else {
+        return;
+    };
+    if let Some(problem) = &overview.problem {
+        for piece in wrap(problem, at.w) {
+            if y < bottom {
+                screen.text_cut(at.x, y, &piece, at.w, Style::WindowAlert);
+                y += 1;
+            }
+        }
+        return;
+    }
+
+    // What the sandbox said about itself is marked as such, just under its
+    // boxes, and broken across rows rather than cut.
+    let caveat = if overview.services.is_empty() {
+        Vec::new()
+    } else {
+        wrap("these came from inside the sandbox, so they can be wrong", at.w)
+    };
+    let boxes_bottom = bottom.saturating_sub(caveat.len());
+    // The path is the first thing to go when room is short.
+    if boxes_bottom.saturating_sub(y) >= 8 {
+        screen.text_cut(at.x, y, &overview.path, at.w, Style::WindowDim);
+        y += 1;
+    }
+    let area = Rect::new(at.x, y, at.w, boxes_bottom.saturating_sub(y));
+    if let Some(under) = draw_groups(screen, area, overview) {
+        for (offset, piece) in caveat.iter().enumerate() {
+            screen.text_cut(at.x, under + offset, piece, at.w, Style::WindowWarn);
+        }
+    }
+}
+
+/// One framed box's worth of the overview.
+struct Group<'a> {
+    title: &'static str,
+    entries: &'a [Entry],
+    empty: &'static str,
+    alert: bool,
+}
+
+impl Group<'_> {
+    /// Rows it would like: its entries, or the line saying there are none,
+    /// inside a frame.
+    fn wanted(&self) -> usize {
+        self.entries.len().max(1) + 2
+    }
+}
+
+/// The smallest a box can be: a frame round one line.
+const GROUP_MIN: usize = 3;
+
+/// Lays the boxes out and draws them. Two columns when there is width for
+/// them, one otherwise. Returns the row under the boxes if the services box
+/// was among them, since what it says needs a caveat there.
+fn draw_groups(screen: &mut Screen, area: Rect, overview: &Overview) -> Option<usize> {
+    let services = Group {
+        title: "Services",
+        entries: &overview.services,
+        empty: "None reported",
+        alert: false,
+    };
+    let ports = Group {
+        title: "Ports",
+        entries: &overview.ports,
+        empty: "None forwarded",
+        alert: false,
+    };
+    let resources = Group {
+        title: "Resources",
+        entries: &overview.resources,
+        empty: "Not reported",
+        alert: false,
+    };
+    let blocked = Group {
+        title: "Blocked",
+        entries: &overview.blocked,
+        empty: "Unknown",
+        alert: overview.blocked_alert,
+    };
+
+    if area.w >= 50 && area.h >= 2 * GROUP_MIN {
+        let half = (area.w - 1) / 2;
+        let left_x = area.x;
+        let right_x = area.x + half + 1;
+        let right_w = area.w - half - 1;
+        let top_want = services.wanted().max(resources.wanted());
+        let bottom_want = ports.wanted().max(blocked.wanted());
+        let bottom_h = bottom_want.min(area.h - GROUP_MIN).max(GROUP_MIN);
+        let top_h = top_want.min(area.h - bottom_h).max(GROUP_MIN);
+        let bottom_y = area.y + top_h;
+        draw_group(screen, Rect::new(left_x, area.y, half, top_h), &services);
+        draw_group(screen, Rect::new(right_x, area.y, right_w, top_h), &resources);
+        draw_group(screen, Rect::new(left_x, bottom_y, half, bottom_h), &ports);
+        draw_group(screen, Rect::new(right_x, bottom_y, right_w, bottom_h), &blocked);
+        return Some(bottom_y + bottom_h);
+    }
+
+    // One column. Room goes to the boxes that matter most, the frame and one
+    // line each first, then what more each would like, in the same order.
+    let order = [&blocked, &services, &ports, &resources];
+    let mut heights = [0usize; 4];
+    let mut left = area.h;
+    for (index, _) in order.iter().enumerate() {
+        if left >= GROUP_MIN {
+            heights[index] = GROUP_MIN;
+            left -= GROUP_MIN;
+        }
+    }
+    for (index, group) in order.iter().enumerate() {
+        if heights[index] > 0 {
+            let more = (group.wanted() - GROUP_MIN).min(left);
+            heights[index] += more;
+            left -= more;
+        }
+    }
+    // Drawn top to bottom in the order a person reads them.
+    let mut y = area.y;
+    for index in [1, 0, 2, 3] {
+        if heights[index] > 0 {
+            draw_group(screen, Rect::new(area.x, y, area.w, heights[index]), order[index]);
+            y += heights[index];
+        }
+    }
+    (heights[1] > 0).then_some(y)
+}
+
+/// A single-ruled box with its title in the top rule, the way the period
+/// grouped things inside a window. Each entry is a line, its second part set
+/// to the right. When they do not all fit, the last line says how many more.
+fn draw_group(screen: &mut Screen, at: Rect, group: &Group) {
+    if at.w < 6 || at.h < GROUP_MIN {
+        return;
+    }
+    let frame = if group.alert {
+        Style::FrameAlert
+    } else {
+        Style::Frame
+    };
+    screen.group_box(at, frame, group.title, Style::Title);
+    let inner_w = at.w - 4;
+    let rows = at.h - 2;
+    if group.entries.is_empty() {
+        screen.text_cut(at.x + 2, at.y + 1, group.empty, inner_w, Style::WindowDim);
+        return;
+    }
+    let shown = if group.entries.len() > rows {
+        rows - 1
+    } else {
+        rows
+    };
+    for (offset, entry) in group.entries.iter().take(shown).enumerate() {
+        let y = at.y + 1 + offset;
+        let right = cut(&entry.right, inner_w / 2);
+        let right_w = right.chars().count();
+        let left_room = if right_w == 0 {
+            inner_w
+        } else {
+            inner_w.saturating_sub(right_w + 1)
+        };
+        // With two parts only the value is coloured; with one, the whole line,
+        // so a count in alert colour is set on red and cannot be missed.
+        let left_style = if entry.right.is_empty() { entry.style } else { Style::Window };
+        screen.text_cut(at.x + 2, y, &entry.left, left_room, left_style);
+        screen.text(at.x + 2 + inner_w - right_w, y, &right, entry.style);
+    }
+    if shown < group.entries.len() {
+        screen.text_cut(
+            at.x + 2,
+            at.y + 1 + shown,
+            &format!("and {} more", group.entries.len() - shown),
+            inner_w,
+            Style::WindowDim,
+        );
     }
 }
 
@@ -463,12 +901,23 @@ fn logs_body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, r
         );
         return;
     };
-    screen.text_cut(x + 1, y, &row.name, w - 2, Style::WindowDim);
+    // Whether lines are arriving is set at the right, where it stays in view
+    // however the lines are scrolled; the name gets what room is left.
+    let (tag, tag_style) = live_tag(panel);
+    let tag_w = tag.chars().count().min(w - 2);
+    screen.text_cut(
+        x + 1,
+        y,
+        &row.name,
+        (w - 2).saturating_sub(tag_w + 2),
+        Style::WindowDim,
+    );
+    screen.text_cut(x + w - 1 - tag_w, y, &tag, tag_w, tag_style);
     service_bar(panel, screen, x + 1, y + 1, w - 2);
     screen.text_cut(
         x + 1,
         y + 2,
-        "<- -> service  Up Down scroll  5 newest. Output can be wrong.",
+        "Output comes from inside the sandbox, so it can be wrong.",
         w - 2,
         Style::WindowDim,
     );
@@ -488,6 +937,108 @@ fn logs_body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, r
     for line in &panel.lines[first..end] {
         screen.text_cut(x + 1, at, line, w - 2, Style::Window);
         at += 1;
+    }
+}
+
+/// Says whether the panel is following, and when it is paused, how to resume
+/// and how much is waiting, so that a still screen is never mistaken for a
+/// quiet sandbox.
+fn live_tag(panel: &LogsPanel) -> (String, Style) {
+    match panel.live {
+        Live::Following if panel.paused() => (
+            match panel.unseen {
+                0 => " Paused. f follows ".to_owned(),
+                n => format!(" Paused, {n} new. f follows "),
+            },
+            Style::Selected,
+        ),
+        Live::Following => ("Following".to_owned(), Style::WindowGood),
+        Live::Ended => ("Not following".to_owned(), Style::WindowWarn),
+        Live::Off => (String::new(), Style::WindowDim),
+    }
+}
+
+/// The selected project's secrets: a name, how it was stored, and where it
+/// goes, in columns, then what is always true about them. Read-only: changing
+/// them stays with the secrets command, which asks for values at a hidden
+/// prompt.
+fn secrets_body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, room: usize) {
+    let panel = &model.secrets;
+    let width = w - 2;
+    let bottom = y + room;
+    let Some(row) = model.selected_row() else {
+        screen.text_cut(x + 1, y, "No project has been started on this machine.", width, Style::Window);
+        return;
+    };
+    screen.text_cut(x + 1, y, &row.name, width, Style::WindowDim);
+
+    // What is always true goes at the bottom, and is kept however many
+    // secrets there are, so the rows get what is left.
+    let footer: Vec<(String, Style)> = [
+        ("Names only. Values are never shown, and the keychain was not read.", Style::WindowWarn),
+        ("A service can read every secret it is given.", Style::WindowDim),
+    ]
+    .iter()
+    .flat_map(|(text, style)| wrap(text, width).into_iter().map(|piece| (piece, *style)))
+    .chain(
+        wrap(
+            &format!("Add and assign them with: {} secrets set NAME --service SERVICE", brand::CLI_BIN),
+            width,
+        )
+        .into_iter()
+        .map(|piece| (piece, Style::WindowDim)),
+    )
+    .collect();
+    let footer_y = bottom.saturating_sub(footer.len()).max(y + 1);
+    for (offset, (text, style)) in footer.iter().enumerate() {
+        if footer_y + offset < bottom {
+            screen.text_cut(x + 1, footer_y + offset, text, width, *style);
+        }
+    }
+    let rows_bottom = footer_y.saturating_sub(1);
+
+    let mut at = y + 2;
+    if let Some(note) = &panel.note {
+        if at < rows_bottom {
+            screen.text_cut(x + 1, at, &note.text, width, note.style);
+        }
+        return;
+    }
+    if panel.rows.is_empty() || at >= rows_bottom {
+        return;
+    }
+    let name_w = panel
+        .rows
+        .iter()
+        .map(|r| r.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(4, (width / 3).max(4));
+    let source_w = 8;
+    let columns = |name: &str, source: &str, goes: &str| {
+        format!("{:<name_w$}  {:<source_w$}  {goes}", cut(name, name_w), source)
+    };
+    screen.text_cut(x + 1, at, &columns("NAME", "SOURCE", "GOES TO"), width, Style::WindowDim);
+    at += 1;
+    let fits = rows_bottom.saturating_sub(at);
+    let shown = if panel.rows.len() > fits { fits.saturating_sub(1) } else { fits };
+    for secret in panel.rows.iter().take(shown) {
+        let style = if secret.goes_to == "no service" {
+            Style::WindowDim
+        } else {
+            Style::Window
+        };
+        screen.text_cut(x + 1, at, &columns(&secret.name, &secret.source, &secret.goes_to), width, style);
+        at += 1;
+    }
+    if shown < panel.rows.len() && at < rows_bottom {
+        screen.text_cut(
+            x + 1,
+            at,
+            &format!("and {} more. The secrets list command shows them all.", panel.rows.len() - shown),
+            width,
+            Style::WindowDim,
+        );
     }
 }
 
@@ -595,6 +1146,36 @@ fn service_bar(panel: &LogsPanel, screen: &mut Screen, x: usize, y: usize, w: us
     }
 }
 
+/// The steps of a start in a grey box over everything, the newest at the
+/// bottom and marked, the ones before it ticked off. Older steps scroll away
+/// at the top, as on a printer.
+fn draw_progress(screen: &mut Screen, progress: &Progress) {
+    let width = (screen.width() * 3 / 4).clamp(40, 76);
+    let height = (progress.steps.len().max(1) + 4).clamp(6, screen.height().saturating_sub(4).max(6));
+    let x = (screen.width().saturating_sub(width)) / 2;
+    let y = (screen.height().saturating_sub(height)) / 2;
+    let box_ = Rect::new(x, y, width, height);
+    screen.shadow(box_);
+    screen.fill(x, y, width, height, ' ', Style::Dialog);
+    screen.frame(box_, Style::DialogFrame, &progress.title, Style::Dialog);
+
+    let rows = height - 4;
+    let first = progress.steps.len().saturating_sub(rows);
+    if progress.steps.is_empty() {
+        screen.text_cut(x + 2, y + 2, "Waiting for the first step.", width - 4, Style::Dialog);
+    }
+    for (offset, step) in progress.steps[first..].iter().enumerate() {
+        let newest = first + offset + 1 == progress.steps.len();
+        let (mark, style) = if newest {
+            ('►', Style::DialogHot)
+        } else {
+            ('√', Style::Dialog)
+        };
+        screen.put(x + 2, y + 2 + offset, mark, style);
+        screen.text_cut(x + 4, y + 2 + offset, step, width - 6, Style::Dialog);
+    }
+}
+
 fn draw_dialog(screen: &mut Screen, dialog: &Dialog) {
     let width = (screen.width() * 3 / 4).clamp(40, 76);
     let height = (dialog.lines.len() + 6).min(screen.height().saturating_sub(4));
@@ -641,6 +1222,10 @@ pub enum Key {
     NextService,
     PageUp,
     PageDown,
+    /// Back to the newest line, which resumes following a log.
+    Follow,
+    /// A shell in the selected project's sandbox.
+    Shell,
     Yes,
     No,
     Other,
@@ -654,6 +1239,7 @@ pub fn key(bytes: &[u8]) -> Key {
         b"\x1b[B" | b"\x1bOB" | b"j" => Key::Down,
         b"\x1b[5~" => Key::PageUp,
         b"\x1b[6~" => Key::PageDown,
+        b"f" | b"F" | b"\x1b[F" | b"\x1bOF" | b"\x1b[4~" | b"\x1b[8~" => Key::Follow,
         b"\t" | b"6" | b"\x1bOU" | b"\x1b[17~" => Key::Tab,
         b"q" | b"0" | b"\x03" | b"\x1b[21~" => Key::Quit,
         // The red letter in the menu always opens that panel, so a key someone
@@ -668,6 +1254,7 @@ pub fn key(bytes: &[u8]) -> Key {
         b"2" | b"u" | b"\x1bOQ" => Key::Start,
         b"3" | b"\x1bOR" => Key::Stop,
         b"x" => Key::Destroy,
+        b"e" | b"E" => Key::Shell,
         b"[" | b"\x1b[D" | b"\x1bOD" => Key::PreviousService,
         b"]" | b"\x1b[C" | b"\x1bOC" => Key::NextService,
         b"?" | b"1" | b"\x1bOP" => Key::Help,
@@ -775,7 +1362,7 @@ mod tests {
         assert!(text.contains("╡ Projects ╞"), "no title in the rule");
         assert!(text.contains('▲') && text.contains('▼'), "no scrollbar");
         let bottom = text.lines().last().unwrap();
-        for (number, word) in KEYS {
+        for (number, word) in keys_for(Pane::Projects) {
             assert!(bottom.contains(&format!("{number}{word}")), "{bottom}");
         }
         let top = text.lines().next().unwrap();
@@ -823,9 +1410,32 @@ mod tests {
         assert!(text.contains('║'), "the frame survived");
     }
 
+    /// The warning is in the menu bar on every panel and every size, whatever
+    /// the line at the bottom of the window is saying.
     #[test]
-    fn the_warning_shows_until_something_else_needs_the_line() {
-        assert!(plain(&model(), 80, 24).contains("Do not rely on it"));
+    fn the_warning_is_always_in_the_menu_bar_and_messages_have_the_bottom_line() {
+        for (width, height) in [(MIN_WIDTH, MIN_HEIGHT), (80, 24), (200, 60)] {
+            for pane in Pane::ALL {
+                let mut m = model();
+                m.pane = PaneState(pane);
+                m.message = Some("finished tidying".to_owned());
+                let text = plain(&m, width, height);
+                let top = text.lines().next().unwrap();
+                assert!(top.contains("Early build"), "{width}: {top}");
+                for label in Pane::ALL.map(Pane::label) {
+                    assert!(top.contains(label), "{width}: {label}: {top}");
+                }
+                assert!(text.contains("finished tidying"), "{width}x{height}: {text}");
+            }
+        }
+        let wide = plain(&model(), 120, 24);
+        assert!(wide.lines().next().unwrap().contains("Do not rely on it for untrusted code."));
+        let rows = render(&model(), 80, 24);
+        assert!(rows[0].iter().any(|s| s.style == Style::MenuAlert && s.text.contains("Early build")));
+    }
+
+    #[test]
+    fn the_bottom_line_shows_what_is_happening_over_what_happened() {
         let mut m = model();
         // Words that cannot collide with a project's own state, which is
         // also drawn on screen.
@@ -835,19 +1445,87 @@ mod tests {
         let text = plain(&m, 80, 24);
         assert!(text.contains("working away"), "{text}");
         assert!(!text.contains("finished tidying"), "{text}");
+        // With nothing to say, nothing is said: the warning is not repeated.
+        let quiet = plain(&model(), 80, 24);
+        assert_eq!(quiet.matches("Early build").count(), 1, "{quiet}");
     }
 
     #[test]
-    fn every_panel_that_is_not_built_says_so_rather_than_looking_empty() {
-        for (pane, phrase) in [
-            (Pane::Secrets, "delivered on each start"),
-            (Pane::Review, "is not built"),
+    fn the_panel_that_is_not_built_says_so_rather_than_looking_empty() {
+        let mut m = model();
+        m.pane = PaneState(Pane::Review);
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("is not built"), "{text}");
+    }
+
+    fn secrets_model() -> Model {
+        let mut m = model();
+        m.pane = PaneState(Pane::Secrets);
+        m.secrets.rows = vec![
+            SecretRow {
+                name: "API_KEY".to_owned(),
+                source: "prompt".to_owned(),
+                goes_to: "api, worker: injected into the environment".to_owned(),
+            },
+            SecretRow {
+                name: "DB_PASSWORD".to_owned(),
+                source: "import".to_owned(),
+                goes_to: "no service".to_owned(),
+            },
+        ];
+        m
+    }
+
+    #[test]
+    fn the_secrets_panel_lists_names_and_where_they_go_and_never_a_value() {
+        let text = plain(&secrets_model(), 100, 30);
+        assert!(!text.contains("is not built"), "{text}");
+        for phrase in [
+            "NAME",
+            "GOES TO",
+            "API_KEY",
+            "api, worker: injected into the environment",
+            "DB_PASSWORD",
+            "no service",
+            "Values are never shown",
+            "secrets set NAME",
         ] {
-            let mut m = model();
-            m.pane = PaneState(pane);
-            let text = plain(&m, 80, 24);
-            assert!(text.contains(phrase), "{}: {text}", pane.label());
+            assert!(text.contains(phrase), "{phrase}: {text}");
         }
+    }
+
+    /// Whatever the number of secrets and the size of the screen, the words
+    /// saying values are never shown stay, and the frame holds.
+    #[test]
+    fn the_secrets_panel_keeps_its_warning_however_many_there_are() {
+        let mut m = secrets_model();
+        m.secrets.rows = (0..200)
+            .map(|n| SecretRow {
+                name: format!("SECRET_{n:03}"),
+                source: "prompt".to_owned(),
+                goes_to: "x".repeat(300),
+            })
+            .collect();
+        for (width, height) in [(MIN_WIDTH, MIN_HEIGHT), (80, 24), (200, 60)] {
+            let text = flat(&m, width, height);
+            assert!(text.contains("Values are never shown"), "{width}x{height}: {text}");
+            for line in plain(&m, width, height).lines() {
+                assert_eq!(line.chars().count(), width);
+            }
+        }
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("SECRET_000"), "{text}");
+        assert!(text.contains("more. The secrets list command"), "{text}");
+    }
+
+    #[test]
+    fn a_project_with_no_secrets_says_so() {
+        let mut m = secrets_model();
+        m.secrets.rows.clear();
+        m.secrets.note = Some(Line::plain("No secrets are recorded for this project."));
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("No secrets are recorded"), "{text}");
+        assert!(!text.contains("GOES TO"), "{text}");
     }
 
     fn logs_model() -> Model {
@@ -865,8 +1543,8 @@ mod tests {
         assert!(!text.contains("is not built"), "{text}");
         assert!(text.contains(" All  api  web "), "{text}");
         assert!(text.contains("api-1  | hello there"), "{text}");
-        assert!(text.contains("<- -> service"), "{text}");
-        assert!(text.contains("Output can be wrong"), "{text}");
+        assert!(text.lines().last().unwrap().contains("←→Service"), "{text}");
+        assert!(text.contains("so it can be wrong"), "{text}");
         assert!(text.contains("╡ Logs ╞"), "{text}");
     }
 
@@ -877,6 +1555,70 @@ mod tests {
         let text = plain(&m, 80, 24);
         assert!(text.contains("line-499"), "{text}");
         assert!(!text.contains("line-000"), "{text}");
+    }
+
+    #[test]
+    fn a_followed_log_says_so_and_a_paused_one_says_how_to_resume() {
+        let mut m = logs_model();
+        m.logs.lines = (0..100).map(|n| format!("line-{n:03}")).collect();
+        m.logs.live = Live::Following;
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("Following"), "{text}");
+        assert!(!text.contains("Paused"), "{text}");
+
+        m.logs.scroll_by(10);
+        m.logs.push_line("line-100".to_owned());
+        m.logs.push_line("line-101".to_owned());
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("Paused, 2 new. f follows"), "{text}");
+        assert!(!text.contains("line-101"), "the view moved: {text}");
+        assert!(text.contains("line-089"), "{text}");
+
+        m.logs.jump_to_newest();
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("line-101") && text.contains("Following"), "{text}");
+
+        m.logs.live = Live::Ended;
+        assert!(plain(&m, 80, 24).contains("Not following"));
+    }
+
+    /// The tag must survive the smallest screen and a project name that would
+    /// otherwise push it off.
+    #[test]
+    fn the_paused_tag_fits_beside_a_long_name_on_a_small_screen() {
+        let mut m = logs_model();
+        m.projects[0].name = "n".repeat(300);
+        m.logs.lines = (0..100).map(|n| format!("line-{n:03}")).collect();
+        m.logs.live = Live::Following;
+        m.logs.scroll_by(5);
+        let text = plain(&m, MIN_WIDTH, MIN_HEIGHT);
+        assert!(text.contains("Paused"), "{text}");
+        for line in text.lines() {
+            assert_eq!(line.chars().count(), MIN_WIDTH);
+        }
+    }
+
+    #[test]
+    fn trimming_old_lines_keeps_the_view_counted_from_the_newest() {
+        let mut panel = LogsPanel::default();
+        for n in 0..50 {
+            panel.push_line(format!("{n}"));
+        }
+        panel.scroll_by(5);
+        panel.trim(20);
+        assert_eq!(panel.lines.len(), 20);
+        assert_eq!(panel.lines[0], "30");
+        assert_eq!(panel.scroll, 5);
+        panel.scroll_by(100);
+        panel.trim(10);
+        assert_eq!(panel.scroll, 9);
+    }
+
+    #[test]
+    fn f_and_end_return_to_the_newest_line() {
+        for bytes in [&b"f"[..], b"\x1b[F", b"\x1bOF", b"\x1b[4~"] {
+            assert_eq!(key(bytes), Key::Follow, "{bytes:?}");
+        }
     }
 
     #[test]
@@ -948,6 +1690,170 @@ mod tests {
         assert_eq!(key(b"x"), Key::Destroy);
         assert_eq!(key(b"l"), Key::Open(Pane::Logs));
         assert_eq!(key(b"5"), Key::Refresh);
+    }
+
+    fn overview_model() -> Model {
+        let mut m = model();
+        m.overview = Some(Overview {
+            path: "/p/demo_shop".to_owned(),
+            problem: None,
+            services: ["postgres", "api", "worker", "web"]
+                .iter()
+                .map(|name| Entry::new(*name, "healthy", Style::WindowGood))
+                .collect(),
+            ports: vec![
+                Entry::new("127.0.0.1:3000", "", Style::WindowGood),
+                Entry::new("127.0.0.1:8080", "", Style::WindowGood),
+            ],
+            resources: vec![
+                Entry::new("Memory", "6.0 GB", Style::Window),
+                Entry::new("CPUs", "4", Style::Window),
+            ],
+            blocked: vec![
+                Entry::new("6 refused lookups", "", Style::WindowAlert),
+                Entry::new("of 3 hostnames", "", Style::Window),
+                Entry::new("t to see them", "", Style::Window),
+            ],
+            blocked_alert: true,
+        });
+        m
+    }
+
+    #[test]
+    fn the_projects_panel_has_a_list_and_a_box_for_each_part() {
+        let m = overview_model();
+        let text = plain(&m, 100, 30);
+        for phrase in [
+            "─ Services ",
+            "─ Ports ",
+            "─ Resources ",
+            "─ Blocked ",
+            "127.0.0.1:3000",
+            "postgres",
+            "healthy",
+            "6.0 GB",
+            "6 refused lookups",
+            "of 3 hostnames",
+            "t to see them",
+            "/p/demo_shop",
+            "these came from inside the sandbox, so they can be wrong",
+        ] {
+            assert!(text.contains(phrase), "{phrase}: {text}");
+        }
+        // The list is narrow: both names sit to the left of the boxes.
+        let first_box = text.lines().find(|l| l.contains("─ Services")).unwrap();
+        let at = first_box.chars().position(|c| c == '┌').unwrap();
+        assert!(at < 40, "{first_box}");
+        assert!(text.contains("► demo-shop-ab12cd34"), "{text}");
+        assert!(text.contains("■ notes-ff00ff00"), "{text}");
+    }
+
+    #[test]
+    fn refused_lookups_are_drawn_in_alert_colour() {
+        let rows = render(&overview_model(), 100, 30);
+        let spans: Vec<&Span> = rows.iter().flatten().collect();
+        assert!(spans.iter().any(|s| s.style == Style::FrameAlert));
+        assert!(spans
+            .iter()
+            .any(|s| s.style == Style::WindowAlert && s.text.contains("6 refused")));
+        let mut quiet = overview_model();
+        let overview = quiet.overview.as_mut().unwrap();
+        overview.blocked_alert = false;
+        overview.blocked = vec![Entry::new("No hostnames recorded so far", "", Style::Window)];
+        let rows = render(&quiet, 100, 30);
+        assert!(!rows.iter().flatten().any(|s| s.style == Style::FrameAlert));
+    }
+
+    /// On the smallest screen the boxes stack and the least needed go, but
+    /// what was blocked always stays, and the frame holds.
+    #[test]
+    fn the_projects_panel_degrades_on_a_small_screen() {
+        let m = overview_model();
+        let text = plain(&m, MIN_WIDTH, MIN_HEIGHT);
+        assert!(text.contains("Blocked"), "{text}");
+        assert!(text.contains("6 refused"), "{text}");
+        for line in text.lines() {
+            assert_eq!(line.chars().count(), MIN_WIDTH);
+        }
+        // Services, when they fit, always bring the caveat with them.
+        for height in MIN_HEIGHT..40 {
+            let text = plain(&m, MIN_WIDTH, height);
+            if text.contains("─ Services") {
+                assert!(text.contains("these came from inside"), "{height}: {text}");
+            }
+        }
+        assert!(plain(&m, MIN_WIDTH, 30).contains("─ Services"));
+    }
+
+    #[test]
+    fn a_box_with_more_than_fits_says_how_many_more() {
+        let mut m = overview_model();
+        m.overview.as_mut().unwrap().services = (0..40)
+            .map(|n| Entry::new(format!("svc-{n:02}"), "running", Style::WindowGood))
+            .collect();
+        let text = plain(&m, 100, 24);
+        assert!(text.contains("svc-00"), "{text}");
+        assert!(text.contains("more"), "{text}");
+        assert!(!text.contains("svc-39"), "{text}");
+    }
+
+    #[test]
+    fn a_hostile_service_name_cannot_break_a_box() {
+        let mut m = overview_model();
+        m.overview.as_mut().unwrap().services[0] =
+            Entry::new("s".repeat(500), "h".repeat(500), Style::WindowWarn);
+        for (width, height) in [(MIN_WIDTH, MIN_HEIGHT), (80, 24), (100, 30), (200, 60)] {
+            let text = plain(&m, width, height);
+            for line in text.lines() {
+                assert_eq!(line.chars().count(), width, "{width}x{height}");
+            }
+            assert!(text.contains('║'));
+        }
+    }
+
+    #[test]
+    fn what_stops_a_start_is_shown_in_place_of_the_boxes() {
+        let mut m = overview_model();
+        m.detail = vec![Line::styled("needs a Compose file", Style::WindowAlert)];
+        let text = plain(&m, 100, 30);
+        assert!(text.contains("needs a Compose file"), "{text}");
+        assert!(!text.contains("─ Services"), "{text}");
+    }
+
+    #[test]
+    fn a_daemon_that_did_not_answer_is_said_in_place_of_the_boxes() {
+        let mut m = model();
+        m.overview = Some(Overview {
+            problem: Some("The daemon did not answer in time.".to_owned()),
+            ..Overview::default()
+        });
+        let text = plain(&m, 100, 30);
+        assert!(text.contains("did not answer"), "{text}");
+        assert!(!text.contains("─ Blocked"), "{text}");
+    }
+
+    /// Every panel, full of data, at every size from the smallest up: nothing
+    /// panics and every row is exactly the width.
+    #[test]
+    fn every_panel_draws_at_every_size() {
+        let mut m = overview_model();
+        m.logs.lines = (0..300).map(|n| format!("line {n}")).collect();
+        m.logs.services = vec!["api".to_owned(), "web".to_owned()];
+        m.traffic.rows = (0..300).map(|n| format!("row {n}")).collect();
+        m.message = Some("something happened".to_owned());
+        for pane in Pane::ALL {
+            m.pane = PaneState(pane);
+            for width in (MIN_WIDTH - 5..=130).step_by(7) {
+                for height in (MIN_HEIGHT - 3..=45).step_by(3) {
+                    let rows = render(&m, width, height);
+                    assert_eq!(rows.len(), height.max(MIN_HEIGHT));
+                    for row in rows {
+                        let drawn: usize = row.iter().map(|s| s.text.chars().count()).sum();
+                        assert_eq!(drawn, width.max(MIN_WIDTH), "{}", pane.label());
+                    }
+                }
+            }
+        }
     }
 
     fn traffic_model() -> Model {
@@ -1063,6 +1969,51 @@ mod tests {
     }
 
     #[test]
+    fn a_start_shows_its_steps_as_they_arrive_newest_last() {
+        let mut m = model();
+        m.progress = Some(Progress::new("Starting demo-shop"));
+        let text = plain(&m, 90, 26);
+        assert!(text.contains("╡ Starting demo-shop ╞"), "{text}");
+        assert!(text.contains("Waiting for the first step"), "{text}");
+
+        let progress = m.progress.as_mut().unwrap();
+        for n in 0..40 {
+            progress.push(&format!("step {n:02}"), Some("detail"));
+        }
+        let text = plain(&m, 90, 26);
+        assert!(text.contains("► step 39: detail"), "{text}");
+        assert!(text.contains("√ step 38: detail"), "{text}");
+        assert!(!text.contains("step 00"), "old steps scroll away: {text}");
+        let rows = render(&m, 90, 26);
+        assert!(rows.iter().any(|r| r.iter().any(|s| s.style == Style::Dialog)));
+    }
+
+    /// A step can carry text from the project or the sandbox.
+    #[test]
+    fn a_hostile_step_is_escaped_flattened_and_cut() {
+        let mut progress = Progress::new("Starting");
+        progress.push("build", Some("\u{1b}[2Jline one\nline two\u{7}"));
+        progress.push(&"x".repeat(100_000), None);
+        let first = &progress.steps[0];
+        assert!(first.chars().all(|c| !c.is_control()), "{first:?}");
+        assert!(first.contains("line one line two"), "{first:?}");
+        assert!(progress.steps[1].chars().count() <= Progress::LONGEST);
+        for _ in 0..1000 {
+            progress.push("again", None);
+        }
+        assert_eq!(progress.steps.len(), Progress::KEPT);
+
+        let mut m = model();
+        m.progress = Some(progress);
+        m.progress.as_mut().unwrap().push(&"y".repeat(500), None);
+        for (width, height) in [(MIN_WIDTH, MIN_HEIGHT), (80, 24), (200, 60)] {
+            for line in plain(&m, width, height).lines() {
+                assert_eq!(line.chars().count(), width);
+            }
+        }
+    }
+
+    #[test]
     fn selection_stays_inside_the_list() {
         let mut m = model();
         m.move_by(-1);
@@ -1075,6 +2026,71 @@ mod tests {
         empty.move_by(1);
         assert_eq!(empty.selected, 0);
         assert!(empty.selected_row().is_none());
+    }
+
+    fn bar(m: &Model, width: usize) -> String {
+        plain(m, width, 24).lines().last().unwrap().to_owned()
+    }
+
+    /// Only keys that do something on the panel showing, and the keys that act
+    /// on a sandbox only where the project list is.
+    #[test]
+    fn each_panel_shows_only_its_own_keys() {
+        let mut m = model();
+        let projects = bar(&m, 100);
+        for shown in ["2Start", "3Stop", "xDestroy", "eShell", "5Refresh", "1Help", "10Quit"] {
+            assert!(projects.contains(shown), "{shown}: {projects}");
+        }
+        assert!(!projects.contains("Follow"), "{projects}");
+
+        m.pane = PaneState(Pane::Logs);
+        let logs = bar(&m, 100);
+        for shown in ["←→Service", "↑↓Scroll", "fFollow", "eShell", "5Refresh"] {
+            assert!(logs.contains(shown), "{shown}: {logs}");
+        }
+        for hidden in ["Start", "Stop", "Destroy"] {
+            assert!(!logs.contains(hidden), "{hidden}: {logs}");
+        }
+
+        m.pane = PaneState(Pane::Traffic);
+        let traffic = bar(&m, 100);
+        assert!(traffic.contains("↑↓Scroll") && traffic.contains("5Refresh"), "{traffic}");
+        for hidden in ["Start", "Shell", "Service", "Follow"] {
+            assert!(!traffic.contains(hidden), "{hidden}: {traffic}");
+        }
+    }
+
+    /// On the narrowest screen the bar still fits, still starts with help and
+    /// still ends with quitting.
+    #[test]
+    fn the_key_bar_fits_the_narrowest_screen_with_help_and_quit() {
+        for pane in Pane::ALL {
+            let mut m = model();
+            m.pane = PaneState(pane);
+            let line = bar(&m, MIN_WIDTH);
+            assert_eq!(line.chars().count(), MIN_WIDTH);
+            assert!(line.trim_start().starts_with("1Help"), "{line}");
+            assert!(line.trim_end().ends_with("10Quit"), "{line}");
+        }
+    }
+
+    /// Help names the keys the bar shows, so the two cannot drift apart.
+    #[test]
+    fn help_mentions_what_the_bar_offers() {
+        for pane in Pane::ALL {
+            let help = help_for(pane);
+            for (key, _) in keys_for(pane) {
+                let named = match *key {
+                    "←→" => "Left and right",
+                    "↑↓" => "Up",
+                    "6" => continue,
+                    "10" => continue,
+                    "1" => continue,
+                    other => other,
+                };
+                assert!(help.contains(named), "{}: {named}: {help}", pane.label());
+            }
+        }
     }
 
     #[test]
@@ -1104,6 +2120,7 @@ mod tests {
         assert_eq!(key(b"y"), Key::Yes);
         assert_eq!(key(b"n"), Key::No);
         assert_eq!(key(b"\x1b"), Key::No);
+        assert_eq!(key(b"e"), Key::Shell);
         assert_eq!(key(b"Z"), Key::Other);
     }
 }

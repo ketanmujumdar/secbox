@@ -333,35 +333,60 @@ fn route(meta: &ProjectMeta, name: &SecretName) -> String {
     }
 }
 
+/// One secret as `secrets list` shows it: its name, how it was stored and
+/// where it goes. Never its value.
+pub(crate) struct Listed {
+    pub name: String,
+    pub source: &'static str,
+    pub goes_to: String,
+}
+
+/// A project's secrets, from its metadata in the state folder, in the order
+/// they were recorded. This is the whole of what `secrets list` reads, and the
+/// full-screen interface reads the same: the keychain is never opened.
+pub(crate) fn listing(paths: &StatePaths, id: &ProjectId) -> Result<Vec<Listed>, String> {
+    let Some(meta) = read_meta(&paths.project(id))? else {
+        return Ok(Vec::new());
+    };
+    Ok(meta
+        .secrets
+        .iter()
+        .map(|record| Listed {
+            name: record.name.as_str().to_owned(),
+            source: match record.source {
+                SecretSource::Prompt => "prompt",
+                SecretSource::Import => "import",
+            },
+            goes_to: route(&meta, &record.name),
+        })
+        .collect())
+}
+
 fn list(args: &ListArgs, deps: &mut Deps) -> Result<i32, String> {
     let project = open_project(&args.project, deps)?;
     say!(deps, "Project    {}", esc_path(&project.path));
     say!(deps, "Id         {}", project.id);
-    let meta = read_meta(&project.paths.project(&project.id))?;
-    let Some(meta) = meta.filter(|m| !m.secrets.is_empty()) else {
+    let secrets = listing(&project.paths, &project.id)?;
+    if secrets.is_empty() {
         say!(deps, "No secrets recorded for this project.");
         return Ok(exit::OK);
-    };
+    }
     say!(deps);
-    let width = meta
-        .secrets
+    let width = secrets
         .iter()
-        .map(|r| r.name.as_str().len())
+        .map(|secret| secret.name.len())
         .max()
         .unwrap_or(0)
         .max(4);
     let header = format!("{:<width$}  {:<8}  {}", "Name", "Source", "Goes to");
     say!(deps, "{}", paint(deps.color, Tone::Strong, &header));
-    for record in &meta.secrets {
-        let source = match record.source {
-            SecretSource::Prompt => "prompt",
-            SecretSource::Import => "import",
-        };
+    for secret in &secrets {
         say!(
             deps,
-            "{:<width$}  {source:<8}  {}",
-            record.name.as_str(),
-            route(&meta, &record.name)
+            "{:<width$}  {:<8}  {}",
+            secret.name,
+            secret.source,
+            secret.goes_to
         );
     }
     say!(deps);

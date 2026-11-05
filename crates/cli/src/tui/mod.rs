@@ -10,23 +10,27 @@
 //! keystroke that did not see what it was agreeing to.
 
 mod logs;
+mod overview;
 mod screen;
+mod secrets;
 mod style;
 mod term;
 mod traffic;
 mod view;
 
-use std::io::{BufRead, IsTerminal};
+use std::io::IsTerminal;
+use std::time::{Duration, Instant};
 
 use proto::{DownArgs, PlanArgs, PlanReport, Reply, Request, SandboxState, Source};
 
-use crate::{exit, tell, Deps};
+use crate::{debug, exit, tell, Deps};
 use style::Style;
 pub(crate) use term::SavedSettings;
 use view::{Dialog, Key, Line, Model, Pane, PaneState, Row, RowState};
 
 /// What a keystroke is waiting for a person to confirm.
 struct Pending {
+    name: String,
     project: String,
     digest: String,
     ports: Vec<u16>,
@@ -56,20 +60,39 @@ pub fn run(deps: &mut Deps) -> i32 {
     let mut model = Model::default();
     let mut pending: Option<Pending> = None;
     let mut confirming: Option<bool> = None;
+    // The log being followed, if the Logs panel is showing one.
+    let mut follow: Option<logs::Follow> = None;
+    let mut keyboard = term::Keyboard::default();
     load_projects(deps, &mut model);
 
     let mut queued: Vec<u8> = Vec::new();
+    let mut dirty = true;
     loop {
-        draw(deps, &model);
+        if let Some(live) = &mut follow {
+            dirty |= live.take(&mut model.logs);
+            if live.over() {
+                follow = None;
+            }
+        }
+        // Drawing asks the terminal its size, so it is done only when
+        // something changed, not on every tick.
+        if dirty {
+            draw(deps, &model);
+            dirty = false;
+        }
         // A question is answered by a key pressed after it was seen, never by
         // one already on its way, such as from a paste.
         if confirming.is_some() || pending.is_some() {
             queued.clear();
         }
         if queued.is_empty() {
-            let Some(bytes) = read_key(deps.input) else { break };
-            queued = bytes;
+            match keyboard.read(deps.input) {
+                term::Input::Bytes(bytes) => queued = bytes,
+                term::Input::Idle => continue,
+                term::Input::Closed => break,
+            }
         }
+        dirty = true;
         let taken = view::first_key_len(&queued);
         let key = view::key(&queued[..taken]);
         queued.drain(..taken);
@@ -80,6 +103,7 @@ pub fn run(deps: &mut Deps) -> i32 {
                     confirming = None;
                     model.dialog = None;
                     stop(deps, &mut model, destroy);
+                    refresh_panel_if_showing(deps, &mut model, &mut follow);
                 }
                 Key::No | Key::Quit => {
                     confirming = None;
@@ -97,6 +121,7 @@ pub fn run(deps: &mut Deps) -> i32 {
                     let waiting = pending.take().expect("checked just above");
                     model.dialog = None;
                     start(deps, &mut model, waiting);
+                    refresh_panel_if_showing(deps, &mut model, &mut follow);
                 }
                 Key::No | Key::Quit => {
                     pending = None;
@@ -114,6 +139,7 @@ pub fn run(deps: &mut Deps) -> i32 {
             Key::Down if model.pane.0 == Pane::Logs => model.logs.scroll_by(-1),
             Key::PageUp if model.pane.0 == Pane::Logs => model.logs.scroll_by(LOG_PAGE),
             Key::PageDown if model.pane.0 == Pane::Logs => model.logs.scroll_by(-LOG_PAGE),
+            Key::Follow if model.pane.0 == Pane::Logs => model.logs.jump_to_newest(),
             Key::Up if model.pane.0 == Pane::Traffic => model.traffic.scroll_by(1),
             Key::Down if model.pane.0 == Pane::Traffic => model.traffic.scroll_by(-1),
             Key::PageUp if model.pane.0 == Pane::Traffic => model.traffic.scroll_by(LOG_PAGE),
@@ -121,33 +147,42 @@ pub fn run(deps: &mut Deps) -> i32 {
             Key::Up => {
                 model.move_by(-1);
                 show_selected(deps, &mut model);
-                refresh_panel_if_showing(deps, &mut model);
+                refresh_panel_if_showing(deps, &mut model, &mut follow);
             }
             Key::Down => {
                 model.move_by(1);
                 show_selected(deps, &mut model);
-                refresh_panel_if_showing(deps, &mut model);
+                refresh_panel_if_showing(deps, &mut model, &mut follow);
             }
             Key::Tab => {
                 model.pane = PaneState(model.pane.0.next());
                 model.message = None;
-                refresh_panel_if_showing(deps, &mut model);
+                refresh_panel_if_showing(deps, &mut model, &mut follow);
             }
             Key::Refresh => {
                 load_projects(deps, &mut model);
-                refresh_panel_if_showing(deps, &mut model);
+                refresh_panel_if_showing(deps, &mut model, &mut follow);
             }
             Key::PreviousService | Key::NextService if model.pane.0 == Pane::Logs => {
                 model.logs.choose(if key == Key::NextService { 1 } else { -1 });
-                refresh_panel_if_showing(deps, &mut model);
+                refresh_panel_if_showing(deps, &mut model, &mut follow);
             }
-            Key::Start => pending = propose_start(deps, &mut model),
+            // What acts on a sandbox works only where the project list is,
+            // so a key pressed while reading something else cannot stop one.
+            Key::Start if model.pane.0 == Pane::Projects => {
+                pending = propose_start(deps, &mut model);
+            }
+            Key::Shell if matches!(model.pane.0, Pane::Projects | Pane::Logs) => {
+                open_shell(deps, &mut model, &raw);
+                // Whatever was typed for the shell was the shell's.
+                queued.clear();
+            }
             Key::Open(pane) => {
                 model.pane = PaneState(pane);
                 model.message = None;
-                refresh_panel_if_showing(deps, &mut model);
+                refresh_panel_if_showing(deps, &mut model, &mut follow);
             }
-            Key::Stop => {
+            Key::Stop if model.pane.0 == Pane::Projects => {
                 if let Some(row) = model.selected_row().cloned() {
                     model.dialog = Some(Dialog {
                         title: format!("Stop {}", screen::cut(&row.name, 30)),
@@ -159,7 +194,7 @@ pub fn run(deps: &mut Deps) -> i32 {
                     confirming = Some(false);
                 }
             }
-            Key::Destroy => {
+            Key::Destroy if model.pane.0 == Pane::Projects => {
                 if let Some(row) = model.selected_row().cloned() {
                     model.dialog = Some(Dialog {
                         title: format!("Destroy {}", screen::cut(&row.name, 30)),
@@ -173,20 +208,14 @@ pub fn run(deps: &mut Deps) -> i32 {
                     confirming = Some(true);
                 }
             }
-            Key::Help if model.pane.0 == Pane::Logs => {
-                model.message = Some(logs::HELP.to_owned());
-            }
-            Key::Help if model.pane.0 == Pane::Traffic => {
-                model.message = Some(traffic::HELP.to_owned());
-            }
-            Key::Help => {
-                model.message = Some(
-                    "Red letters open panels. Arrows move. 2 starts, 3 stops, x destroys, 5 refreshes, tab changes panel, q quits."
-                        .to_owned(),
-                );
-            }
-            Key::PreviousService
+            Key::Help => model.message = Some(view::help_for(model.pane.0).to_owned()),
+            Key::Start
+            | Key::Stop
+            | Key::Destroy
+            | Key::PreviousService
             | Key::NextService
+            | Key::Follow
+            | Key::Shell
             | Key::PageUp
             | Key::PageDown
             | Key::Yes
@@ -235,20 +264,6 @@ fn has_fixed_colours(deps: &Deps) -> bool {
     term.to_string_lossy().contains("256color") || !colorterm.is_empty()
 }
 
-/// Reads one keystroke. An escape sequence usually arrives in one read, so
-/// the whole buffer is handed to the key reader rather than one byte.
-///
-/// This reads the input handle it was given, never the process's own standard
-/// input. The caller holds a lock on that, and taking it again deadlocks the
-/// interface on the first keystroke, with no way left to quit.
-fn read_key(input: &mut dyn BufRead) -> Option<Vec<u8>> {
-    let mut buffer = [0u8; 8];
-    match input.read(&mut buffer) {
-        Ok(0) | Err(_) => None,
-        Ok(read) => Some(buffer[..read].to_vec()),
-    }
-}
-
 fn load_projects(deps: &mut Deps, model: &mut Model) {
     model.message = None;
     let Ok(paths) = crate::state::StatePaths::locate(deps.env) else {
@@ -284,12 +299,29 @@ fn status_of(deps: &mut Deps, path: &str) -> Option<proto::StatusReport> {
 
 /// Reads whatever the showing panel needs. This waits for the daemon, but only
 /// up to the limits in [`logs`] and [`traffic`], so a slow sandbox cannot freeze
-/// the interface.
-fn refresh_panel_if_showing(deps: &mut Deps, model: &mut Model) {
+/// the interface. A log is followed only while its panel shows, so leaving it
+/// ends the command inside the sandbox.
+fn refresh_panel_if_showing(
+    deps: &mut Deps,
+    model: &mut Model,
+    follow: &mut Option<logs::Follow>,
+) {
+    // Stopped first, so a new one never runs beside the old one.
+    *follow = None;
     match model.pane.0 {
-        Pane::Logs => refresh_logs(deps, model),
+        Pane::Logs => *follow = refresh_logs(deps, model),
         Pane::Traffic => refresh_traffic(deps, model),
-        Pane::Projects | Pane::Secrets | Pane::Review => {}
+        Pane::Secrets => refresh_secrets(deps, model),
+        Pane::Projects | Pane::Review => {}
+    }
+}
+
+/// Reads the selected project's secret names. This reads a small file in the
+/// state folder and asks nothing of the daemon, so it needs no limit.
+fn refresh_secrets(deps: &mut Deps, model: &mut Model) {
+    match model.selected_row().cloned() {
+        Some(row) => secrets::refresh(deps.env, &mut model.secrets, &row.name),
+        None => model.secrets = view::SecretsPanel::default(),
     }
 }
 
@@ -305,69 +337,85 @@ fn refresh_traffic(deps: &mut Deps, model: &mut Model) {
     model.busy = None;
 }
 
-fn refresh_logs(deps: &mut Deps, model: &mut Model) {
+fn refresh_logs(deps: &mut Deps, model: &mut Model) -> Option<logs::Follow> {
     let Some(row) = model.selected_row().cloned() else {
         model.logs = view::LogsPanel::default();
-        return;
+        return None;
     };
     model.logs.belong_to(&row.path);
     model.busy = Some("Reading logs.".to_owned());
     draw(deps, model);
-    logs::refresh(deps.daemon, &mut model.logs, &row.path);
+    let follow = logs::follow(deps.daemon, &mut model.logs, &row.path);
     model.busy = None;
+    follow
 }
 
 fn show_selected(deps: &mut Deps, model: &mut Model) {
     model.detail.clear();
+    model.overview = None;
     let Some(row) = model.selected_row().cloned() else {
         return;
     };
-    model.detail.push(Line::dim(row.path.clone()));
-    let Some(report) = status_of(deps, &row.path) else {
-        model
-            .detail
-            .push(Line::styled("the daemon did not answer", Style::WindowAlert));
+    model.overview = Some(match logs::status(deps.daemon, &row.path) {
+        Ok(report) => overview::build(&report),
+        Err(error) => view::Overview {
+            path: crate::ui::esc(&row.path),
+            problem: Some(logs::failure(&error).text),
+            ..view::Overview::default()
+        },
+    });
+}
+
+/// How long to wait for the daemon's say-so before a shell. The sandbox has
+/// already been seen running, so this is only a slow daemon.
+const SHELL_LIMIT: Duration = Duration::from_secs(15);
+
+/// Opens a shell for the selected project, on the person's own terminal, the
+/// way `shell` does: into the service chosen on the Logs panel, if there is
+/// one, or the sandbox itself. The interface steps aside while it runs and
+/// comes back when it ends.
+fn open_shell(deps: &mut Deps, model: &mut Model, raw: &term::RawMode) {
+    let Some(row) = model.selected_row().cloned() else {
         return;
     };
-    if let Some(resources) = &report.resources {
-        model.detail.push(Line::plain(format!(
-            "{} memory, {} CPUs",
-            crate::ui::human_bytes(resources.memory_bytes),
-            f64::from(resources.millicpus) / 1000.0
-        )));
+    // Asked here, where a refusal can still be shown on this screen, rather
+    // than after it has gone.
+    match logs::status(deps.daemon, &row.path) {
+        Ok(report) if report.sandbox == SandboxState::Running => {}
+        Ok(_) => {
+            model.message = Some(
+                "There is no running sandbox to open a shell in. Start it from Projects with 2."
+                    .to_owned(),
+            );
+            return;
+        }
+        Err(error) => {
+            model.message = Some(logs::failure(&error).text);
+            return;
+        }
     }
-    if !report.ports.is_empty() {
-        model.detail.push(Line::styled(
-            format!(
-                "forwarded  {}",
-                report
-                    .ports
-                    .iter()
-                    .map(|p| format!("127.0.0.1:{p}"))
-                    .collect::<Vec<_>>()
-                    .join("  ")
-            ),
-            Style::WindowGood,
-        ));
-    }
-    for service in report.services.iter().take(10) {
-        model.detail.push(Line::plain(format!(
-            "  {:<12}{}{}",
-            screen::cut(&service.name, 12),
-            service.state,
-            service
-                .health
-                .as_deref()
-                .map(|h| format!(" ({h})"))
-                .unwrap_or_default()
-        )));
-    }
-    if !report.services.is_empty() {
-        model.detail.push(Line::styled(
-            "these came from inside the sandbox, so they can be wrong",
-            Style::WindowWarn,
-        ));
-    }
+    let service = if model.logs.project == row.path {
+        model.logs.chosen.clone()
+    } else {
+        None
+    };
+    let engine = match debug::prepare_shell(
+        service.as_deref(),
+        std::path::Path::new(&row.path),
+        SHELL_LIMIT,
+        deps,
+    ) {
+        Ok(engine) => engine,
+        Err(refusal) => {
+            model.message = Some(format!("No shell: {}", refusal.reason));
+            return;
+        }
+    };
+    raw.pause();
+    let code = debug::run_engine("shell", engine, true, deps);
+    raw.resume();
+    let place = service.map_or_else(|| "the sandbox".to_owned(), |name| screen::cut(&name, 20));
+    model.message = Some(format!("The shell in {place} ended with exit code {code}."));
 }
 
 /// Builds a plan and shows it in a box, so that Yes agrees to something seen.
@@ -383,7 +431,7 @@ fn propose_start(deps: &mut Deps, model: &mut Model) -> Option<Pending> {
         Ok(Reply::Plan(plan)) => *plan,
         Ok(_) => return None,
         Err(error) => {
-            model.message = Some(error.message());
+            model.message = Some(logs::failure(&error).text);
             return None;
         }
     };
@@ -402,6 +450,7 @@ fn propose_start(deps: &mut Deps, model: &mut Model) -> Option<Pending> {
         lines: dialog_lines(&plan, &ports),
     });
     Some(Pending {
+        name: row.name,
         project: row.path,
         digest: plan.digest,
         ports,
@@ -445,23 +494,47 @@ fn dialog_lines(plan: &PlanReport, ports: &[u16]) -> Vec<String> {
     lines
 }
 
+/// The shortest time between two drawings of the start's progress. A build
+/// can report many steps a second, and each drawing asks the terminal its size.
+const PROGRESS_EVERY: Duration = Duration::from_millis(100);
+
+/// Starts the project, showing each step the daemon reports in a box as it
+/// arrives. This has no time limit, because a first build can take minutes,
+/// and nothing else can happen until it ends.
 fn start(deps: &mut Deps, model: &mut Model, pending: Pending) {
     model.busy = Some("Starting. A first build can take minutes.".to_owned());
+    model.progress = Some(view::Progress::new(format!(
+        "Starting {}",
+        screen::cut(&pending.name, 30)
+    )));
     draw(deps, model);
-    let result = deps.daemon.call(
+    // The client is taken out first, so that the steps can be drawn while the
+    // call is still running.
+    let client = deps.daemon;
+    let mut drawn = Instant::now();
+    let result = client.call(
         Request::Up(proto::UpArgs {
             project: pending.project,
             source: Source::default(),
             plan_digest: pending.digest,
             approve_ports: pending.ports,
         }),
-        &mut |_, _| {},
+        &mut |step, detail| {
+            if let Some(progress) = &mut model.progress {
+                progress.push(step, detail);
+            }
+            if drawn.elapsed() >= PROGRESS_EVERY {
+                draw(deps, model);
+                drawn = Instant::now();
+            }
+        },
     );
     model.busy = None;
+    model.progress = None;
     model.message = Some(match result {
         Ok(Reply::Up(report)) => format!("Started in {}s.", report.seconds),
         Ok(_) => "The daemon answered something else.".to_owned(),
-        Err(error) => error.message(),
+        Err(error) => logs::failure(&error).text,
     });
     load_projects(deps, model);
 }
@@ -486,7 +559,7 @@ fn stop(deps: &mut Deps, model: &mut Model, destroy: bool) {
         }
         Ok(Reply::Down(_)) => "Stopped. Its data is kept for the next start.".to_owned(),
         Ok(_) => "The daemon answered something else.".to_owned(),
-        Err(error) => error.message(),
+        Err(error) => logs::failure(&error).text,
     });
     load_projects(deps, model);
 }
