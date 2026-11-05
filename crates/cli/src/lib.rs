@@ -5,6 +5,7 @@
 
 mod check;
 mod doctor;
+mod editor;
 pub mod host;
 mod net;
 mod resources;
@@ -73,6 +74,10 @@ enum Command {
     Doctor,
     /// Check a project's files and print what they ask for
     Check(check::CheckArgs),
+    /// Run the editor safety checks, then open the project in an editor
+    Open(editor::OpenArgs),
+    /// Turn the editor safety checks on and off, at user level
+    Checks(editor::ChecksArgs),
     /// Show requested and resolved RAM, CPU and disk limits
     Resources(resources::ResourcesArgs),
     /// Manage per-project secrets in the OS keychain
@@ -145,6 +150,8 @@ where
     match cli.command {
         Command::Doctor => doctor::run(deps),
         Command::Check(args) => check::run(&args, deps),
+        Command::Open(args) => editor::open(&args, deps),
+        Command::Checks(args) => editor::checks(&args, deps),
         Command::Resources(args) => resources::run(&args, deps),
         Command::Secrets(args) => secret_cmd::run(args, deps),
         Command::Net(args) => net::run(&args, deps),
