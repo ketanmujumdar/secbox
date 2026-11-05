@@ -15,6 +15,8 @@ pub enum Style {
     /// The letter that chooses a menu entry.
     MenuHot,
     MenuActive,
+    /// The warning set at the right of the menu bar.
+    MenuAlert,
     /// Inside a window.
     Window,
     WindowDim,
@@ -49,6 +51,7 @@ impl Style {
             Style::MenuBar => "30;47",
             Style::MenuHot => "31;47",
             Style::MenuActive => "30;46",
+            Style::MenuAlert => "97;41",
             Style::Window => "37;44",
             Style::WindowDim => "36;44",
             Style::WindowGood => "92;44",
@@ -132,6 +135,7 @@ mod tests {
             Style::MenuBar,
             Style::MenuHot,
             Style::MenuActive,
+            Style::MenuAlert,
             Style::Window,
             Style::WindowDim,
             Style::WindowGood,

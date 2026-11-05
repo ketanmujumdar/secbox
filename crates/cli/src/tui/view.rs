@@ -408,18 +408,14 @@ pub fn compose(model: &Model, width: usize, height: usize) -> Screen {
     let inner_h = window.h - 2;
     body(model, &mut screen, inner_x, inner_y, inner_w, inner_h);
 
-    // The last line inside the window always carries whatever matters most.
+    // The last line inside the window is for what just happened, or what is
+    // happening now. The standing warning has its own place in the menu bar.
     let note_y = inner_y + inner_h - 1;
-    let (note, style) = match (&model.busy, &model.message) {
-        (Some(busy), _) => (busy.clone(), Style::WindowWarn),
-        (None, Some(message)) => (message.clone(), Style::WindowWarn),
-        (None, None) => (
-            "Early build. Do not rely on it for untrusted code.".to_owned(),
-            Style::WindowAlert,
-        ),
-    };
-    screen.fill(inner_x, note_y, inner_w, 1, ' ', style);
-    screen.text_cut(inner_x + 1, note_y, &note, inner_w - 2, style);
+    let note = model.busy.as_ref().or(model.message.as_ref());
+    if let Some(note) = note {
+        screen.fill(inner_x, note_y, inner_w, 1, ' ', Style::WindowWarn);
+        screen.text_cut(inner_x + 1, note_y, note, inner_w - 2, Style::WindowWarn);
+    }
 
     if let Some(dialog) = &model.dialog {
         draw_dialog(&mut screen, dialog);
@@ -427,8 +423,35 @@ pub fn compose(model: &Model, width: usize, height: usize) -> Screen {
     screen
 }
 
+/// That this is an early build, longest first. It sits at the right of the
+/// menu bar, where nothing else needs the room, so that it is on screen at all
+/// times and the line at the bottom of the window is free for messages.
+const WARNINGS: [&str; 3] = [
+    "Early build. Do not rely on it for untrusted code.",
+    "Early build. Do not rely on it.",
+    "Early build",
+];
+
 fn menu_bar(screen: &mut Screen, active: Pane) {
     screen.fill(0, 0, screen.width(), 1, ' ', Style::MenuBar);
+    let menu = |gap: usize| -> usize {
+        1 + Pane::ALL
+            .iter()
+            .map(|pane| pane.label().chars().count() + gap)
+            .sum::<usize>()
+    };
+    let shortest = WARNINGS[WARNINGS.len() - 1].chars().count() + 3;
+    // The entries close up rather than the warning going.
+    let gap = if menu(3) + shortest <= screen.width() { 3 } else { 2 };
+    let room = screen.width().saturating_sub(menu(gap) + 1);
+    let warning = WARNINGS
+        .iter()
+        .find(|text| text.chars().count() + 2 <= room)
+        .unwrap_or(&WARNINGS[WARNINGS.len() - 1]);
+    let tag = format!(" {warning} ");
+    let tag_x = screen.width().saturating_sub(tag.chars().count() + 1);
+    screen.text(tag_x, 0, &tag, Style::MenuAlert);
+
     let mut x = 1;
     for pane in Pane::ALL {
         let label = pane.label();
@@ -447,7 +470,7 @@ fn menu_bar(screen: &mut Screen, active: Pane) {
         screen.text(x + 1, 0, &label[..1], hot);
         screen.text(x + 2, 0, &label[1..], style);
         screen.put(x + 1 + label.len(), 0, ' ', style);
-        x += label.chars().count() + 3;
+        x += label.chars().count() + gap;
     }
 }
 
@@ -972,9 +995,32 @@ mod tests {
         assert!(text.contains('║'), "the frame survived");
     }
 
+    /// The warning is in the menu bar on every panel and every size, whatever
+    /// the line at the bottom of the window is saying.
     #[test]
-    fn the_warning_shows_until_something_else_needs_the_line() {
-        assert!(plain(&model(), 80, 24).contains("Do not rely on it"));
+    fn the_warning_is_always_in_the_menu_bar_and_messages_have_the_bottom_line() {
+        for (width, height) in [(MIN_WIDTH, MIN_HEIGHT), (80, 24), (200, 60)] {
+            for pane in Pane::ALL {
+                let mut m = model();
+                m.pane = PaneState(pane);
+                m.message = Some("finished tidying".to_owned());
+                let text = plain(&m, width, height);
+                let top = text.lines().next().unwrap();
+                assert!(top.contains("Early build"), "{width}: {top}");
+                for label in Pane::ALL.map(Pane::label) {
+                    assert!(top.contains(label), "{width}: {label}: {top}");
+                }
+                assert!(text.contains("finished tidying"), "{width}x{height}: {text}");
+            }
+        }
+        let wide = plain(&model(), 120, 24);
+        assert!(wide.lines().next().unwrap().contains("Do not rely on it for untrusted code."));
+        let rows = render(&model(), 80, 24);
+        assert!(rows[0].iter().any(|s| s.style == Style::MenuAlert && s.text.contains("Early build")));
+    }
+
+    #[test]
+    fn the_bottom_line_shows_what_is_happening_over_what_happened() {
         let mut m = model();
         // Words that cannot collide with a project's own state, which is
         // also drawn on screen.
@@ -984,6 +1030,9 @@ mod tests {
         let text = plain(&m, 80, 24);
         assert!(text.contains("working away"), "{text}");
         assert!(!text.contains("finished tidying"), "{text}");
+        // With nothing to say, nothing is said: the warning is not repeated.
+        let quiet = plain(&model(), 80, 24);
+        assert_eq!(quiet.matches("Early build").count(), 1, "{quiet}");
     }
 
     #[test]
