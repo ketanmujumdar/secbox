@@ -1,38 +1,19 @@
-//! What the interface looks like, worked out as plain text.
+//! What the interface looks like, worked out as a grid of coloured cells.
+//!
+//! The look is deliberate: a menu bar across the top, a patterned desktop, a
+//! double-ruled window casting a shadow, a scrollbar down the side, and a
+//! numbered function-key bar along the bottom. That is how a full-screen
+//! program looked when terminals had sixteen colours, and it is the reason
+//! this needs no web view.
 //!
 //! This module touches no terminal. It takes a model and a size and returns
-//! the lines to draw, which is what makes the layout testable. Colour is
-//! added afterwards, so a width calculation never counts an escape sequence.
-//!
-//! Every string here that came from a project or a sandbox arrives already
-//! escaped, because it came through the daemon. It is cut to the width, which
-//! is the only other thing needed to keep a hostile name from breaking the
-//! frame.
+//! the cells, which is what makes the layout testable. Every string in it
+//! that came from a project or a sandbox arrives already escaped, because it
+//! came through the daemon; cutting it to the width is the only other thing
+//! needed to keep a hostile name from breaking the frame.
 
-use crate::ui::Tone;
-
-/// One rendered line.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Line {
-    pub text: String,
-    pub tone: Tone,
-}
-
-impl Line {
-    fn plain(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            tone: Tone::Dim,
-        }
-    }
-
-    fn toned(text: impl Into<String>, tone: Tone) -> Self {
-        Self {
-            text: text.into(),
-            tone,
-        }
-    }
-}
+use super::screen::{cut, Rect, Screen, Span};
+use super::style::Style;
 
 /// Which panel is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,17 +64,17 @@ impl RowState {
         match self {
             RowState::Running => "running",
             RowState::Stopped => "stopped",
-            RowState::None => "-",
+            RowState::None => "—",
             RowState::Unknown => "?",
         }
     }
 
-    fn tone(self) -> Tone {
+    fn style(self) -> Style {
         match self {
-            RowState::Running => Tone::Good,
-            RowState::Stopped => Tone::Warn,
-            RowState::None => Tone::Dim,
-            RowState::Unknown => Tone::Bad,
+            RowState::Running => Style::WindowGood,
+            RowState::Stopped => Style::WindowWarn,
+            RowState::None => Style::WindowDim,
+            RowState::Unknown => Style::WindowAlert,
         }
     }
 }
@@ -105,16 +86,52 @@ pub struct Row {
     pub state: RowState,
 }
 
+/// A line in the lower half of the window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Line {
+    pub text: String,
+    pub style: Style,
+}
+
+impl Line {
+    pub fn dim(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            style: Style::WindowDim,
+        }
+    }
+
+    pub fn plain(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            style: Style::Window,
+        }
+    }
+
+    pub fn styled(text: impl Into<String>, style: Style) -> Self {
+        Self {
+            text: text.into(),
+            style,
+        }
+    }
+}
+
+/// A question waiting for an answer, drawn over everything else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dialog {
+    pub title: String,
+    pub lines: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Model {
     pub projects: Vec<Row>,
     pub selected: usize,
     pub detail: Vec<Line>,
-    /// Shown on the bottom line. Cleared by the next action.
     pub message: Option<String>,
-    /// Set while a request is in flight.
     pub busy: Option<String>,
     pub pane: PaneState,
+    pub dialog: Option<Dialog>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -179,150 +196,205 @@ fn not_built(pane: Pane) -> &'static [&'static str] {
     }
 }
 
-/// Builds exactly `height` lines, each at most `width` characters.
-pub fn render(model: &Model, width: usize, height: usize) -> Vec<Line> {
-    let width = width.max(40);
-    let height = height.max(10);
-    let mut lines = Vec::with_capacity(height);
+/// The bar along the bottom. A number and a word, as every program of the
+/// period had.
+const KEYS: [(&str, &str); 6] = [
+    ("1", "Help"),
+    ("2", "Start"),
+    ("3", "Stop"),
+    ("5", "Refresh"),
+    ("6", "Panel"),
+    ("10", "Quit"),
+];
 
-    lines.push(Line::toned(
-        frame_top(&format!(" {} ", brand::PRODUCT_NAME), width),
-        Tone::Strong,
-    ));
-    lines.push(Line::toned(bar(&tabs(model.pane.0), width), Tone::Strong));
-    lines.push(Line::plain(divider(width)));
+const MIN_WIDTH: usize = 60;
+const MIN_HEIGHT: usize = 14;
 
-    // Two lines of frame at the bottom, plus the message line.
-    let body = height.saturating_sub(lines.len() + 3);
-    let mut used = 0;
-    for line in body_lines(model, width, body) {
-        lines.push(line);
-        used += 1;
-    }
-    for _ in used..body {
-        lines.push(Line::plain(bar("", width)));
-    }
+/// Draws the whole screen.
+pub fn render(model: &Model, width: usize, height: usize) -> Vec<Vec<Span>> {
+    compose(model, width, height).rows()
+}
 
-    lines.push(Line::plain(divider(width)));
-    let hint = match model.pane.0 {
-        Pane::Projects => "up/down move  u start  s stop  x destroy  r refresh  tab panel  q quit",
-        _ => "tab panel  q quit",
-    };
-    lines.push(Line::plain(bar(&cut(hint, width.saturating_sub(4)), width)));
-    let note = match (&model.busy, &model.message) {
-        (Some(busy), _) => Line::toned(bar(&cut(busy, width - 4), width), Tone::Warn),
-        (None, Some(message)) => Line::toned(bar(&cut(message, width - 4), width), Tone::Warn),
-        (None, None) => Line::toned(
-            bar(
-                &cut(
-                    "Nothing here has run against a real VM. It is not protecting anything.",
-                    width - 4,
-                ),
-                width,
-            ),
-            Tone::Bad,
+/// The same drawing, as a grid, so a test can read it as plain text.
+pub fn compose(model: &Model, width: usize, height: usize) -> Screen {
+    let width = width.max(MIN_WIDTH);
+    let height = height.max(MIN_HEIGHT);
+    // The pattern behind everything, which is what makes a window read as a
+    // window rather than as the whole screen.
+    let mut screen = Screen::new(width, height, '▒', Style::Desktop);
+
+    menu_bar(&mut screen, model.pane.0);
+    status_bar(&mut screen);
+
+    let window = Rect::new(1, 1, width - 4, height - 4);
+    screen.shadow(window);
+    screen.fill(window.x, window.y, window.w, window.h, ' ', Style::Window);
+    screen.frame(window, Style::Frame, model.pane.0.label(), Style::Title);
+
+    let inner_x = window.x + 1;
+    let inner_y = window.y + 1;
+    let inner_w = window.w - 2;
+    let inner_h = window.h - 2;
+    body(model, &mut screen, inner_x, inner_y, inner_w, inner_h);
+
+    // The last line inside the window always carries whatever matters most.
+    let note_y = inner_y + inner_h - 1;
+    let (note, style) = match (&model.busy, &model.message) {
+        (Some(busy), _) => (busy.clone(), Style::WindowWarn),
+        (None, Some(message)) => (message.clone(), Style::WindowWarn),
+        (None, None) => (
+            "Nothing here has run against a real VM. It is not protecting anything.".to_owned(),
+            Style::WindowAlert,
         ),
     };
-    lines.push(note);
-    lines.truncate(height);
-    lines
+    screen.fill(inner_x, note_y, inner_w, 1, ' ', style);
+    screen.text_cut(inner_x + 1, note_y, &note, inner_w - 2, style);
+
+    if let Some(dialog) = &model.dialog {
+        draw_dialog(&mut screen, dialog);
+    }
+    screen
 }
 
-fn body_lines(model: &Model, width: usize, height: usize) -> Vec<Line> {
+fn menu_bar(screen: &mut Screen, active: Pane) {
+    screen.fill(0, 0, screen.width(), 1, ' ', Style::MenuBar);
+    let mut x = 1;
+    for pane in Pane::ALL {
+        let label = pane.label();
+        let style = if pane == active {
+            Style::MenuActive
+        } else {
+            Style::MenuBar
+        };
+        let hot = if pane == active {
+            Style::MenuActive
+        } else {
+            Style::MenuHot
+        };
+        screen.put(x, 0, ' ', style);
+        // The first letter is the one that chooses it, so it is marked.
+        screen.text(x + 1, 0, &label[..1], hot);
+        screen.text(x + 2, 0, &label[1..], style);
+        screen.put(x + 1 + label.len(), 0, ' ', style);
+        x += label.chars().count() + 3;
+    }
+}
+
+fn status_bar(screen: &mut Screen) {
+    let y = screen.height() - 1;
+    screen.fill(0, y, screen.width(), 1, ' ', Style::StatusLabel);
+    let mut x = 1;
+    for (number, word) in KEYS {
+        if x + number.len() + word.len() + 2 >= screen.width() {
+            break;
+        }
+        x += screen.text(x, y, number, Style::StatusKey);
+        x += screen.text(x, y, word, Style::StatusLabel);
+        x += 2;
+    }
+}
+
+fn body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, h: usize) {
+    // One line at the bottom is always the note.
+    let room = h.saturating_sub(1);
     if model.pane.0 != Pane::Projects {
-        return not_built(model.pane.0)
-            .iter()
-            .take(height)
-            .map(|text| Line::plain(bar(&cut(text, width - 4), width)))
-            .collect();
+        for (offset, text) in not_built(model.pane.0).iter().take(room).enumerate() {
+            screen.text_cut(x + 1, y + offset, text, w - 2, Style::Window);
+        }
+        return;
     }
     if model.projects.is_empty() {
-        return vec![
-            Line::plain(bar(&cut("No project has been started here.", width - 4), width)),
-            Line::plain(bar("", width)),
-            Line::plain(bar(
-                &cut("Run the up command in a project folder first.", width - 4),
-                width,
-            )),
-        ];
+        screen.text_cut(
+            x + 1,
+            y,
+            "No project has been started on this machine.",
+            w - 2,
+            Style::Window,
+        );
+        screen.text_cut(
+            x + 1,
+            y + 2,
+            "Run the up command in a project folder first.",
+            w - 2,
+            Style::WindowDim,
+        );
+        return;
     }
 
-    // The list takes the top half, the detail the rest.
-    let list_height = (height / 2).clamp(1, model.projects.len().max(1)).min(height);
-    let mut lines = Vec::new();
-    let first = model
-        .selected
-        .saturating_sub(list_height.saturating_sub(1));
-    for (index, row) in model
-        .projects
-        .iter()
-        .enumerate()
-        .skip(first)
-        .take(list_height)
-    {
-        let marker = if index == model.selected { ">" } else { " " };
-        let state = row.state.word();
-        let room = width.saturating_sub(14 + state.len());
-        let text = format!("{marker} {:<width$}  {state}", cut(&row.name, room), width = room);
-        lines.push(Line::toned(
-            bar(&cut(&text, width - 4), width),
-            if index == model.selected {
-                Tone::Strong
-            } else {
-                row.state.tone()
-            },
-        ));
+    // At least three rows, so the list always has a scrollbar to sit beside
+    // and does not jump about as projects come and go.
+    let list_h = (room / 2).clamp(3, room.max(1));
+    let first = model.selected.saturating_sub(list_h.saturating_sub(1));
+    let bar_x = x + w - 1;
+    for offset in 0..list_h {
+        let Some(row) = model.projects.get(first + offset) else {
+            break;
+        };
+        let selected = first + offset == model.selected;
+        let line_y = y + offset;
+        let line_w = w - 1;
+        if selected {
+            screen.fill(x, line_y, line_w, 1, ' ', Style::Selected);
+        }
+        let name_style = if selected { Style::Selected } else { Style::Window };
+        let state_style = if selected {
+            Style::Selected
+        } else {
+            row.state.style()
+        };
+        let word = row.state.word();
+        let name_room = line_w.saturating_sub(word.chars().count() + 4);
+        screen.text(x + 1, line_y, &cut(&row.name, name_room), name_style);
+        screen.text(
+            x + line_w - word.chars().count() - 1,
+            line_y,
+            word,
+            state_style,
+        );
     }
-    if lines.len() < height {
-        lines.push(Line::plain(divider(width)));
+    screen.scrollbar(bar_x, y, list_h, first, list_h, model.projects.len());
+
+    let mut at = y + list_h;
+    if at < y + room {
+        screen.rule(x - 1, at, w + 2, Style::Frame);
+        at += 1;
     }
-    for line in model.detail.iter().take(height.saturating_sub(lines.len())) {
-        lines.push(Line::toned(
-            bar(&cut(&line.text, width - 4), width),
-            line.tone,
-        ));
+    for line in &model.detail {
+        if at >= y + room {
+            break;
+        }
+        screen.text_cut(x + 1, at, &line.text, w - 2, line.style);
+        at += 1;
     }
-    lines
 }
 
-fn tabs(current: Pane) -> String {
-    Pane::ALL
-        .iter()
-        .map(|pane| {
-            if *pane == current {
-                format!("[{}]", pane.label())
-            } else {
-                format!(" {} ", pane.label())
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("")
-}
+fn draw_dialog(screen: &mut Screen, dialog: &Dialog) {
+    let width = (screen.width() * 3 / 4).clamp(40, 76);
+    let height = (dialog.lines.len() + 6).min(screen.height().saturating_sub(4));
+    let x = (screen.width().saturating_sub(width)) / 2;
+    let y = (screen.height().saturating_sub(height)) / 2;
+    let box_ = Rect::new(x, y, width, height);
 
-fn frame_top(title: &str, width: usize) -> String {
-    let title = cut(title, width.saturating_sub(4));
-    let rest = width.saturating_sub(2 + title.chars().count());
-    format!("┌{title}{}┐", "─".repeat(rest))
-}
-
-fn divider(width: usize) -> String {
-    format!("├{}┤", "─".repeat(width.saturating_sub(2)))
-}
-
-fn bar(text: &str, width: usize) -> String {
-    let inner = width.saturating_sub(4);
-    let text = cut(text, inner);
-    let pad = inner.saturating_sub(text.chars().count());
-    format!("│ {text}{} │", " ".repeat(pad))
-}
-
-/// Cuts to a number of characters. Width is counted in characters, which is
-/// wrong for double-width glyphs; a cut line is better than a broken frame.
-fn cut(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_owned();
+    screen.shadow(box_);
+    screen.fill(x, y, width, height, ' ', Style::Dialog);
+    screen.frame(box_, Style::DialogFrame, &dialog.title, Style::Dialog);
+    for (offset, text) in dialog.lines.iter().enumerate() {
+        if y + 2 + offset >= y + height - 3 {
+            break;
+        }
+        screen.text_cut(x + 2, y + 2 + offset, text, width - 4, Style::Dialog);
     }
-    text.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
+
+    // Two buttons, the agreeing one marked as the one that acts.
+    let buttons_y = y + height - 2;
+    let yes = "  Yes  ";
+    let no = "  No  ";
+    let total = yes.len() + no.len() + 4;
+    let start = x + (width.saturating_sub(total)) / 2;
+    screen.text(start, buttons_y, yes, Style::Button);
+    screen.text(start + 2, buttons_y, "Y", Style::ButtonHot);
+    screen.text(start + yes.len() + 4, buttons_y, no, Style::Dialog);
+    screen.text(start + yes.len() + 6, buttons_y, "N", Style::DialogHot);
 }
 
 /// A key the interface understands.
@@ -336,20 +408,27 @@ pub enum Key {
     Start,
     Stop,
     Destroy,
+    Help,
+    Yes,
+    No,
     Other,
 }
 
-/// Reads one key from bytes already taken from the terminal.
+/// Reads one keystroke. Function keys work as the bar along the bottom says,
+/// and the letters work too, because not every terminal sends every one.
 pub fn key(bytes: &[u8]) -> Key {
     match bytes {
         b"\x1b[A" | b"k" => Key::Up,
         b"\x1b[B" | b"j" => Key::Down,
-        b"\t" => Key::Tab,
-        b"q" | b"\x03" => Key::Quit,
-        b"r" => Key::Refresh,
-        b"u" => Key::Start,
-        b"s" => Key::Stop,
+        b"\t" | b"\x1bOU" | b"\x1b[17~" => Key::Tab,
+        b"q" | b"\x03" | b"\x1b[21~" => Key::Quit,
+        b"r" | b"\x1b[15~" => Key::Refresh,
+        b"u" | b"\x1bOQ" => Key::Start,
+        b"s" | b"\x1bOR" => Key::Stop,
         b"x" => Key::Destroy,
+        b"?" | b"\x1bOP" => Key::Help,
+        b"y" | b"Y" => Key::Yes,
+        b"n" | b"N" | b"\x1b" => Key::No,
         _ => Key::Other,
     }
 }
@@ -362,42 +441,81 @@ mod tests {
         Model {
             projects: vec![
                 Row {
-                    name: "demo-shop".to_owned(),
+                    name: "demo-shop-ab12cd34".to_owned(),
                     path: "/p/demo_shop".to_owned(),
                     state: RowState::Running,
                 },
                 Row {
-                    name: "other".to_owned(),
-                    path: "/p/other".to_owned(),
-                    state: RowState::None,
+                    name: "notes-ff00ff00".to_owned(),
+                    path: "/p/notes".to_owned(),
+                    state: RowState::Stopped,
                 },
             ],
             ..Model::default()
         }
     }
 
-    fn plain(lines: &[Line]) -> String {
-        lines
-            .iter()
-            .map(|l| l.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
+    fn plain(model: &Model, width: usize, height: usize) -> String {
+        compose(model, width, height).plain()
     }
 
     #[test]
     fn the_screen_is_exactly_the_size_it_was_given() {
-        for (width, height) in [(80, 24), (40, 10), (200, 60), (10, 2)] {
-            let lines = render(&model(), width, height);
-            let expected_height = height.max(10);
-            assert_eq!(lines.len(), expected_height, "{width}x{height}");
-            for line in &lines {
-                assert!(
-                    line.text.chars().count() <= width.max(40),
-                    "{width}x{height}: {:?}",
-                    line.text
-                );
+        for (width, height) in [(80, 24), (60, 14), (200, 60), (10, 2)] {
+            let rows = render(&model(), width, height);
+            assert_eq!(rows.len(), height.max(MIN_HEIGHT), "{width}x{height}");
+            for row in &rows {
+                let drawn: usize = row.iter().map(|s| s.text.chars().count()).sum();
+                assert_eq!(drawn, width.max(MIN_WIDTH), "{width}x{height}");
             }
         }
+    }
+
+    /// The parts that make it look like a program from the time, rather than
+    /// a modern one: a menu bar, a patterned desktop, a double-ruled window
+    /// with its title set into the rule, a scrollbar, and numbered keys.
+    #[test]
+    fn the_frame_is_drawn_the_way_the_period_drew_it() {
+        let text = plain(&model(), 90, 26);
+        assert!(text.contains('▒'), "no patterned desktop");
+        assert!(text.contains('╔') && text.contains('╝'), "no double rule");
+        assert!(text.contains("╡ Projects ╞"), "no title in the rule");
+        assert!(text.contains('▲') && text.contains('▼'), "no scrollbar");
+        let bottom = text.lines().last().unwrap();
+        for (number, word) in KEYS {
+            assert!(bottom.contains(&format!("{number}{word}")), "{bottom}");
+        }
+        let top = text.lines().next().unwrap();
+        for pane in Pane::ALL {
+            assert!(top.contains(pane.label()), "{top}");
+        }
+    }
+
+    #[test]
+    fn the_window_casts_a_shadow() {
+        let rows = render(&model(), 80, 24);
+        let shadows = rows
+            .iter()
+            .filter(|row| row.iter().any(|s| s.style == Style::Shadow))
+            .count();
+        assert!(shadows > 2, "only {shadows} rows of shadow");
+    }
+
+    #[test]
+    fn the_selected_row_is_highlighted_rather_than_marked_with_a_character() {
+        let rows = render(&model(), 80, 24);
+        let selected: usize = rows
+            .iter()
+            .filter(|row| row.iter().any(|s| s.style == Style::Selected))
+            .count();
+        assert_eq!(selected, 1, "exactly one row should be highlighted");
+    }
+
+    #[test]
+    fn the_active_panel_is_marked_in_the_menu_bar() {
+        let rows = render(&model(), 80, 24);
+        assert!(rows[0].iter().any(|s| s.style == Style::MenuActive));
+        assert!(rows[0].iter().any(|s| s.style == Style::MenuHot));
     }
 
     /// A name from a project could otherwise push the frame off the screen.
@@ -405,35 +523,29 @@ mod tests {
     fn a_very_long_name_cannot_break_the_frame() {
         let mut m = model();
         m.projects[0].name = "n".repeat(500);
-        let lines = render(&m, 80, 24);
-        for line in &lines {
-            assert!(line.text.chars().count() <= 80);
-            if line.text.starts_with('│') {
-                assert!(line.text.ends_with('│'), "{:?}", line.text);
-            }
+        let text = plain(&m, 80, 24);
+        for line in text.lines() {
+            assert_eq!(line.chars().count(), 80);
         }
+        assert!(text.contains('║'), "the frame survived");
     }
 
     #[test]
     fn the_warning_shows_until_something_else_needs_the_line() {
-        let lines = render(&model(), 80, 24);
-        assert!(plain(&lines).contains("not protecting anything"));
-
+        assert!(plain(&model(), 80, 24).contains("not protecting anything"));
         let mut m = model();
-        m.message = Some("stopped".to_owned());
-        assert!(plain(&render(&m, 80, 24)).contains("stopped"));
-
-        m.busy = Some("starting".to_owned());
-        let text = plain(&render(&m, 80, 24));
-        assert!(text.contains("starting"));
-        assert!(!text.contains("stopped"));
+        // Words that cannot collide with a project's own state, which is
+        // also drawn on screen.
+        m.message = Some("finished tidying".to_owned());
+        assert!(plain(&m, 80, 24).contains("finished tidying"));
+        m.busy = Some("working away".to_owned());
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("working away"), "{text}");
+        assert!(!text.contains("finished tidying"), "{text}");
     }
 
     #[test]
     fn every_panel_that_is_not_built_says_so_rather_than_looking_empty() {
-        // Pinned wording, because the whole point of these panels is that
-        // they say what does not work instead of looking like nothing
-        // happened.
         for (pane, phrase) in [
             (Pane::Traffic, "are not recorded on the host yet"),
             (Pane::Secrets, "nothing delivers them to a sandbox"),
@@ -442,17 +554,30 @@ mod tests {
         ] {
             let mut m = model();
             m.pane = PaneState(pane);
-            let text = plain(&render(&m, 80, 24));
+            let text = plain(&m, 80, 24);
             assert!(text.contains(phrase), "{}: {text}", pane.label());
         }
     }
 
-    /// An empty traffic panel must not read as "nothing was blocked".
     #[test]
     fn the_traffic_panel_says_nothing_is_watching() {
         let mut m = model();
         m.pane = PaneState(Pane::Traffic);
-        assert!(plain(&render(&m, 80, 24)).contains("nothing is watching"));
+        assert!(plain(&m, 80, 24).contains("nothing is watching"));
+    }
+
+    #[test]
+    fn a_question_is_a_box_over_the_rest_with_its_own_shadow() {
+        let mut m = model();
+        m.dialog = Some(Dialog {
+            title: "Start demo-shop".to_owned(),
+            lines: vec!["Forward 3000 and 8080 to 127.0.0.1?".to_owned()],
+        });
+        let text = plain(&m, 90, 26);
+        assert!(text.contains("╡ Start demo-shop ╞"), "{text}");
+        assert!(text.contains("Yes") && text.contains("No"));
+        let rows = render(&m, 90, 26);
+        assert!(rows.iter().any(|r| r.iter().any(|s| s.style == Style::Button)));
     }
 
     #[test]
@@ -480,30 +605,20 @@ mod tests {
     }
 
     #[test]
-    fn the_keys_are_what_the_hint_line_promises() {
-        assert_eq!(key(b"\x1b[A"), Key::Up);
-        assert_eq!(key(b"k"), Key::Up);
-        assert_eq!(key(b"\x1b[B"), Key::Down);
-        assert_eq!(key(b"j"), Key::Down);
-        assert_eq!(key(b"\t"), Key::Tab);
-        assert_eq!(key(b"q"), Key::Quit);
-        // Ctrl-C ends it too, because raw mode stops the shell from doing it.
-        assert_eq!(key(b"\x03"), Key::Quit);
+    fn the_function_keys_match_the_bar_and_the_letters_still_work() {
+        assert_eq!(key(b"\x1bOQ"), Key::Start);
         assert_eq!(key(b"u"), Key::Start);
+        assert_eq!(key(b"\x1bOR"), Key::Stop);
         assert_eq!(key(b"s"), Key::Stop);
-        assert_eq!(key(b"x"), Key::Destroy);
+        assert_eq!(key(b"\x1b[15~"), Key::Refresh);
+        assert_eq!(key(b"\x1b[21~"), Key::Quit);
+        assert_eq!(key(b"q"), Key::Quit);
+        // Raw mode stops the shell ending this, so the interface has to.
+        assert_eq!(key(b"\x03"), Key::Quit);
+        assert_eq!(key(b"\x1b[A"), Key::Up);
+        assert_eq!(key(b"y"), Key::Yes);
+        assert_eq!(key(b"n"), Key::No);
+        assert_eq!(key(b"\x1b"), Key::No);
         assert_eq!(key(b"Z"), Key::Other);
-        let hint = plain(&render(&model(), 120, 24));
-        for promised in ["u start", "s stop", "x destroy", "r refresh", "q quit"] {
-            assert!(hint.contains(promised), "{promised} missing from {hint}");
-        }
-    }
-
-    #[test]
-    fn the_selected_project_is_marked() {
-        let mut m = model();
-        m.selected = 1;
-        let text = plain(&render(&m, 80, 24));
-        assert!(text.contains("> other"), "{text}");
     }
 }
