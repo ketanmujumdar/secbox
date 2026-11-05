@@ -105,7 +105,7 @@ pub fn run(deps: &mut Deps) -> i32 {
 }
 
 fn draw(deps: &mut Deps, model: &Model) {
-    let (width, height) = term::size(deps.input, deps.out);
+    let (width, height) = term::size(deps.env, deps.input, deps.out);
     let rows = view::render(model, width as usize, height as usize);
     let mut out = String::from("\x1b[H");
     let last = rows.len().saturating_sub(1);
