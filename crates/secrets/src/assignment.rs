@@ -14,8 +14,17 @@ pub enum Delivery {
     /// The VM holds a placeholder, and the host proxy adds the real value for
     /// one exact host.
     Proxy { bound_host: BoundHost },
-    /// The real value is injected at start into the named services.
+    /// The real value is put into the environment of the named services at
+    /// start. This is the shape nearly every program already reads, so a
+    /// project works unchanged, but everything in that container can read it:
+    /// its libraries, its child processes, a crash report, `docker inspect`.
     Injected,
+    /// The real value is written to a file the named services can read, at
+    /// `/run/secrets/<name>`. Narrower than the environment, because
+    /// something has to open it deliberately, but the program has to be
+    /// willing to read a file. Many official images already are, through
+    /// their `_FILE` settings.
+    InjectedFile,
     /// The real value is passed as a build secret, opt-in per build.
     BuildSecret,
 }
@@ -163,7 +172,10 @@ pub struct ProxyEnv {
 pub struct ResolvedService {
     pub service: ServiceName,
     pub proxy: Vec<ProxyEnv>,
+    /// Delivered through the environment.
     pub injected: Vec<DeliveredSecret>,
+    /// Delivered as a file the service reads.
+    pub injected_files: Vec<DeliveredSecret>,
     pub build_secret_names: Vec<SecretName>,
 }
 
@@ -225,6 +237,7 @@ impl AssignmentSet {
             service: service.clone(),
             proxy: Vec::new(),
             injected: Vec::new(),
+            injected_files: Vec::new(),
             build_secret_names: Vec::new(),
         };
         for assignment in self.assignments.iter().filter(|a| a.applies_to(service)) {
@@ -242,6 +255,10 @@ impl AssignmentSet {
                     });
                 }
                 Delivery::Injected => resolved.injected.push(DeliveredSecret {
+                    name: name.clone(),
+                    value: load(store, name)?,
+                }),
+                Delivery::InjectedFile => resolved.injected_files.push(DeliveredSecret {
                     name: name.clone(),
                     value: load(store, name)?,
                 }),

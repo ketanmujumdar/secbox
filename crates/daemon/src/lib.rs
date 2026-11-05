@@ -17,6 +17,7 @@ pub mod audit;
 pub mod gitref;
 pub mod plan;
 pub mod run;
+pub mod secret;
 pub mod server;
 pub mod settings;
 
