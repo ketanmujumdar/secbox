@@ -6,17 +6,30 @@ secbox is being built to run a project and its AI agent inside a disposable micr
 
 ## Status: early, and not protecting anything yet
 
-**Do not rely on this tool to contain anything.** No command starts a VM, controls network traffic or reviews Git changes. The commands that would do so (`up`, `down`, `status`, `diff`, `export`) only say they are not built, and exit with code 69.
+**Do not rely on this tool to contain anything.** A microVM has been shown to
+run a Compose project with its network constrained, in one spike on one Mac
+(`docs/spikes/0001-engine-compose.md`). The commands below were built and
+tested against a fake engine in a Linux container with no KVM, so no sandbox
+has ever booted through them. Nothing enforces network rules on real traffic
+yet, and no secret reaches a sandbox by any route.
+
+`docs/NEEDS_A_VM.md` lists everything that has to run on real hardware before
+any of it can be called working.
 
 | Command | State |
 | --- | --- |
 | `doctor` | Works. Checks the host, without needing Docker |
 | `check [path]` | Works. Reads a project's Compose file as data and reports what it asks for |
+| `open`, `checks` | Works. Editor safety checks, and the gate before launching an editor |
 | `resources [path]` | Works. Shows requested and resolved limits, but nothing applies them yet |
 | `secrets import/set/list/rm` | Works, with the OS keychain. Nothing delivers secrets to a VM yet |
 | `net check <policy> <METHOD> <url>` | Works. Explains a policy decision, but nothing enforces it yet |
 | `uninstall --purge` | Works. Removes the state folder only |
-| `up`, `down`, `status`, `diff`, `export` | Not built |
+| `up`, `down`, `status` | Built, never run against a real VM. They need the daemon |
+| `diff`, `export` | Not built |
+
+`up`, `down` and `status` send requests to a daemon, `secboxd`, which holds the
+secrets, the policy and the approvals. With no daemon running they say so.
 
 ## Quick start
 

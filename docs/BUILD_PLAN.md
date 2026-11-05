@@ -34,14 +34,18 @@ Most cloud environments are Linux and may have no KVM, so they can't run the VM 
 
 | Crate | State | Main gaps |
 | --- | --- | --- |
-| `brand` | Done | Add a hidden-directory constant; `MsbEngine::default_home` adds the dot itself |
+| `brand` | Done | |
 | `projectcheck` | Done | `include` and `extends` files aren't followed; override files aren't in the model |
 | `secrets` | Done | Real keychain never run |
-| `egress` | Rule engine done | No proxy; no CONNECT pre-check; method-override headers and keys in query strings not handled |
-| `gitbroker` | Done | No real HTTPS push; no SSH remotes; no Touch ID approver; narrow snapshot exclusions |
+| `egress` | Rule engine done | No proxy; no CONNECT pre-check; method-override headers and keys in query strings not handled. **Nothing calls it on real traffic** |
+| `gitbroker` | Done | No real HTTPS push; no SSH remotes; no Touch ID approver; no working-tree snapshot |
 | `engine` | Done on macOS | Secrets need TLS interception; Linux untested |
-| `cli` | Base commands done | `up`, `down`, `status`, `diff` and `export` refuse; `doctor` looks for the engine only in the state folder unless `SECBOX_ENGINE_BIN` is set |
-| `daemon` | Empty placeholder | Everything |
+| `proto` | Done | The API covers `plan`, `up`, `down` and `status` only |
+| `hoststate` | Done | Project identity still hashes the full path, so moving a project loses its secrets |
+| `daemon` | Core done, against `FakeEngine` | Never run against a real VM; no secret delivery; no gateway log |
+| `cli` | `up`, `down`, `status`, `open` and `checks` done | `diff` and `export` refuse; no `logs`, `shell`, `exec`, `sync`, `net` or `rebuild` |
+
+`docs/NEEDS_A_VM.md` is the standing list of what has not run on real hardware.
 
 ## Milestone 0: decide the TLS question (run first, on a Mac)
 
