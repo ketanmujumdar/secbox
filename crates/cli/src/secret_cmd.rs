@@ -233,7 +233,7 @@ fn set(args: &SetArgs, deps: &mut Deps) -> Result<i32, String> {
     say!(deps, "Stored     {name} in the OS keychain");
     say!(deps, "Project    {}", esc_path(&project.path));
     say!(deps, "Goes to    {}", route(&meta, &name));
-    say!(deps, "Nothing delivers secrets yet. {}", not_protecting());
+    say!(deps, "It is delivered on each start, to the services named. {}", not_protecting());
     Ok(exit::OK)
 }
 
@@ -313,7 +313,7 @@ fn import(args: &ImportArgs, deps: &mut Deps) -> Result<i32, String> {
         deps,
         "None are assigned to a service, so none would be delivered."
     );
-    say!(deps, "Nothing delivers secrets yet. {}", not_protecting());
+    say!(deps, "{}", not_protecting());
     Ok(exit::OK)
 }
 

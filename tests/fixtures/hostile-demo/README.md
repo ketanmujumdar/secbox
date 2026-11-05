@@ -1,6 +1,25 @@
 # Hostile demo
 
 Two small projects that play a compromised dependency trying to steal a key.
+Each attack copies a technique from a real campaign: Shai-Hulud and the 2026
+Keyv/ChainDrop worm (tokens from the environment, a sweep of the disk), LiteLLM
+in March 2026 (cloud metadata), s1ngularity and the October 2026 testmetest
+worm (a hook planted for AI coding tools), DNS tunnelling and a raw IP. A
+hostile sidecar tries the Docker socket, `/proc` and the VM's `/run`.
+
+## Without secbox, for comparison
+
+```sh
+cd tests/fixtures/hostile-demo
+docker compose -p baseline -f without-secbox.yaml up --build -d
+sleep 30; docker compose -p baseline -f without-secbox.yaml logs api evil attacker
+docker compose -p baseline -f without-secbox.yaml down
+```
+
+Every send goes to `attacker`, a listener on your own machine. Run in plain
+Docker on Linux, seven attacks printed LEAKED and the listener received the
+token four ways. The metadata and `/run` probes print N/A there, because there
+is no cloud metadata service and no secbox.
 
 ## `hostile-demo`: must be refused
 
