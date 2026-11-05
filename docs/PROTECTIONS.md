@@ -41,7 +41,7 @@ attack in plain Docker for comparison, where seven of them succeeded.
 | Ask the cloud metadata service for credentials | LiteLLM on PyPI (Mar 2026) | Metadata addresses are blocked by the engine | The gateway denied `169.254.169.254` on a real VM (spike 0001). There was no real metadata service to prove the opposite, so that is the evidence |
 | Send the key inside a DNS lookup | Common exfiltration | DNS is answered only for allowed names; refused names are recorded, with the key masked | Refusal: ran on a real VM (spike 0001). Recording: ran on a real VM. Masking: **tested in code** |
 | Post the key to a raw IP | Common exfiltration | Raw IPs are blocked by the engine | A raw UDP address (`1.1.1.1`) was blocked on a real VM. Raw TCP to a public IP has not been tested: **not yet proven** |
-| Plant a hook for Claude, Cursor or VS Code to run later | s1ngularity / Nx (2025), testmetest (Oct 2026) | The VM gets a copy of the project and can't write to yours; `.claude/`, `.vscode/`, `CLAUDE.md`, workflows and install scripts are flagged on review | Copy: by design. Flagging on review: see `secbox diff` below |
+| Plant a hook for Claude, Cursor or VS Code to run later | s1ngularity / Nx (2025), testmetest (Oct 2026) | The VM gets a copy of the project and can't write to yours; `.claude/`, `.vscode/`, `CLAUDE.md`, workflows and install scripts are flagged on review | Copy: by design. `secbox diff` flags the hook first, and exits 5: **tested in code** |
 | A sidecar reads another container's env via the Docker socket | Container escape | Refused at plan time when the project has secrets | **Tested in code** |
 | A sidecar reads `/proc` with `pid: host`, or goes `privileged` | Container escape | Refused at plan time when the project has secrets | **Tested in code** |
 | A sidecar mounts the VM's `/run` where secrets are delivered | Container escape | Refused at plan time when the project has secrets | **Tested in code** |
@@ -86,6 +86,14 @@ attack in plain Docker for comparison, where seven of them succeeded.
 | Secret values are masked in logs, raw, base64 at any alignment, URL-encoded and hex, even split across reads | `crates/daemon/src/mask.rs` tests, `a_secret_printed_by_a_service_is_masked_in_logs_even_split_or_encoded` | Tested in code |
 | A key cut into a hostname label is masked in `net blocked` | `a_token_cut_into_a_hostname_label_is_hidden` | Tested in code |
 
+### Reviewing what a sandbox changed
+
+| Claim | Proof | Status |
+| --- | --- | --- |
+| `secbox diff`, the Review panel and the desktop Git review page show every file a sandbox changed, compared with a baseline commit the host made before anything ran | `crates/daemon/tests/diff.rs` | Tested in code |
+| A hook planted for Claude or Cursor is flagged first, as code that would run on your machine; workflows, git hooks, editor settings and install scripts are flagged too, including case and Unicode lookalikes | `crates/daemon/tests/diff.rs`, `crates/gitbroker/tests/hostile.rs` | Tested in code |
+| What comes out of the sandbox is hostile data: git on the host never runs in a folder the VM wrote, nothing from it is run or checked out, and a malformed, oversized or tricked bundle is refused | `crates/daemon/tests/diff.rs`, `crates/gitbroker/tests/hostile.rs` | Tested in code |
+
 ### Host safety
 
 | Claim | Proof | Status |
@@ -108,6 +116,7 @@ Say these alongside any claim above.
   where a stolen key can go.
 - **`shell` and `exec` output is not masked**, because it goes straight to
   your terminal.
-- **Export and approval by fingerprint** are Milestone 3. Status: **not yet**.
+- **Export and approval by fingerprint** are Milestone 3. `diff` shows and flags changes; nothing takes them out of the sandbox yet. Status: **not yet**.
+- **`diff` needs `git` inside the VM image**, which has not been checked on a real VM.
 - **Blocked raw IP, metadata and UDP attempts are blocked but not recorded**,
   so an empty `net blocked` list proves nothing.
