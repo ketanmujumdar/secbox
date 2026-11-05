@@ -211,10 +211,26 @@ fn a_plan_describes_the_ports_the_project_publishes() {
 #[test]
 fn a_plan_carries_the_build_hosts_and_no_approved_hosts_to_start_with() {
     let plan = fixture().plan();
-    assert!(plan.network.build_hosts.contains(&"registry.npmjs.org".to_owned()));
+    // Its only Dockerfile is FROM scratch: image hosts, and nothing that
+    // takes uploads from anyone.
+    assert!(plan.network.build_hosts.contains(&"registry-1.docker.io".to_owned()));
+    assert!(!plan.network.build_hosts.contains(&"registry.npmjs.org".to_owned()));
+    assert!(!plan.network.build_hosts.contains(&"storage.googleapis.com".to_owned()));
     assert_eq!(plan.network.run_hosts, Vec::<String>::new());
     assert_eq!(plan.network.tls, proto::TlsPlan::ServerNameOnly);
     assert!(plan.network.merged_for_whole_life);
+}
+
+#[test]
+fn a_node_project_gets_the_npm_registry_and_adding_it_moves_the_digest() {
+    let f = fixture();
+    let before = f.plan();
+    std::fs::write(f.project.path().join("web/package.json"), "{}").unwrap();
+    let after = f.plan();
+    assert!(after.network.build_hosts.contains(&"registry.npmjs.org".to_owned()));
+    assert!(!after.network.build_hosts.contains(&"proxy.golang.org".to_owned()));
+    // The hosts are part of what a person approves.
+    assert_ne!(before.digest, after.digest);
 }
 
 #[test]
@@ -1876,4 +1892,55 @@ fn a_dockerfile_projects_secret_reaches_its_one_service() {
     assert!(calls.contains("compose.yaml"), "{calls}");
     assert!(calls.contains("override.yaml"), "{calls}");
     assert!(!calls.contains(FAKE_VALUE));
+}
+
+// Masking secret values in what comes back from the sandbox.
+
+#[test]
+fn a_secret_printed_by_a_service_is_masked_in_logs_even_split_or_encoded() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.up().unwrap();
+    let engine = &f.deps.inner.engine;
+    let (first, second) = FAKE_VALUE.split_at(7);
+    // Split between two reads, as a follow can deliver it.
+    engine.push_stream_output(engine::OutputStream::Stdout, format!("api  | token={first}").as_bytes());
+    engine.push_stream_output(engine::OutputStream::Stdout, format!("{second} ok\n").as_bytes());
+    // Base64 of NAME=value, as the demo's attacker sent it.
+    let encoded = {
+        const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let bytes = format!("ENCRYPTION_KEY={FAKE_VALUE}\n").into_bytes();
+        let mut out = String::new();
+        for c in bytes.chunks(3) {
+            let n = (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+            for i in 0..=c.len() {
+                out.push(A[(n >> (18 - 6 * i)) as usize & 63] as char);
+            }
+        }
+        out
+    };
+    engine.push_stream_output(engine::OutputStream::Stderr, format!("posted {encoded}\n").as_bytes());
+
+    let mut kept = Kept::default();
+    let request = Request::Logs(LogsArgs {
+        project: f.path(),
+        service: Some("api".to_owned()),
+        tail: 200,
+        follow: false,
+    });
+    f.service.handle(&request, &mut kept).unwrap();
+    let all: String = kept.output.iter().map(|(_, t)| t.as_str()).collect();
+    assert!(!all.contains(FAKE_VALUE), "{all}");
+    assert!(!all.contains(first) || !all.contains(second), "{all}");
+    assert!(all.contains("token=[ENCRYPTION_KEY] ok"), "{all}");
+    assert!(all.contains("posted ") && all.matches("[ENCRYPTION_KEY]").count() == 2, "{all}");
+}
+
+#[test]
+fn logs_for_a_project_with_no_secrets_are_passed_through_unchanged() {
+    let f = fixture().started();
+    f.deps
+        .engine
+        .push_stream_output(engine::OutputStream::Stdout, b"web  | ready\n");
+    let (_, kept) = f.logs(Some("web")).unwrap();
+    assert_eq!(kept.text(OutputStream::Stdout), "web  | ready\n");
 }

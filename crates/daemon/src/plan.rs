@@ -24,24 +24,15 @@ use secrets::Delivery;
 use crate::settings::{Approvals, UserSettings};
 use crate::{bad, internal, unsupported, Project, Service};
 
-/// Hosts a build is allowed to reach. These are the ones the engine spike
-/// measured a real `demo_shop` build needing; without the two font hosts the
-/// build failed, which is also what showed the allowlist reaching inside
-/// `docker build`.
-pub const BUILD_HOSTS: [&str; 12] = [
-    "registry-1.docker.io",
-    "auth.docker.io",
-    "production.cloudflare.docker.com",
-    "production.cloudfront.docker.com",
-    "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com",
-    "registry.npmjs.org",
-    "proxy.golang.org",
-    "sum.golang.org",
-    "storage.googleapis.com",
-    "dl-cdn.alpinelinux.org",
-    "fonts.googleapis.com",
-    "fonts.gstatic.com",
-];
+/// Every host the engine spike measured a real `demo_shop` build needing.
+/// Each project now gets only the groups its files point to: see
+/// [`crate::buildhosts`]. This full list is what the menu is made of.
+pub fn every_build_host() -> Vec<&'static str> {
+    crate::buildhosts::ALL
+        .iter()
+        .flat_map(|g| g.hosts.iter().copied())
+        .collect()
+}
 
 /// The smallest memory a build is allowed to start with. The engine spike
 /// built this project at 3G and watched 2G fail all three times, killed by
@@ -474,7 +465,7 @@ fn plan_network(
         }
     }
     Ok(NetworkPlan {
-        build_hosts: BUILD_HOSTS.iter().map(|h| (*h).to_owned()).collect(),
+        build_hosts: crate::buildhosts::hosts_for(&project.root),
         run_hosts,
         // Never the intercepting mode while the question is open: it is the
         // mode that breaks nested HTTPS.
@@ -554,10 +545,12 @@ mod tests {
     }
 
     #[test]
-    fn the_build_list_holds_the_hosts_the_spike_measured() {
-        assert!(BUILD_HOSTS.contains(&"fonts.gstatic.com"));
-        assert!(BUILD_HOSTS.contains(&"registry.npmjs.org"));
+    fn the_menu_still_holds_every_host_the_spike_measured() {
+        let all = every_build_host();
+        assert_eq!(all.len(), 12);
+        assert!(all.contains(&"fonts.gstatic.com"));
+        assert!(all.contains(&"registry.npmjs.org"));
         // Nothing that would let any name resolve.
-        assert!(!BUILD_HOSTS.iter().any(|h| h.contains('*')));
+        assert!(!all.iter().any(|h| h.contains('*')));
     }
 }

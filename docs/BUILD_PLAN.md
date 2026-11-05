@@ -75,7 +75,7 @@ Done when: `secbox up` runs `demo_shop` in a VM with no real secrets, on a Mac, 
 
 ## Milestone 2: daily use
 
-- `secbox logs`, `shell` and `exec` are built, and ran against a real VM. `logs` strips control codes. **It does not mask secret values yet.** Assigned secrets now reach a sandbox, so a service that prints one shows it in `logs`. Masking still has to be added.
+- `secbox logs`, `shell` and `exec` are built, and ran against a real VM. `logs` strips control codes and masks assigned secret values, raw and in base64, URL and hex form; `net blocked` masks them in hostnames. `shell` and `exec` output is not masked. Build hosts are chosen per project from a fixed menu (`crates/daemon/src/buildhosts.rs`), but they still stay open while the project runs: splitting build and run into two sandboxes is the next step.
 - `secbox sync`.
 - `secbox net blocked` is built, and ran against a real VM. It reads refused name lookups from the engine's log on the host, for sandboxes created at `--log-level debug`. Raw IP, metadata and UDP attempts are not in that log at any level, so a complete record still needs a gateway on the host.
 - `net log` and `net allow`, with every decision recorded on the host, and a system approval to loosen policy. Blocked HTTP requests get a clear error.

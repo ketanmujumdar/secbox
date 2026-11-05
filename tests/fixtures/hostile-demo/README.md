@@ -56,5 +56,5 @@ Expected: every probe prints BLOCKED, and `net blocked` lists
 `exfil.example.net` and `build-exfil.example.net`. This needs a real VM and has
 not been run yet: see `docs/NEEDS_A_VM.md`.
 
-The token is printed to the log on purpose. `logs` does not mask values yet, so
-you will see it there. Use a fake value.
+The token is printed to the log on purpose. `logs` should show `[DEMO_TOKEN]`
+in its place, including in the base64 the probe sends. Use a fake value anyway.

@@ -15,8 +15,10 @@
 
 pub mod audit;
 pub mod blocked;
+pub mod buildhosts;
 pub mod debug;
 pub mod gitref;
+pub mod mask;
 pub mod plan;
 pub mod run;
 pub mod secret;

@@ -609,6 +609,14 @@ pub fn reachable_while_running(network: &NetworkPlan) -> Vec<String> {
 
 /// The same words in every client: which secret is held by which service,
 /// and where it could be sent. Empty when no secret is assigned.
+/// Hosts on the build menu that accept uploads to an account anyone can
+/// make: a bucket, an image repository, a package.
+pub const UPLOADS_FROM_ANYONE: [&str; 3] = [
+    "registry-1.docker.io",
+    "registry.npmjs.org",
+    "storage.googleapis.com",
+];
+
 /// The secrets a plan would deliver, as [`HeldSecret`]s.
 pub fn held_from_plan(secrets: &[SecretPlan]) -> Vec<HeldSecret> {
     secrets
@@ -653,10 +661,17 @@ pub fn exposure_lines(secrets: &[HeldSecret], hosts: Option<&[String]>, one_line
             } else {
                 lines.extend(hosts.iter().map(|h| format!("  {h}")));
             }
-            lines.push(
-                "Some of these accept uploads from anyone, such as storage.googleapis.com and the Docker and npm registries."
-                    .to_owned(),
-            );
+            let open: Vec<&str> = UPLOADS_FROM_ANYONE
+                .iter()
+                .copied()
+                .filter(|h| hosts.iter().any(|x| x == h))
+                .collect();
+            if !open.is_empty() {
+                lines.push(format!(
+                    "Of these, {} accept uploads to an account anyone can make, so a stolen value could be sent there.",
+                    open.join(", ")
+                ));
+            }
         }
     }
     lines
@@ -694,6 +709,11 @@ mod tests {
         assert_eq!(lines[0], "DEMO_TOKEN is given to api");
         assert!(lines.iter().any(|l| l.contains("these 2 hosts")));
         assert!(lines.iter().any(|l| l.trim() == "b.example"));
+        // Neither host takes uploads from anyone, so nothing is said about it.
+        assert!(!lines.iter().any(|l| l.contains("uploads")));
+        let npm = vec!["registry.npmjs.org".to_owned()];
+        let warned = exposure_lines(&held, Some(&npm), false);
+        assert!(warned.iter().any(|l| l.contains("registry.npmjs.org accept uploads")), "{warned:?}");
         let none = exposure_lines(&held, Some(&[]), false);
         assert!(none.iter().any(|l| l.contains("cannot be sent anywhere")));
         let unknown = exposure_lines(&held, None, false);

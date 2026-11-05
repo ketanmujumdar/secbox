@@ -29,7 +29,7 @@ any of it can be called working.
 | `net blocked [--project PATH] [-f]` | Works, through the daemon, on a sandbox created since this was added. Blocked hostnames only. See [Blocked hostnames](#blocked-hostnames) |
 | `uninstall --purge` | Works. Removes the state folder only |
 | `up`, `down`, `status` | Built, for Compose projects and projects with only a Dockerfile. They need the daemon |
-| `logs [SERVICE] [-f] [--tail N] [--project PATH]` | Works on a running sandbox, through the daemon. Removes terminal control codes. Does not mask secret values |
+| `logs [SERVICE] [-f] [--tail N] [--project PATH]` | Works on a running sandbox, through the daemon. Removes terminal control codes, and replaces assigned secret values with their names |
 | `shell [SERVICE]`, `exec [--service S] -- CMD...` | Work on a running sandbox, on your real terminal. Control codes can't be filtered there |
 | `diff`, `export` | Not built |
 | Desktop app (`apps/desktop`) | Early first cut. A menu bar icon that keeps the daemon running, and a window for status, start with plan approval, stop, destroy, logs and blocked hostnames. Same daemon, same powers as the CLI. Run on Linux under Xvfb only; macOS untested. See [its README](apps/desktop/README.md) |
@@ -64,7 +64,7 @@ In the full-screen interface, the Logs panel follows new lines by itself. Scroll
 
 There is no SSH server and no open port in the VM. For `shell` and `exec` the daemon checks the sandbox is running and tells the CLI where the engine is, and the CLI runs the engine with a cleared environment. Anything you paste into that shell is inside the sandbox.
 
-`logs` masks nothing. A service given a secret can print it, and `logs` will then show it.
+`logs` and `net blocked` replace each assigned secret's value with its name, such as `[DEMO_TOKEN]`, before you see it. That covers the value as it is, in base64, URL encoding and hex, and pieces of it inside a hostname. A value that has been encrypted or reworked can't be recognised, so this stops accidental leaks into logs, not a thief. `shell` and `exec` run on your own terminal, so their output is not masked.
 
 ## Blocked hostnames
 

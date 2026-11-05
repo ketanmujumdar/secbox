@@ -133,7 +133,9 @@ Not run, or not known:
 - `net blocked` lists `exfil.example.net` and `build-exfil.example.net`;
 - reading `/run/secbox/env.api` from inside `api` fails.
 
-Known gap, not a test: the 12 build hosts stay reachable while the project runs, and some accept uploads from anyone. A secret held by a service could be sent there. `status` and every plan list them under "Where secrets could go".
+Per-project build hosts have not built a real project. Before relying on them, build `demo_shop` and the demo on a real VM and check `net blocked` lists no name the build needed. A project the detection misses fails its build rather than leaking.
+
+Known gap, not a test: the build hosts a project gets stay reachable while it runs, and some accept uploads from anyone. A secret held by a service could be sent there. `status` and every plan list them under "Where secrets could go".
 
 ## Not built at all
 
