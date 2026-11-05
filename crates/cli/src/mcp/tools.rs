@@ -136,6 +136,42 @@ pub(crate) fn list() -> Value {
             "annotations": read_only,
         },
         {
+            "name": "git_status",
+            "title": "Git status",
+            "description": "Shows the sandbox clone's branch, how far it is ahead of or behind the remote, and what changed. Only for a project imported from a Git remote.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "annotations": read_only,
+        },
+        {
+            "name": "git_pull",
+            "title": "Pull from the remote",
+            "description": "Fetches the current branch's upstream from the remote and merges it, inside the sandbox. The person's SSH key is used on their machine and never enters the sandbox; their SSH agent may ask them to approve. Resolve any merge conflicts with read_file, write_file and git_commit.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "annotations": { "readOnlyHint": false, "destructiveHint": false, "openWorldHint": true },
+        },
+        {
+            "name": "git_commit",
+            "title": "Commit in the sandbox",
+            "description": "Stages and commits changes in the sandbox clone, under the person's own Git name. With no paths, everything that changed. Nothing leaves the sandbox until git_push.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string", "description": "The commit message." },
+                    "paths": { "type": "array", "items": { "type": "string" }, "description": "Only these paths, relative to /work." }
+                },
+                "required": ["message"],
+                "additionalProperties": false
+            },
+            "annotations": changes,
+        },
+        {
+            "name": "git_push",
+            "title": "Push the current branch",
+            "description": "Pushes the current branch to the same name on the remote, with the person's SSH key on their machine. Pushing to main or master, deleting a branch and pushing tags are refused before anything is sent: make a branch first with exec `git switch -c NAME`. The person's SSH agent may ask them to approve.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": true },
+        },
+        {
             "name": "write_file",
             "title": "Write a file in the sandbox",
             "description": format!("Writes a whole file in the project's copy at {WORK}, making its folders if needed and replacing what was there. Give the path relative to {WORK}. Up to {FILE_LIMIT} bytes. The change stays in the sandbox; nothing on the host changes."),
@@ -171,6 +207,21 @@ pub(crate) fn call(params: &Value, project: &Path, deps: &mut Deps) -> Result<Va
         "exec" => exec(arguments, &project, deps),
         "read_file" => read_file(arguments, &project, deps),
         "write_file" => write_file(arguments, &project, deps),
+        "git_status" => git(arguments, &[], &project, deps, |_| Ok(proto::GitOp::Status)),
+        "git_pull" => git(arguments, &[], &project, deps, |_| Ok(proto::GitOp::Pull)),
+        "git_push" => git(arguments, &[], &project, deps, |_| Ok(proto::GitOp::Push)),
+        "git_commit" => git(arguments, &["message", "paths"], &project, deps, |arguments| {
+            let message = required_text(arguments, "message")?;
+            let paths = match arguments.get("paths") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|item| item.as_str().map(str::to_owned).ok_or("paths must be strings".to_owned()))
+                    .collect::<Result<_, _>>()?,
+                Some(_) => return Err("paths must be a list of strings".to_owned()),
+            };
+            Ok(proto::GitOp::Commit { message, paths })
+        }),
         _ => return Err((INVALID_PARAMS, "there is no tool by that name".to_owned())),
     };
     let outcome = outcome.unwrap_or_else(Outcome::failed);
@@ -460,6 +511,38 @@ fn write_file(arguments: &Arguments, project: &str, deps: &mut Deps) -> Result<O
     Ok(Outcome::ok(format!(
         "Wrote {bytes} bytes to {path} inside the sandbox."
     )))
+}
+
+/// Runs one Git operation through the same request as the `git` command, so
+/// an agent's pull and push go through the relay and its checks like a
+/// person's.
+fn git(
+    arguments: &Arguments,
+    allowed: &[&str],
+    project: &str,
+    deps: &mut Deps,
+    op: impl FnOnce(&Arguments) -> Result<proto::GitOp, String>,
+) -> Result<Outcome, String> {
+    only(arguments, allowed)?;
+    let op = op(arguments)?;
+    let report = crate::git_cmd::call(Path::new(project), op, deps)?;
+    let mut text = format!("{UNTRUSTED}\n\n{}", report.output.trim_end());
+    for update in &report.updates {
+        text.push_str(&format!("\npushed {} {} -> {}", update.name, update.old, update.new));
+    }
+    if let Some(branch) = &report.branch {
+        text.push_str(&format!("\non branch {branch}"));
+    }
+    if let Some(reason) = &report.refused {
+        text.push_str(&format!("\nrefused: {reason}"));
+    } else if !report.ok {
+        text.push_str(&match report.code {
+            Some(code) => format!("\nGit exited with {code}"),
+            None => "\nGit did not finish".to_owned(),
+        });
+    }
+    text.push('\n');
+    Ok(Outcome { text, is_error: !report.ok })
 }
 
 /// Asks the daemon for the way in, exactly as the `exec` command does, then runs

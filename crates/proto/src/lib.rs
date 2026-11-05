@@ -84,6 +84,87 @@ pub enum Request {
     /// The daemon fetches with the user's SSH key on the host and keeps the
     /// files in its own state folder; nothing about the key reaches a sandbox.
     Fetch(FetchArgs),
+    /// Run Git in a project's sandbox. Pull and push go through the daemon's
+    /// relay, which reaches only the project's own remote, with the user's SSH
+    /// key on the host, and checks every push before it leaves.
+    Git(GitArgs),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitArgs {
+    pub project: String,
+    /// Named `action` because `op` already names the request on the wire.
+    pub action: GitOp,
+    /// Who commits and merges in the sandbox. The command line fills it from
+    /// the person's own Git settings. Without one, a fixed sandbox name is used.
+    #[serde(default)]
+    pub identity: Option<GitIdentity>,
+    /// As for [`FetchArgs::ssh_auth_sock`].
+    #[serde(default)]
+    pub ssh_auth_sock: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "git", rename_all = "snake_case", deny_unknown_fields)]
+pub enum GitOp {
+    /// The branch, what changed, and how far it is from the remote.
+    Status,
+    /// Fetch and merge the current branch's upstream.
+    Pull,
+    /// Stage and commit. With no paths, everything that changed.
+    Commit { message: String, paths: Vec<String> },
+    /// Push the current branch to the same name on the remote.
+    Push,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitIdentity {
+    pub name: String,
+    pub email: String,
+}
+
+/// The longest commit message accepted.
+pub const MAX_COMMIT_MESSAGE_BYTES: usize = 16 * 1024;
+
+/// Checks a name or email before it goes on Git's command line in a sandbox.
+pub fn check_identity(identity: &GitIdentity) -> Result<(), &'static str> {
+    for (value, what) in [(&identity.name, "name"), (&identity.email, "email")] {
+        if value.trim().is_empty() || value.len() > 200 {
+            return Err(if what == "name" { "the Git name must be 1 to 200 characters" } else { "the Git email must be 1 to 200 characters" });
+        }
+        if value.chars().any(|c| c.is_control() || matches!(c, '<' | '>')) {
+            return Err("a Git name or email must not hold control characters or angle brackets");
+        }
+    }
+    Ok(())
+}
+
+/// One branch a push changed, or tried to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefUpdate {
+    pub name: String,
+    pub old: String,
+    pub new: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitReport {
+    /// Git exited with 0 and nothing was refused.
+    pub ok: bool,
+    /// Git's exit code inside the sandbox, if it got that far.
+    pub code: Option<i32>,
+    /// What Git printed, filtered, and cut at a limit.
+    pub output: String,
+    /// The branch checked out after the operation, if there is one.
+    pub branch: Option<String>,
+    /// For a push: the branch changes it carried, checked by the daemon.
+    pub updates: Vec<RefUpdate>,
+    /// Why the daemon stopped this, if it did.
+    pub refused: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,6 +359,7 @@ pub enum Reply {
     Terminal(TerminalReport),
     Blocked(BlockedReport),
     Fetch(FetchReport),
+    Git(GitReport),
 }
 
 /// Whether a project's sandbox is writing down what it is refused.
@@ -676,12 +758,48 @@ mod tests {
             project: "/p".to_owned(),
             after: Some(BlockedCursor { file: 7, offset: 9 }),
         }));
+        round_trip(Request::Git(GitArgs {
+            project: "/p".to_owned(),
+            action: GitOp::Commit { message: "m".to_owned(), paths: vec!["a".to_owned()] },
+            identity: Some(GitIdentity { name: "A".to_owned(), email: "a@example.invalid".to_owned() }),
+            ssh_auth_sock: None,
+        }));
         round_trip(Request::Fetch(FetchArgs {
             url: "git@example.invalid:o/r.git".to_owned(),
             git_ref: Some("main".to_owned()),
             fetch: true,
             ssh_auth_sock: Some("/tmp/agent.sock".to_owned()),
         }));
+    }
+
+    #[test]
+    fn git_and_fetch_replies_survive_the_wire() {
+        for reply in [
+            Reply::Git(GitReport {
+                ok: false,
+                code: Some(1),
+                output: "a\nb".to_owned(),
+                branch: Some("feature".to_owned()),
+                updates: vec![RefUpdate { name: "refs/heads/f".to_owned(), old: "0".repeat(40), new: "1".repeat(40) }],
+                refused: Some("why".to_owned()),
+            }),
+            Reply::Fetch(FetchReport {
+                url: "git@h:o/r.git".to_owned(),
+                project_path: "/p".to_owned(),
+                commit: None,
+                git_ref: "HEAD".to_owned(),
+                fetched: true,
+            }),
+        ] {
+            let frame = Frame::Done(Outcome::Ok { reply });
+            let mut buffer = Vec::new();
+            write_frame(&mut buffer, &frame).unwrap();
+            let back: Frame = read_frame(&mut buffer.as_slice()).unwrap().unwrap();
+            assert_eq!(back, frame);
+        }
+        for op in [GitOp::Status, GitOp::Pull, GitOp::Push] {
+            round_trip(Request::Git(GitArgs { project: "/p".to_owned(), action: op, identity: None, ssh_auth_sock: None }));
+        }
     }
 
     #[test]

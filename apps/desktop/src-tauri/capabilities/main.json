@@ -16,6 +16,8 @@
     "allow-destroy",
     "allow-logs",
     "allow-logs-stop",
-    "allow-blocked"
+    "allow-blocked",
+    "allow-import-remote",
+    "allow-git"
   ]
 }

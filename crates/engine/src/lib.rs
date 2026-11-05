@@ -60,6 +60,17 @@ pub trait Engine: Send + Sync {
         request: &ExecRequest,
         input: &[u8],
     ) -> Result<ExecOutput>;
+    /// Starts a command whose stdin and stdout are raw pipes, for a protocol
+    /// the host relays byte for byte, such as Git's. Nothing on these pipes is
+    /// filtered or redacted, so a caller must treat stdout as hostile bytes and
+    /// never print it. The child has a cleared environment. A sandbox that is
+    /// not running is refused, not booted.
+    fn exec_piped(&self, _name: &SandboxName, _request: &ExecRequest) -> Result<std::process::Child> {
+        Err(EngineError::NotSupported {
+            operation: "exec_piped",
+            reason: "this engine cannot relay a command's input and output",
+        })
+    }
     /// Starts a command that keeps running, and returns its job ID.
     fn exec_detached(&self, name: &SandboxName, request: &ExecRequest) -> Result<String>;
     /// Copies a host file or directory into a running sandbox.

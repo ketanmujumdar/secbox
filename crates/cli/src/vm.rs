@@ -68,6 +68,10 @@ pub fn up(args: &UpArgsCli, deps: &mut Deps) -> i32 {
                 tell!(deps, "up: a remote has no uncommitted changes, so --include-uncommitted does not apply.");
                 return exit::USAGE;
             }
+            if args.commit.is_some() {
+                tell!(deps, "up: for a remote, name the branch, tag or commit with --ref.");
+                return exit::USAGE;
+            }
             match fetch(url, args.git_ref.as_deref(), deps) {
                 Some(root) => root,
                 None => return exit::FAILED,
@@ -565,11 +569,11 @@ fn fetch(url: &str, git_ref: Option<&str>, deps: &mut Deps) -> Option<PathBuf> {
         say!(deps, "Fetched {} ({}) at {} on this machine, with your SSH key.", esc(&report.url), esc(&report.git_ref), esc(commit));
         say!(deps, "The sandbox gets the files. Your key, agent and Git credentials stay on this machine.");
     } else {
-        say!(deps, "{} was fetched earlier, at {}. A sandbox already holds it, so it was not fetched again.", esc(&report.url), esc(commit));
+        say!(deps, "{} is already in a sandbox, so it was not fetched again.", esc(&report.url));
         if git_ref.is_some() {
-            say!(deps, "--ref was not used for the same reason.");
+            say!(deps, "--ref was not used for the same reason. Switch branches inside the sandbox with git.");
         }
-        say!(deps, "To start from the newest commit, run {} down --destroy {} and then up again. That deletes everything in the sandbox.", brand::CLI_BIN, esc(url));
+        say!(deps, "Bring in newer commits with: {} git pull --project {}", brand::CLI_BIN, esc(url));
     }
     say!(deps, "Other commands take the same remote in place of a folder.");
     say!(deps);

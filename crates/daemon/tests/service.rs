@@ -262,6 +262,7 @@ fn starting_follows_the_sequence_the_engine_spike_found_works() {
             FakeCall::ExecStream(..) => "exec-stream",
             FakeCall::ExecWithInput(..) => "exec-with-input",
             FakeCall::ExecDetached(..) => "exec-detached",
+            FakeCall::ExecPiped(..) => "exec-piped",
             FakeCall::CopyIn(..) => "copy-in",
             FakeCall::Logs(..) => "logs",
         })

@@ -110,6 +110,20 @@ impl Deps for RealDeps {
         let ssh = gitbroker::SshTransport::new(&program, agent.as_deref()).map_err(|e| e.to_string())?;
         gitbroker::fetch_ssh(mirror, url, git_ref, &ssh).map_err(|e| e.to_string())
     }
+
+    fn spawn_ssh(
+        &self,
+        url: &str,
+        service: gitbroker::GitService,
+        git_protocol: Option<&str>,
+        agent_socket: Option<&Path>,
+    ) -> Result<std::process::Child, String> {
+        let program = gitbroker::SshTransport::find_program()
+            .ok_or("no ssh program was found in /usr/bin, /usr/local/bin or /opt/homebrew/bin")?;
+        let agent = Self::agent(agent_socket);
+        let ssh = gitbroker::SshTransport::new(&program, agent.as_deref()).map_err(|e| e.to_string())?;
+        ssh.spawn_service(url, service, git_protocol).map_err(|e| e.to_string())
+    }
 }
 
 impl RealDeps {

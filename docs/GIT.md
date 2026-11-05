@@ -1,24 +1,28 @@
-# Git: getting code in and out
+# Git: import, pull and push
 
 As of Nov 5, 2026. `secbox` is a working name, see "Changing the name" in the README.
 
-**Status: code goes in, and nothing comes out yet.** A sandbox gets a project's files once, when it is created, either from a folder on your machine or from an SSH remote. `secbox diff` and `secbox export`, which would bring reviewed changes back, are not built. Fetching from an SSH remote has never run against a real server. See [What has been tested](#what-has-been-tested).
+**Status: built, and never run against a real VM or a real Git server.** Every piece below has run with real Git on both sides, in tests where a local folder stands in for the VM and a local repository stands in for GitHub. The engine's two-way exec, Git inside the guest, and your SSH agent have not been tried together. See [What has been tested](#what-has-been-tested).
 
-## Where a project's code comes from
+## In one picture
 
-| Source | Command | What reaches the sandbox |
-| --- | --- | --- |
-| A folder with a Git repository | `secbox up` or `secbox up PATH` | The files of `HEAD`, or of `--commit ID` |
-| An SSH remote | `secbox up git@github.com:org/repo.git` | The files of the remote's default branch, or of `--ref NAME` |
+```
+your Mac                                            the sandbox VM
+────────                                            ──────────────
+secbox up git@github.com:org/shop.git
+  1. secboxd fetches with your ssh and agent ─┐
+     (1Password asks you to approve)          │
+  2. you see the plan and say yes             │
+  3. the VM clones through the relay ─────────┼──►  /work: a real clone, full history
+                                              │     no key, no token, no agent
+secbox git pull / git_pull (MCP) / Pull ──────┤     git pull runs here, merges here
+secbox git push / git_push (MCP) / Push ──────┘     git push runs here
+     secboxd reads the branch list first:
+     not main or master, no deletes, no tags
+     then relays the rest to GitHub, unread
+```
 
-Either way:
-
-- **Only a commit's files go in.** There is no `.git` in the sandbox, and uncommitted changes are refused (`--include-uncommitted` is not built).
-- **Likely secrets are left out.** `.env`, key files and other names that usually hold secrets are never copied, and files that look like they contain a secret are listed in the plan. The rules are in `crates/gitbroker/src/secretpath.rs`.
-- **The plan names the commit**, and your approval covers it.
-- **The copy happens once,** when the sandbox is created. `up` on a stopped sandbox restarts it with the files it already has.
-
-## Starting from an SSH remote
+## Starting from a remote
 
 ```sh
 secbox up git@github.com:org/shop.git                 # the remote's default branch
@@ -26,147 +30,156 @@ secbox up git@github.com:org/shop.git --ref release   # a branch, tag or full co
 secbox up ssh://git@git.example.com:2222/srv/shop.git
 ```
 
-You don't need a clone on your machine. The daemon fetches on the host and keeps the result in its own state folder:
+You don't need a clone on your machine. `up`:
 
-```
-~/.secbox/remote/github-com-shop-1a2b3c4d5e6f/
-    mirror.git/   a bare repository holding what was fetched, HEAD at that commit
-    shop/         that commit's files, secrets left out, plus a .git file pointing at mirror.git
-```
+1. **Fetches on your Mac** into a mirror in the daemon's state folder, `~/.secbox/remote/<host>-<repo>-<hash>/`, and exports the commit's files there, with likely secrets left out. The plan is made from those files.
+2. **Shows the plan** and waits for your yes, as for any project.
+3. **Clones into the new VM** at `/work` through the relay, at exactly the commit you approved. The VM gets the full history: `log`, `blame`, branches, tags, everything Git normally has.
 
-`shop/` is then the project, exactly as a folder you named would be. Every other command takes the same remote in place of a folder:
-
-```sh
-secbox status git@github.com:org/shop.git
-secbox logs api --project git@github.com:org/shop.git
-secbox shell --project git@github.com:org/shop.git
-secbox mcp setup claude ~/agents/shop --project git@github.com:org/shop.git
-```
-
-These only look the remote up. They never fetch.
-
-**Getting a newer commit.** A fetch never replaces the files under an existing sandbox, because the sandbox would still hold the old ones. While a sandbox exists, `up` says so and leaves it alone, `--ref` included. To start from the newest commit, run `secbox down --destroy REMOTE`, then `secbox up REMOTE`. That deletes everything in the sandbox. A proper `pull` is not built.
+Every other command takes the remote in place of a folder, and only looks it up: `secbox status REMOTE`, `secbox shell --project REMOTE`, `secbox mcp setup claude FOLDER --project REMOTE`.
 
 **Accepted remotes:**
 
 - `[user@]host:path`, as Git's scp-like form, and `ssh://[user@]host[:port]/path`.
-- Not HTTPS yet. `git://`, `file://`, transport helpers such as `ext::`, and anything else are refused.
-- Strict on purpose: nothing may start with `-`, so nothing can turn into an `ssh` or Git option, as in the classic `ssh://-oProxyCommand=...` attack. Only printable ASCII is allowed, with no `%`, no `::` and no `..` in the path.
+- Not HTTPS yet.
+- Strict on purpose: nothing may start with `-`, so nothing can turn into an `ssh` or Git option. Only printable ASCII is allowed, with no `%`, `::` or `..`.
 
-A folder that exists with a name like `a:b` is still treated as a folder.
+A clone holds everything ever committed. Unlike the snapshot of a folder project, which leaves `.env` and other likely secrets out, a clone includes any secret committed to the repository at any point in its history. That is what having the real history means.
+
+## Pull, commit and push
+
+Inside the sandbox it's plain Git. `secbox shell --project REMOTE` gives you a shell in `/work`, where `git switch -c`, `commit`, `merge`, `rebase`, `stash` and the rest work as usual. Only talking to the remote goes through secbox:
+
+| What | Command line | Terminal UI | Desktop app | MCP tool |
+| --- | --- | --- | --- | --- |
+| Import | `secbox up REMOTE` | `i`, then paste the URL | Import box in the sidebar | none, a person imports |
+| Status | `secbox git status` | | Git tab, Status | `git_status` |
+| Pull | `secbox git pull` | `g` | Git tab, Pull | `git_pull` |
+| Commit | `secbox git commit -m MSG [PATHS]` | | Git tab, Commit | `git_commit` |
+| Push | `secbox git push` | `G` | Git tab, Push branch | `git_push` |
+
+Add `--project REMOTE` (or a folder) to name the project from elsewhere.
+
+- **Pull** fetches and merges the current branch's upstream (`git pull --no-rebase`). Conflicts are left in `/work` to resolve and commit as usual.
+- **Commit** stages everything that changed, or only the paths given, and commits under your name.
+- **Push** pushes the current branch to the same name on the remote and sets it as the upstream (`git push --set-upstream origin HEAD`).
+- **Your name on commits:** the command line, the desktop app and MCP read `user.name` and `user.email` from your global Git settings, and only those. `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` override them. Without either, commits say `Sandbox <sandbox@localhost.invalid>`. Commits you make by hand in the shell use whatever the VM's Git is set to.
+- **A `git push` typed inside the VM fails** with a message saying how to push through secbox. The clone's `core.sshCommand` points at that message, and there is no credential in the VM to use.
+
+### What a push may change
+
+Before a push sends anything, Git lists which branches it will change and from which commit to which. The daemon reads that list and refuses the whole push, sending the remote nothing at all, if any line:
+
+- changes `main` or `master`,
+- deletes a branch,
+- touches anything other than a branch, such as a tag or a note,
+- or isn't in Git's normal form.
+
+What the daemon can't tell: a force-push that rewrites a feature branch looks the same as a normal push, because telling them apart means reading the pack, and the host never parses data from the VM. Turn on branch protection on GitHub to stop those. Every push and every refusal is in the audit log, with the branch and both commit ids.
 
 ## How your SSH key is used
 
-**Your key never goes into the VM.** Nothing in the sandbox can reach the key, the agent or Git credentials, because the fetch happens before the sandbox gets anything, on the host, in another process.
+**Your key never goes into the VM.** The VM's Git talks to the remote through a relay:
 
-```
-secbox up git@github.com:org/shop.git            your shell
-   │  sends the URL, the ref and the path of your SSH_AUTH_SOCK (not a key)
-   ▼
-secboxd                                          on the host, as you
-   │  checks the socket is a socket owned by you
-   │  runs git: no hooks, no global config, fsck on every object, ssh only
-   ▼
-/usr/bin/ssh -o BatchMode=yes -o StrictHostKeyChecking=yes ...
-   │  signs with your key through the agent; the key itself stays in the agent
-   ▼
-github.com                                       objects come back into mirror.git
-   │
-   ▼
-snapshot of one commit → files only → copied into the new sandbox at /work
-```
+1. **Git in the VM thinks it is running `ssh`.** Its `ssh` program is a small script that writes one header line saying which Git service it wants: fetch (`git-upload-pack`) or push (`git-receive-pack`). Then it joins Git to the channel back to the host.
+2. **The daemon checks the service** against the operation. A pull may only fetch, a push may only push. It ignores the repository path in the header.
+3. **The daemon starts the real `ssh` on your Mac,** to the URL the project was imported from, never one the VM names. Your agent signs.
+4. **The daemon copies bytes both ways.** For a push it first reads and checks the branch list, as above, and parses nothing else from the VM.
 
-In order:
+`ssh` gets one fixed set of options:
 
-1. **The command line sends a path, not a key.** If your shell has `SSH_AUTH_SOCK` set, the command line passes that path to the daemon. That way an agent unlocked in this session works even if the daemon was started before it, for example by the desktop app at login.
-2. **The daemon checks the path** is a socket owned by the user it runs as, and refuses anything else. Without one from the client, it uses its own `SSH_AUTH_SOCK`, under the same check.
-3. **Git runs hardened** through the same helper as the rest of `crates/gitbroker`: a cleared environment with an empty temporary `HOME`, no global or system Git config, hooks off, no submodules, no tags, and fsck on every object received. SSH is the only transport allowed, and only for this call. The agent socket is the one thing from your environment that reaches it.
-4. **`ssh` gets one fixed command line.** Options given with `-o` beat the same options in `~/.ssh/config`:
+| Option | Why |
+| --- | --- |
+| `BatchMode=yes` | `ssh` never prompts for a passphrase, password or yes/no. Your agent's own approval prompt, such as 1Password's, still appears, because that is the agent asking, not `ssh` |
+| `StrictHostKeyChecking=yes`, `UpdateHostKeys=no` | Refuse a host whose key is not already in `known_hosts`, and never write to it |
+| `ForwardAgent=no`, `ForwardX11=no`, `ClearAllForwardings=yes` | Nothing goes back the other way |
+| `PermitLocalCommand=no`, `RequestTTY=no` | No local command, no terminal |
+| `ControlMaster=no`, `ControlPath=none` | No reuse of a connection opened with other options |
+| `ConnectTimeout=30`, `ServerAliveInterval=15`, `ServerAliveCountMax=4` | A dead connection ends |
 
-   | Option | Why |
-   | --- | --- |
-   | `BatchMode=yes` | Never prompt for a passphrase, password or yes/no. Nobody is there to answer, so a prompt would only hang |
-   | `StrictHostKeyChecking=yes`, `UpdateHostKeys=no` | Refuse a host whose key is not already in your `known_hosts`, and never write to it |
-   | `ForwardAgent=no`, `ForwardX11=no`, `ClearAllForwardings=yes` | Nothing goes back the other way |
-   | `PermitLocalCommand=no`, `RequestTTY=no` | No local command, no terminal |
-   | `ControlMaster=no`, `ControlPath=none` | No reuse of a connection opened with other options |
-   | `ConnectTimeout=30`, `ServerAliveInterval=15`, `ServerAliveCountMax=4` | A dead connection ends |
+Everything else comes from your `~/.ssh/config`: `Host` aliases, `HostName`, `Port`, `User`, `IdentityFile`, `IdentityAgent`, `ProxyJump`. `ssh` finds `~/.ssh` from the system's user database, so the daemon's cleared environment doesn't hide it. The program is `/usr/bin/ssh`, or failing that `/usr/local/bin/ssh` or `/opt/homebrew/bin/ssh`. On macOS, `/usr/bin/ssh` is Apple's.
 
-5. **Your `~/.ssh/config` still applies to everything else**, such as `Host` aliases, `HostName`, `Port`, `User`, `IdentityFile`, `IdentityAgent`, `ProxyJump` and `ProxyCommand`. A remote behind a bastion, or a key chosen per host, keeps working. It is your own file, and secbox treats it as trusted. `ssh` finds `~/.ssh` from the system's user database, not from `HOME`, so the empty `HOME` Git runs with doesn't hide it.
-6. **The program is `/usr/bin/ssh`,** or failing that `/usr/local/bin/ssh` or `/opt/homebrew/bin/ssh`. `PATH` is never searched. The program must be a regular executable that nobody but its owner can write to. On macOS, `/usr/bin/ssh` is Apple's, which can use keys stored in the Keychain.
+**Which agent:** the command line and the desktop app pass the path of their `SSH_AUTH_SOCK` (a path, never a key), which the daemon uses only if it is a socket owned by you. Without one, the daemon uses its own `SSH_AUTH_SOCK`. An `IdentityAgent` line in `~/.ssh/config` beats both, as it does for any `ssh`.
 
-### Which keys work
+### 1Password
+
+1Password's SSH agent works as it does for `git` in your terminal:
+
+1. In 1Password, turn on the SSH agent (Settings, Developer, "Use the SSH agent").
+2. Point `ssh` at it, as 1Password suggests, in `~/.ssh/config`:
+
+   ```
+   Host *
+     IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+   ```
+
+   Because the daemon's `ssh` reads this file, it works even when the daemon was started by the desktop app at login, with no `SSH_AUTH_SOCK` of its own.
+3. Add the host's key once, for example `ssh -T git@github.com`.
+
+On each import, pull and push, 1Password asks whether to allow the key. The request comes from `ssh`, started by `secboxd`. Approve it, and 1Password's own settings decide how long that approval lasts. If you deny it, the command fails with a hint and nothing is sent.
+
+### Other agents and keys
 
 | Your setup | Works? |
 | --- | --- |
 | A key loaded in `ssh-agent` (`ssh-add`), with or without a passphrase | Yes |
-| 1Password, Secretive or another agent, through `SSH_AUTH_SOCK` or `IdentityAgent` in `~/.ssh/config` | Yes. Touch ID or the agent's own prompt appears as usual |
-| macOS with `UseKeychain yes` and `AddKeysToAgent yes` | Yes, once the key has been added to the agent |
-| A key file with no passphrase, no agent | Yes. `ssh` finds it in `~/.ssh` as usual |
-| A key file with a passphrase, no agent | No. Nothing can ask for the passphrase. Run `ssh-add` first |
-| A hardware key (FIDO, `sk-` keys) | Through an agent, as above. Untested. A key that needs a touch should work. One that asks for a PIN may not, because nothing can type it |
+| Secretive or another agent, through `SSH_AUTH_SOCK` or `IdentityAgent` | Yes. Untested |
+| macOS with `UseKeychain yes` and `AddKeysToAgent yes` | Yes, once the key is in the agent |
+| A key file with no passphrase, no agent | Yes |
+| A key file with a passphrase, no agent | No. Nothing can type the passphrase. Run `ssh-add` first |
+| A hardware key (FIDO, `sk-` keys) through an agent | Untested. A touch should work; a PIN prompt may not |
 
 ### When it fails
 
-The error shows `ssh`'s own words, plus what to do:
-
 | Message | What to do |
 | --- | --- |
-| `Host key verification failed` | Check the host's key, then connect once yourself to add it, for example `ssh -T git@github.com` |
-| `Permission denied (publickey)` | `ssh-add`, or check that this key may read the repository |
+| `Host key verification failed` | Check the host's key, then connect once yourself: `ssh -T git@github.com` |
+| `Permission denied (publickey)` | Unlock 1Password or `ssh-add`, and check that this key may read (or write) the repository |
+| `agent refused operation` | You denied the agent's prompt, or it timed out. Try again and approve |
 | `Could not resolve hostname` | The host can't be reached from this machine |
-| `couldn't find remote ref` | No branch, tag or commit by that name |
-
-### Recommendations
-
-- **Use a read-only key for fetching** where you can: a deploy key on the repository, or a key limited to reading. A fetch never needs to write.
-- **Check new host keys** against the provider's published fingerprints before adding them. secbox won't add one for you.
-- **Keep the agent locked when you're not using it.** While a fetch runs, `ssh` can use any key the agent offers for that host, the same as any other `ssh` you run.
+| `refused by secboxd: pushing to main is not allowed` | Make a branch: `git switch -c NAME` in the shell, then push |
+| `git is not installed in this sandbox` | The VM's image has no Git. See `docs/NEEDS_A_VM.md` |
 
 ## What this does not protect
 
-- **Git on the host parses what the remote sends.** Hooks and config are neutralized and fsck checks every object, but a memory-safety bug in Git's pack parsing would be in a host process. This is the same exposure as `git clone` on your laptop. Fetching inside a throwaway VM would remove it, and is planned for bundles already.
-- **Your `~/.ssh/config` runs.** A `ProxyCommand` or `Match exec` in it runs during the fetch. That is your own file, but a tool that can write to it can make a fetch run anything.
-- **Git LFS files are not downloaded.** The sandbox gets the small pointer files instead. Submodules are not fetched either.
-- **The export follows the secret-name rules, not your intent.** A secret committed under an ordinary name is copied in, with a warning in the plan if it looks like one.
-
-## Getting code out
-
-Not built. This is what exists and what is planned:
-
-| Piece | State |
-| --- | --- |
-| Quarantine a bundle from the VM, review it without running anything from it, approve one commit, push it to a `secbox/<task>` branch | Built in `crates/gitbroker` as a library, with tests that need Git 2.50. No command uses it |
-| `secbox diff` and `secbox export` | Not built (Milestone 3) |
-| Shared history between the VM's commits and the remote | Not settled. The sandbox has no `.git`. The mirror of a fetched remote holds the base commit, which is what a bundle with prerequisites needs |
-| Push over HTTPS with a credential helper | Built in the library, never tried against a real server |
-| Push over SSH | Not built. The library refuses SSH remotes for pushing. Allowing it would reuse the fetch's fixed `ssh` command, still only to a `secbox/<task>` branch, and only after you approve |
-| Approval | Must come from Touch ID or a passphrase, so nothing in a terminal can approve. Not built |
-
-**Getting work out by hand today:** read files with `secbox exec -- cat FILE`, or with an agent's `read_file` tool. Generate a patch with `secbox exec -- git diff` if you initialized Git in the sandbox yourself, then review it and apply it on the host.
-
-## What has been tested
-
-- URL and ref checks, the `ssh` command line, the agent socket checks, and Git getting the SSH command and socket only on an SSH call. These are unit tests that need no Git.
-- A real fetch: Git fetching through a stand-in `ssh` that runs `git-upload-pack` locally, landing one commit and no tags in the mirror, then a snapshot from it. This needs Git 2.50 like every other Git test in `crates/gitbroker`. It passed once on Git 2.43 with that check lowered for the run, and fails on the version check otherwise.
-- The daemon and command line with a fake fetch (`crates/cli/tests/sandbox.rs`, after "projects fetched from an SSH remote"):
-  - `up REMOTE` fetches once, writes the folders above, and starts from that commit.
-  - `--ref` is passed on.
-  - Nothing is fetched under an existing sandbox.
-  - Other commands find the project by URL without fetching.
-  - A failed fetch starts nothing and says what to do.
-  - Hostile URLs are refused before anything runs.
-  - Only a socket of this user is passed on as the agent.
-
-Not tested: a fetch from a real server, any agent other than none, macOS Keychain and 1Password agents, and a remote behind a `ProxyJump`. `docs/NEEDS_A_VM.md` lists what to check.
+- **The sandbox can push any branch but the protected ones,** to the project's own repository, while you approve in your agent. A tricked agent can push a branch with bad code, and your CI may run on it. It can't reach `main`, delete branches, push tags or reach another repository.
+- **A force-push to a feature branch can't be told apart** from a normal one without reading the pack. Branch protection on GitHub can refuse it.
+- **The clone holds the full history,** including any secret ever committed.
+- **Git on the host parses the import fetch.** The first fetch, for the plan, goes into the host's mirror through the hardened Git helper, with fsck. After that, the host only relays, never parses.
+- **Your `~/.ssh/config` runs.** A `ProxyCommand` or `Match exec` in it runs on every relayed connection. It is your own file.
+- **Git LFS and submodules** are not fetched through the relay: LFS uses HTTPS, and submodules would be other repositories.
+- **One connection per Git command.** A Git command that opens a second connection to the remote fails on the second.
 
 ## Where the code is
 
 | File | What it holds |
 | --- | --- |
-| `crates/gitbroker/src/remote.rs` | URL and ref checks, the `ssh` command line, `fetch_ssh` |
-| `crates/gitbroker/src/git.rs` | The hardened Git helper, including the SSH-only call |
-| `crates/gitbroker/src/snapshot.rs` | Exporting one commit's files, secrets left out |
-| `crates/daemon/src/remote.rs` | The `fetch` request: folders, swapping in a new copy, not fetching under a sandbox, error hints |
-| `crates/daemon/src/main.rs` | Finding `ssh` and the agent for a real fetch |
-| `crates/cli/src/vm.rs`, `crates/cli/src/lib.rs` | `up REMOTE --ref`, and accepting a remote wherever a folder is accepted |
+| `crates/daemon/src/gitrelay.rs` | The relay script, the relay itself, the push checks, status, commit, pull and push |
+| `crates/daemon/src/remote.rs` | Import: the mirror, the export for the plan, the remote's record |
+| `crates/daemon/src/run.rs` | Cloning into a new sandbox instead of copying files |
+| `crates/gitbroker/src/remote.rs` | URL checks, the fixed `ssh` command, starting `ssh` for one Git service |
+| `crates/engine/src/lib.rs`, `msb.rs` | The piped exec the relay runs over |
+| `crates/cli/src/git_cmd.rs` | `secbox git`, and reading your Git name |
+| `crates/cli/src/mcp/tools.rs` | `git_status`, `git_pull`, `git_commit`, `git_push` |
+| `crates/cli/src/tui/mod.rs` | Import, Pull and Push in the terminal UI |
+| `apps/desktop/` | The Import box and the Git tab |
+
+## What has been tested
+
+- **Unit tests:** URL and ref checks, the `ssh` command line and agent checks, `ssh` started with only the project's URL and the agent, the push list parser (feature branch allowed; `main`, `master`, deletes, tags, notes, signed pushes and malformed lines refused; one bad line stops the whole push; the pack is left unread), the header parser, commit path checks, typing a URL in the terminal UI.
+- **End to end with real Git** (`crates/cli/tests/sandbox.rs`): a bare repository stands in for GitHub, and the fake engine runs the VM's Git in a local folder. Covered:
+  - `up REMOTE` clones with full history at the approved commit.
+  - A `git push` typed in the clone fails with the message.
+  - Commit and push of a branch land on the remote and in the audit log.
+  - A push to `main` is refused, `main` doesn't move, and the refusal is logged.
+  - Pull brings in someone else's commit without making a new sandbox.
+  - An agent commits and pushes over MCP, and is refused on `main`.
+- **The real binary:** the terminal UI's Import box, drawn at 80 columns.
+
+**Not tested:**
+
+- A real VM. This needs Git in the guest image, and two-way streaming through `msb exec`.
+- A real server.
+- 1Password or any agent prompt.
+- The desktop app's Import and Git tab clicked through. Its Rust side was type-checked.
+- The host-side fetch in `crates/gitbroker` needs Git 2.50, like every Git test there.

@@ -38,6 +38,12 @@ pub enum Action {
     SnapshotTaken,
     /// A project was fetched from a Git remote, over SSH, on the host.
     RemoteFetched,
+    /// A pull ran through the relay.
+    GitPulled,
+    /// A push changed this branch, from one commit to another.
+    GitPushed,
+    /// A push was stopped before anything was sent, and why.
+    GitPushRefused,
     /// A file was deliberately left out of a snapshot.
     SnapshotExcluded,
     BuildStarted,

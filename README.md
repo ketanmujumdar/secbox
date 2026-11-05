@@ -29,13 +29,14 @@ any of it can be called working.
 | `net blocked [--project PATH] [-f]` | Works, through the daemon, on a sandbox created since this was added. Blocked hostnames only. See [Blocked hostnames](#blocked-hostnames) |
 | `uninstall --purge` | Works. Removes the state folder only |
 | `up`, `down`, `status` | Built, for Compose projects and projects with only a Dockerfile. They need the daemon |
-| `up git@host:org/repo.git [--ref REF]` | Built, never run against a real server. The daemon fetches over SSH on this machine, with your agent, and the sandbox gets only the files. See [docs/GIT.md](docs/GIT.md) |
+| `up git@host:org/repo.git [--ref REF]` | Built, never run on a real VM or server. Clones the remote into the sandbox with its history, through a relay that uses your SSH key on this machine. See [docs/GIT.md](docs/GIT.md) |
+| `git status\|pull\|commit\|push [--project P]` | Built, never run on a real VM or server. Pull and push go through the same relay; a push to `main` or `master`, a delete or a tag is refused before anything is sent |
 | `logs [SERVICE] [-f] [--tail N] [--project PATH]` | Works on a running sandbox, through the daemon. Removes terminal control codes. Does not mask secret values |
 | `shell [SERVICE]`, `exec [--service S] -- CMD...` | Work on a running sandbox, on your real terminal. Control codes can't be filtered there |
 | `mcp serve --project PATH` | Built, never run on a real VM. An MCP server on stdin and stdout that lets an AI agent on this machine work in one project's sandbox. See [AI agents](#ai-agents-claude-code-codex) |
 | `mcp setup claude FOLDER`, `mcp setup codex` | Works. Makes a folder for Claude Code with its own host tools denied, or prints how to add the server to Codex |
 | `diff`, `export` | Not built |
-| Desktop app (`apps/desktop`) | Early first cut. A menu bar icon that keeps the daemon running, and a window for status, start with plan approval, stop, destroy, logs and blocked hostnames. Same daemon, same powers as the CLI. Run on Linux under Xvfb only; macOS untested. See [its README](apps/desktop/README.md) |
+| Desktop app (`apps/desktop`) | Early first cut. A menu bar icon that keeps the daemon running, and a window for status, start with plan approval, stop, destroy, logs, blocked hostnames, Import from an SSH remote, and a Git tab for pull, commit and push. Same daemon, same powers as the CLI. Run on Linux under Xvfb only; macOS untested. See [its README](apps/desktop/README.md) |
 
 `up`, `down`, `status`, `logs`, `net blocked`, `shell` and `exec` send requests to a daemon,
 `secboxd`, which holds the secrets, the policy and the approvals. With no daemon
@@ -72,13 +73,17 @@ There is no SSH server and no open port in the VM. For `shell` and `exec` the da
 ## Starting from a Git remote
 
 ```sh
-secbox up git@github.com:org/shop.git --ref main
-secbox status git@github.com:org/shop.git      # any command takes the remote in place of a folder
+secbox up git@github.com:org/shop.git      # fetch, see the plan, clone into the sandbox
+secbox shell --project git@github.com:org/shop.git
+  git switch -c my-change                  # inside the sandbox: plain Git, full history
+secbox git commit -m "Fix the thing" --project git@github.com:org/shop.git
+secbox git push --project git@github.com:org/shop.git
+secbox git pull --project git@github.com:org/shop.git
 ```
 
-You don't need a clone on your machine. The daemon fetches over SSH on the host, using your `ssh`, your `~/.ssh/config` and your SSH agent. It keeps a mirror in `~/.secbox/remote`, and the sandbox gets one commit's files with likely secrets left out. **Your key never goes into the VM**: the command line passes only the path of your agent's socket to the daemon, and `ssh` runs with options that refuse prompts and unknown host keys and forward nothing. The host's key must already be in your `known_hosts`. A key with a passphrase works only through an agent.
+You don't need a clone on your machine. The sandbox gets a real clone with its whole history, and **your SSH key never goes into it**. Pull and push go through a relay in the daemon: Git in the VM speaks through it, and the daemon runs the real `ssh` on your Mac, with your `~/.ssh/config` and your agent, to the project's own repository only. 1Password's SSH agent works and asks you to approve each time. Before a push leaves, the daemon reads its branch list and refuses `main`, `master`, deletes and tags. A `git push` typed inside the VM fails, because there is nothing there to authenticate with.
 
-A fetch is never repeated under an existing sandbox, and there is no `pull` yet. To start from a newer commit, run `down --destroy`, then `up`. Nothing comes back out of a sandbox yet either: `diff` and `export` are not built. [docs/GIT.md](docs/GIT.md) explains all of it.
+The terminal UI imports with `i` and pulls and pushes with `g` and `G`. The desktop app has an Import box and a Git tab. AI agents get `git_status`, `git_pull`, `git_commit` and `git_push` over MCP, with the same checks. [docs/GIT.md](docs/GIT.md) explains all of it, including what the relay can't see.
 
 ## AI agents (Claude Code, Codex)
 

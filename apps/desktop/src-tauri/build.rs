@@ -16,6 +16,8 @@ const COMMANDS: &[&str] = &[
     "logs",
     "logs_stop",
     "blocked",
+    "import_remote",
+    "git",
 ];
 
 fn main() {

@@ -144,6 +144,109 @@ impl SshTransport {
     }
 }
 
+/// The two Git services a relay may reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitService {
+    /// Clone, fetch and pull.
+    UploadPack,
+    /// Push.
+    ReceivePack,
+}
+
+impl GitService {
+    pub fn program(self) -> &'static str {
+        match self {
+            Self::UploadPack => "git-upload-pack",
+            Self::ReceivePack => "git-receive-pack",
+        }
+    }
+
+    /// Reads the remote command Git hands its SSH program, such as
+    /// `git-upload-pack 'org/repo.git'`. Only the service is taken from it: the
+    /// repository always comes from the project's own URL.
+    pub fn from_remote_command(command: &str) -> Option<Self> {
+        let program = command.split_whitespace().next()?;
+        match program {
+            "git-upload-pack" => Some(Self::UploadPack),
+            "git-receive-pack" => Some(Self::ReceivePack),
+            _ => None,
+        }
+    }
+}
+
+/// Where an SSH remote points: the login, the port and the repository path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshTarget {
+    pub destination: String,
+    pub port: Option<u16>,
+    pub path: String,
+}
+
+/// Splits a remote that [`validate_ssh_url`] accepted.
+pub fn ssh_target(url: &str) -> Result<SshTarget> {
+    validate_ssh_url(url)?;
+    if let Some(rest) = url.strip_prefix("ssh://") {
+        let (authority, path) = rest.split_once('/').ok_or(Error::InvalidRemote("has no path"))?;
+        let (destination, port) = match authority.rsplit_once(':') {
+            Some((destination, port)) => (destination, port.parse().ok()),
+            None => (authority, None),
+        };
+        // `ssh://host/~user/repo` names a path under a home folder; anything
+        // else is absolute on the server.
+        let path = if path.starts_with('~') { path.to_owned() } else { format!("/{path}") };
+        return Ok(SshTarget { destination: destination.to_owned(), port, path });
+    }
+    let (destination, path) = url.split_once(':').ok_or(Error::InvalidRemote("is not an SSH remote"))?;
+    Ok(SshTarget { destination: destination.to_owned(), port: None, path: path.to_owned() })
+}
+
+/// Checks a `GIT_PROTOCOL` value before it is passed on to the server.
+pub fn valid_git_protocol(value: &str) -> bool {
+    matches!(value, "version=0" | "version=1" | "version=2")
+}
+
+impl SshTransport {
+    /// Starts `ssh` to one Git service of one repository, with the fixed
+    /// options and the user's own agent. Everything about where it connects
+    /// comes from `url`; the caller relays the protocol over its pipes.
+    pub fn spawn_service(
+        &self,
+        url: &str,
+        service: GitService,
+        git_protocol: Option<&str>,
+    ) -> Result<std::process::Child> {
+        let target = ssh_target(url)?;
+        let mut command = std::process::Command::new(&self.program);
+        command
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("LC_ALL", "C")
+            .current_dir("/")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if let Some(socket) = &self.agent_socket {
+            command.env("SSH_AUTH_SOCK", socket);
+        }
+        for option in SSH_OPTIONS {
+            command.arg("-o").arg(option);
+        }
+        if let Some(value) = git_protocol.filter(|value| valid_git_protocol(value)) {
+            command.arg("-o").arg(format!("SetEnv=GIT_PROTOCOL={value}"));
+        }
+        if let Some(port) = target.port {
+            command.arg("-p").arg(port.to_string());
+        }
+        // The path was checked to hold no quote, space or shell character, so
+        // quoting it is enough for the server's shell.
+        command
+            .arg("--")
+            .arg(&target.destination)
+            .arg(format!("{} '{}'", service.program(), target.path));
+        command.spawn().map_err(Error::Io)
+    }
+}
+
 /// Checks an SSH remote: `ssh://[user@]host[:port]/path` or `[user@]host:path`.
 ///
 /// Strict on purpose. Nothing may start with `-`, so nothing can become an
@@ -310,6 +413,62 @@ pub fn fetch_ssh(mirror: &Path, url: &str, git_ref: &str, ssh: &SshTransport) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remote_splits_into_login_port_and_path() {
+        assert_eq!(
+            ssh_target("git@github.com:org/shop.git").unwrap(),
+            SshTarget { destination: "git@github.com".into(), port: None, path: "org/shop.git".into() }
+        );
+        assert_eq!(
+            ssh_target("ssh://git@host.example:2222/srv/shop.git").unwrap(),
+            SshTarget { destination: "git@host.example".into(), port: Some(2222), path: "/srv/shop.git".into() }
+        );
+        assert_eq!(ssh_target("ssh://host/~me/r.git").unwrap().path, "~me/r.git");
+        assert!(ssh_target("git@host:-x").is_err());
+    }
+
+    #[test]
+    fn only_the_two_git_services_are_recognized() {
+        assert_eq!(GitService::from_remote_command("git-upload-pack 'org/r.git'"), Some(GitService::UploadPack));
+        assert_eq!(GitService::from_remote_command("git-receive-pack '/x'"), Some(GitService::ReceivePack));
+        for other in ["", "sh -c id", "git-upload-archive 'r'", "git upload-pack 'r'", "git-upload-pack2"] {
+            assert_eq!(GitService::from_remote_command(other), None, "{other}");
+        }
+        assert!(valid_git_protocol("version=2"));
+        assert!(!valid_git_protocol("version=2 x"));
+        assert!(!valid_git_protocol("version=2\nFoo=bar"));
+    }
+
+    #[test]
+    fn spawned_ssh_gets_fixed_options_the_project_url_and_the_agent_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let program = dir.path().join("ssh");
+        fs::write(
+            &program,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {log}\nprintf 'sock=%s home=%s' \"$SSH_AUTH_SOCK\" \"$HOME\" >> {log}\n", log = log.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        let socket = dir.path().join("agent");
+        let _agent = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let ssh = SshTransport::new(&program, Some(&socket)).unwrap();
+        let mut child = ssh
+            .spawn_service("ssh://git@host.example:2222/srv/shop.git", GitService::ReceivePack, Some("version=2"))
+            .unwrap();
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        let text = fs::read_to_string(&log).unwrap();
+        let args: Vec<&str> = text.lines().collect();
+        assert!(args.contains(&"BatchMode=yes"));
+        assert!(args.contains(&"SetEnv=GIT_PROTOCOL=version=2"));
+        let tail = &args[args.len() - 4..args.len() - 1];
+        assert_eq!(tail, ["--", "git@host.example", "git-receive-pack '/srv/shop.git'"]);
+        assert!(args[args.len() - 5..].contains(&"2222"));
+        assert!(text.contains(&format!("sock={}", socket.display())), "{text}");
+        assert!(text.ends_with("home="), "no HOME is passed on: {text}");
+    }
 
     #[test]
     fn ssh_remotes_in_both_forms_are_accepted() {

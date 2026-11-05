@@ -17,6 +17,7 @@ pub mod audit;
 pub mod blocked;
 pub mod debug;
 pub mod gitref;
+pub mod gitrelay;
 pub mod plan;
 pub mod remote;
 pub mod run;
@@ -85,6 +86,19 @@ pub trait Deps: Send + Sync {
         _agent_socket: Option<&Path>,
     ) -> Result<String, String> {
         Err("fetching from a Git remote is not available in this build".to_owned())
+    }
+
+    /// Starts `ssh` to one Git service of `url`, with the user's own `ssh`,
+    /// config and agent, for the relay to pump. A seam, so the relay can be
+    /// tested against a local repository.
+    fn spawn_ssh(
+        &self,
+        _url: &str,
+        _service: gitbroker::GitService,
+        _git_protocol: Option<&str>,
+        _agent_socket: Option<&Path>,
+    ) -> Result<std::process::Child, String> {
+        Err("reaching a Git remote is not available in this build".to_owned())
     }
 }
 
@@ -168,6 +182,10 @@ impl Service {
                 blocked::report(self, &project, args).map(Reply::Blocked)
             }
             Request::Fetch(args) => remote::fetch(self, args, progress).map(Reply::Fetch),
+            Request::Git(args) => {
+                let project = self.open(&args.project)?;
+                gitrelay::handle(self, &project, args).map(Reply::Git)
+            }
         }
     }
 

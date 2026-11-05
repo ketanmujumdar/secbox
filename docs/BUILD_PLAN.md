@@ -91,7 +91,7 @@ Done when: a developer can run, debug and rebuild `demo_shop` using only secbox 
 - Settle Git history: the snapshot has no `.git`, so VM commits must share ancestry with the remote, likely through `import_base` and prerequisite bundles.
 - Real HTTPS push with credentials, tested against a real server. Then decide on SSH remotes.
   - Fetching over SSH is built early: `secbox up git@host:org/repo.git`, into a mirror the daemon owns, with the user's agent on the host (`docs/GIT.md`). Pushing over SSH would reuse its fixed `ssh` command. The mirror holds the base commit, which settles part of the history question for fetched projects.
-- `secbox pull` for a fetched project: fetch, show the new commit, and update `/work` without losing changes made in the sandbox.
+- Built early: a Git relay, so a project imported from a remote is a real clone in the VM, and `secbox git pull` and `push` (and the matching MCP tools, terminal UI keys and desktop Git tab) use the user's SSH key on the host, with pushes to `main`, `master`, deletes and tags refused. See `docs/GIT.md`. Still open: review before push (show the commits and ask), and branch rules set per project.
 - Validate bundles in a throwaway VM before the host's Git parses them.
 
 Done when: a change made in the VM reaches a `secbox/<task>` branch on a real remote only after Touch ID, and a planted `.vscode/tasks.json` is flagged in `diff`.

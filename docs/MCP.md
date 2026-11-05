@@ -49,7 +49,7 @@ It has no tool to:
 - start, stop, rebuild or destroy a sandbox
 - read a secret, or change which secrets a service gets
 - change the network policy, or forward a port
-- commit to the host, push, or export changes
+- push to `main` or `master`, delete a branch, push a tag, or push anywhere but the project's own repository. The Git tools push through the daemon's relay, with the checks in `docs/GIT.md`
 - reach any project but the one it was started for
 - read or write the host's files
 
@@ -114,6 +114,10 @@ Configure a stdio server whose command is the absolute path of `secbox`, with th
 | `exec` | `command` (required), `service`, `timeout_seconds` (default 120, at most 600) | Runs `sh -c COMMAND` in `/work`, or inside one Compose service with `docker compose exec -T`. Returns the exit code, stdout and stderr. Has no terminal and no input | 256 KiB per stream, 64 KiB command |
 | `read_file` | `path` (required) | Reads a file under `/work` | 1 MiB, 60 s |
 | `write_file` | `path`, `content` (both required) | Replaces a file under `/work`, making its folders. The content goes in on stdin, and the path is passed as an argument, never as part of a script | 1 MiB, 60 s |
+| `git_status` | none | The clone's branch and changes, for a project imported from a remote | 60 s |
+| `git_pull` | none | Fetches and merges the current branch's upstream through the Git relay, with the person's SSH key on their machine | 15 min |
+| `git_commit` | `message` (required), `paths` | Stages and commits, under the person's own Git name | 60 s |
+| `git_push` | none | Pushes the current branch through the relay. `main`, `master`, deletes and tags are refused before anything is sent | 15 min |
 
 Notes on the tools:
 

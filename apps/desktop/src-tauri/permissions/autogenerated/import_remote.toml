@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-import-remote"
+description = "Enables the import_remote command without any pre-configured scope."
+commands.allow = ["import_remote"]
+
+[[permission]]
+identifier = "deny-import-remote"
+description = "Denies the import_remote command without any pre-configured scope."
+commands.deny = ["import_remote"]

@@ -205,6 +205,8 @@ impl Progress {
 pub struct Dialog {
     pub title: String,
     pub lines: Vec<String>,
+    /// Said in place of the Yes and No buttons, for a box that asks nothing.
+    pub footer: Option<String>,
 }
 
 /// Whether new lines are arriving by themselves.
@@ -434,6 +436,9 @@ pub fn keys_for(pane: Pane) -> &'static [KeyLabel] {
             ("3", "Stop"),
             ("x", "Destroy"),
             ("e", "Shell"),
+            ("i", "Import"),
+            ("g", "Pull"),
+            ("G", "Push"),
             ("5", "Refresh"),
             ("6", "Panel"),
             ("10", "Quit"),
@@ -469,7 +474,7 @@ pub fn keys_for(pane: Pane) -> &'static [KeyLabel] {
 /// What `?` says on each panel. It names the same keys as the bar, in words.
 pub fn help_for(pane: Pane) -> &'static str {
     match pane {
-        Pane::Projects => "Up and down choose. 2 starts, 3 stops, x destroys, e opens a shell, 5 reads again. Red letters open panels, tab moves on, q quits.",
+        Pane::Projects => "Up and down choose. 2 starts, 3 stops, x destroys, e opens a shell, 5 reads again. i imports from an SSH remote; g pulls and G pushes the current branch, with your SSH key on this machine. Red letters open panels, tab moves on, q quits.",
         Pane::Logs => "New lines follow by themselves. Left and right choose a service or All. Up and PgUp scroll back and pause; f or End follows again. e opens a shell in the chosen service. 5 reads again.",
         Pane::Traffic => "Up, down, PgUp and PgDn scroll. 5 reads the newest.",
         Pane::Secrets => "Names and where they go, never values. Up and down choose the project, 5 reads again. Change them with the secrets command.",
@@ -639,7 +644,7 @@ fn body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, h: usi
         screen.text_cut(
             x + 1,
             y + 2,
-            "Run the up command in a project folder first.",
+            "Run the up command in a project folder, or press i to import from Git.",
             w - 2,
             Style::WindowDim,
         );
@@ -1193,8 +1198,14 @@ fn draw_dialog(screen: &mut Screen, dialog: &Dialog) {
         screen.text_cut(x + 2, y + 2 + offset, text, width - 4, Style::Dialog);
     }
 
-    // Two buttons, the agreeing one marked as the one that acts.
     let buttons_y = y + height - 2;
+    if let Some(footer) = &dialog.footer {
+        let shown = super::screen::cut(footer, width.saturating_sub(4));
+        let start = x + (width.saturating_sub(shown.chars().count())) / 2;
+        screen.text(start, buttons_y, &shown, Style::DialogHot);
+        return;
+    }
+    // Two buttons, the agreeing one marked as the one that acts.
     let yes = "  Yes  ";
     let no = "  No  ";
     let total = yes.len() + no.len() + 4;
@@ -1226,6 +1237,12 @@ pub enum Key {
     Follow,
     /// A shell in the selected project's sandbox.
     Shell,
+    /// Type a Git remote to import.
+    Import,
+    /// Git pull in the selected project's sandbox, through the relay.
+    Pull,
+    /// Git push of its current branch, through the relay.
+    Push,
     Yes,
     No,
     Other,
@@ -1255,6 +1272,9 @@ pub fn key(bytes: &[u8]) -> Key {
         b"3" | b"\x1bOR" => Key::Stop,
         b"x" => Key::Destroy,
         b"e" | b"E" => Key::Shell,
+        b"i" | b"I" => Key::Import,
+        b"g" => Key::Pull,
+        b"G" => Key::Push,
         b"[" | b"\x1b[D" | b"\x1bOD" => Key::PreviousService,
         b"]" | b"\x1b[C" | b"\x1bOC" => Key::NextService,
         b"?" | b"1" | b"\x1bOP" => Key::Help,
@@ -1960,7 +1980,7 @@ mod tests {
         m.dialog = Some(Dialog {
             title: "Start demo-shop".to_owned(),
             lines: vec!["Forward 3000 and 8080 to 127.0.0.1?".to_owned()],
-        });
+            footer: None,        });
         let text = plain(&m, 90, 26);
         assert!(text.contains("╡ Start demo-shop ╞"), "{text}");
         assert!(text.contains("Yes") && text.contains("No"));

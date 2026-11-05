@@ -9,6 +9,7 @@ pub mod client;
 mod debug;
 mod doctor;
 mod editor;
+mod git_cmd;
 pub mod host;
 mod mcp;
 mod net;
@@ -107,6 +108,8 @@ enum Command {
     Shell(debug::ShellArgsCli),
     /// Run one command inside a running sandbox, and pass back its exit code
     Exec(debug::ExecArgsCli),
+    /// Git for a project imported from a remote: status, pull, commit, push
+    Git(git_cmd::GitArgsCli),
     /// Let an AI agent on this machine (Claude Code, Codex) work inside a sandbox, over MCP
     Mcp(mcp::McpArgs),
     /// Not built yet: review changes made in a VM
@@ -185,6 +188,7 @@ where
         Command::Shell(args) => debug::shell(&args, deps),
         Command::Exec(args) => debug::exec(&args, deps),
         Command::Mcp(args) => mcp::run(&args, deps),
+        Command::Git(args) => git_cmd::run(&args, deps),
         Command::Diff(_) => not_built("diff", deps),
         Command::Export(_) => not_built("export", deps),
     }

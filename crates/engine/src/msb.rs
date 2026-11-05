@@ -434,6 +434,26 @@ impl Engine for MsbEngine {
         })
     }
 
+    fn exec_piped(&self, name: &SandboxName, request: &ExecRequest) -> Result<std::process::Child> {
+        // The same arguments as a terminal-less `exec` on pipes, which ran on a
+        // real VM. Both directions streaming at once has not.
+        let args = argv::exec_terminal(name, request, false)?;
+        self.require_running(name)?;
+        std::process::Command::new(&self.binary)
+            .args(&args)
+            .env_clear()
+            .envs(self.env())
+            .current_dir("/")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| EngineError::Spawn {
+                operation: "msb exec".to_owned(),
+                reason: e.kind().to_string(),
+            })
+    }
+
     fn exec_detached(&self, name: &SandboxName, request: &ExecRequest) -> Result<String> {
         let args = argv::exec_detached(name, request)?;
         self.require_running(name)?;

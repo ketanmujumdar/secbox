@@ -33,10 +33,25 @@ use sha2::{Digest, Sha256};
 
 use crate::{audit, bad, gitref, internal, not_found, refused, run, Progress, Service};
 
+
 /// One fetch at a time. Two at once for the same remote would fight over its
 /// folders, and fetches are rare enough that one lock for all is no loss.
 static FETCHING: Mutex<()> = Mutex::new(());
 
+/// The agent socket each remote was last fetched with, so the clone that
+/// follows in the same `up` uses it too. Memory only: a path, never a key.
+static LAST_AGENT: Mutex<Vec<(String, PathBuf)>> = Mutex::new(Vec::new());
+
+/// What the daemon recorded about a fetched remote, beside its folders.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Remote {
+    pub url: String,
+    pub git_ref: String,
+    pub commit: String,
+}
+
+const REMOTE_FILE: &str = "remote.json";
 const MIRROR: &str = "mirror.git";
 const NEXT: &str = ".next";
 const OLD: &str = ".old";
@@ -52,6 +67,11 @@ pub fn fetch(service: &Service, args: &FetchArgs, progress: &mut dyn Progress) -
         })?),
         None => None,
     };
+    if let Some(agent) = &agent {
+        let mut last = LAST_AGENT.lock().unwrap_or_else(|e| e.into_inner());
+        last.retain(|(url, _)| url != &args.url);
+        last.push((args.url.clone(), agent.clone()));
+    }
 
     let _one_at_a_time = FETCHING.lock().unwrap_or_else(|e| e.into_inner());
     let remote_dir = service.state_dir().join("remote");
@@ -112,6 +132,9 @@ pub fn fetch(service: &Service, args: &FetchArgs, progress: &mut dyn Progress) -
     fs::rename(&next, &root).map_err(|e| internal(format!("cannot put the new copy in place: {}", e.kind())))?;
     remove_leftover(&old)?;
 
+    let record = Remote { url: args.url.clone(), git_ref: git_ref.clone(), commit: commit.clone() };
+    let text = serde_json::to_vec_pretty(&record).map_err(|_| internal("cannot record the remote"))?;
+    hoststate::write_private(&base.join(REMOTE_FILE), &text).map_err(internal)?;
     let fetched = report(true, &root)?;
     service.record(
         audit::entry(service.deps().now_unix(), audit::Action::RemoteFetched)
@@ -119,6 +142,31 @@ pub fn fetch(service: &Service, args: &FetchArgs, progress: &mut dyn Progress) -
             .detail(format!("{git_ref} at {commit}")),
     );
     Ok(fetched)
+}
+
+/// The remote a project was imported from, if it was. Only a folder the
+/// daemon made under its own `remote` folder counts, so a project on disk
+/// cannot claim to be one by holding a file.
+pub fn remote_of(service: &Service, project: &crate::Project) -> Option<Remote> {
+    let remote_dir = fs::canonicalize(service.state_dir().join("remote")).ok()?;
+    let base = project.root.parent()?;
+    if base.parent()? != remote_dir {
+        return None;
+    }
+    let text = fs::read(base.join(REMOTE_FILE)).ok()?;
+    if text.len() > 64 * 1024 {
+        return None;
+    }
+    let record: Remote = serde_json::from_slice(&text).ok()?;
+    gitbroker::validate_ssh_url(&record.url).ok()?;
+    Some(record)
+}
+
+/// The agent socket last given for this remote, if it is still usable.
+pub fn last_agent(url: &str) -> Option<PathBuf> {
+    let last = LAST_AGENT.lock().unwrap_or_else(|e| e.into_inner());
+    let (_, path) = last.iter().rev().find(|(known, _)| known == url)?;
+    usable_agent_socket(path)
 }
 
 /// An agent socket the daemon may hand to `ssh`: a socket, owned by the user
@@ -198,6 +246,11 @@ fn repo_name(url: &str) -> String {
     }
 }
 
+/// `ssh`'s own words plus what to do, for a relay.
+pub fn explain_ssh(reason: &str) -> String {
+    explain(reason).trim_start_matches("the fetch failed: ").to_owned()
+}
+
 /// Adds what to do about the failures people actually hit. `ssh`'s own words
 /// stay first, already escaped by the broker.
 fn explain(reason: &str) -> String {
@@ -206,9 +259,13 @@ fn explain(reason: &str) -> String {
         Some(
             "The host's key is not in your known_hosts. Check it and add it by connecting once yourself, for example: ssh -T git@github.com",
         )
+    } else if reason.contains("agent refused") || reason.contains("sign_and_send_pubkey") {
+        Some(
+            "Your SSH agent did not sign. If it asks for approval, as 1Password does, approve the request and try again.",
+        )
     } else if reason.contains("Permission denied") || reason.contains("publickey") {
         Some(
-            "No key was accepted. Load yours into your SSH agent with ssh-add, then try again. A key with a passphrase works only through the agent, because nothing can ask for it.",
+            "No key was accepted. Load yours into your SSH agent with ssh-add, or unlock 1Password, then try again. A key with a passphrase works only through an agent, because nothing can ask for it.",
         )
     } else if reason.contains("Could not resolve hostname") || reason.contains("Connection timed out") {
         Some("The host could not be reached from this machine.")
