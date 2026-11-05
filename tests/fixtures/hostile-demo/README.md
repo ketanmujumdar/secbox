@@ -49,11 +49,25 @@ secbox up $P
 secbox logs api --project $P        # each line: BLOCKED or LEAKED
 secbox net blocked --project $P
 secbox status $P                    # "Where secrets could go"
+secbox diff $P; echo "exit $?"      # the planted hook, flagged
 secbox down --destroy $P
 ```
 
 Expected: every probe prints BLOCKED, and `net blocked` lists
-`exfil.example.net` and `build-exfil.example.net`. This needs a real VM and has
+`exfil.example.net` and `build-exfil.example.net`.
+
+The probe also plants a hook for AI coding tools, as s1ngularity and
+testmetest did. `api` has the project mounted at `/work`, as a dev setup
+would, so the hook lands in the sandbox's copy of the project, and only
+there: your own folder is untouched. Its report line says LEAKED, because the
+write itself succeeds. What matters is that `diff` starts with
+
+```text
+FLAG  .claude/settings.json  adds a hook for an AI coding tool, which would run on your machine
+```
+
+and exits 5. The daemon tests check that this exact hook is flagged, against
+the fake engine. This needs a real VM and has
 not been run yet: see `docs/NEEDS_A_VM.md`.
 
 The token is printed to the log on purpose. `logs` should show `[DEMO_TOKEN]`

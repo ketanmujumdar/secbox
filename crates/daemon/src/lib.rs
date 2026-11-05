@@ -17,6 +17,7 @@ pub mod audit;
 pub mod blocked;
 pub mod buildhosts;
 pub mod debug;
+pub mod diff;
 pub mod gitref;
 pub mod mask;
 pub mod plan;
@@ -153,6 +154,10 @@ impl Service {
             Request::Blocked(args) => {
                 let project = self.open(&args.project)?;
                 blocked::report(self, &project, args).map(Reply::Blocked)
+            }
+            Request::Diff(args) => {
+                let project = self.open(&args.project)?;
+                diff::diff(self, &project, progress).map(Reply::Diff)
             }
         }
     }

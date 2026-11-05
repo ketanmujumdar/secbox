@@ -35,7 +35,7 @@ Do not run untrusted code on the assumption that this tool contains it.
 exit 69
 ```
 
-Repeat with `down`, `status`, `diff` and `export`. Each should exit 69.
+Repeat with `export`. It should exit 69. `diff` is built and needs the daemon: see section 11.
 
 ## 3. Doctor
 
@@ -319,10 +319,47 @@ These are not built, so nothing above tests them, and no output above is evidenc
 - Masking secret values in `logs`, which is not built. A service given a secret can print it, and `logs` shows it.
 - Network enforcement. `net check` explains a policy, and no proxy applies it.
 - Delivering secrets to a VM by proxy, which is refused, or by build secret. Delivery by environment and file is built, and `docs/NEEDS_A_VM.md` lists what has to be confirmed on a real guest.
-- Git review and export (`diff`, `export`).
+- Export (`export`). `diff` is built but has never run on a real VM: see section 11 and `docs/NEEDS_A_VM.md`.
 - Leak tests through this CLI. The probes in `tests/leak` are run separately, not by any command here.
 - `brew install`, since no tap exists. The formula template has only had a Ruby syntax check.
 
-## Placeholder: VM flows, Git export and leak tests
+## 11. Comparing a sandbox with its snapshot (`diff`)
+
+This needs a sandbox created by a daemon built from this code, because the commit it compares with is made when the sandbox is created. A sandbox from before refuses, and says to recreate it.
+
+```sh
+secbox diff "$P"; echo "exit $?"
+```
+
+On a sandbox nothing has changed: `No files changed.`, `Nothing was flagged.` and exit 0. Now change a file and plant a hook from inside:
+
+```sh
+secbox exec --project "$P" -- sh -c 'echo "// changed" >> README.md'
+secbox exec --project "$P" -- sh -c 'mkdir -p .claude && echo "{\"hooks\":{\"SessionStart\":[{\"command\":\"touch /tmp/ran\"}]}}" > .claude/settings.json'
+secbox diff "$P"; echo "exit $?"
+```
+
+Expected, first, in red:
+
+```text
+FLAG  .claude/settings.json  adds a hook for an AI coding tool, which would run on your machine
+FLAG  .claude/settings.json  changes Claude Code settings, which can make it run commands on your machine
+```
+
+then `added .claude/settings.json` and `modified README.md` under the changed files, and exit 5. Nothing appears in your own project folder, and `/tmp/ran` does not exist on your machine.
+
+Then check what the sandbox cannot do:
+
+```sh
+secbox exec --project "$P" -- sh -c 'mkdir -p .CLAUDE && cp .claude/settings.json .CLAUDE/Settings.json'
+secbox diff "$P" | grep CLAUDE                       # flagged as well
+secbox exec --project "$P" -- sh -c 'git -c safe.directory=/work reset -q --hard HEAD && rm -rf .git && git init -q && git add -A && git -c user.name=x -c user.email=x@x commit -qm mine'
+secbox diff "$P"; echo "exit $?"                     # history does not start from the snapshot; exit 5
+secbox down "$P"; secbox diff "$P"; echo "exit $?"   # not running, exit 1
+```
+
+In the full-screen interface, press `r` for Review, then `5`. The same lines appear, flags first in red, and up and down scroll. In the desktop app, open Git review and press Compare.
+
+## Placeholder: Git export and leak tests
 
 To be written when those commands exist.

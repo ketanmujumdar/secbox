@@ -14,7 +14,7 @@ hand on a Mac. Nothing in `crates/daemon` or `crates/cli` was part of that run.
 | Gap | Effect |
 | --- | --- |
 | No `/dev/kvm`, no engine binary | Nothing can boot. Every VM path is unexercised |
-| git 2.43, and `gitbroker` requires 2.50 | 10 unit tests, all 54 tests in `tests/hostile.rs` and the one in `tests/env_scrub.rs` never ran. They compile |
+| git 2.43, and `gitbroker` requires 2.50 | Worked around on Nov 5, 2026 by building git 2.56.0 from the kernel.org tarball into `/usr/local` and linking `/usr/bin/git` to it. With that, every `gitbroker` test ran and passed, and so did the `diff` tests in `crates/daemon/tests/diff.rs`. A fresh container is back to 2.43 |
 
 ## Logs and terminals: what ran on a real VM
 
@@ -67,6 +67,19 @@ TLS at the gateway breaks HTTPS inside nested containers and build steps. So:
 
 Until one of those is answered, the daemon refuses a proxy-held secret rather
 than guessing, and the plan carries the reason.
+
+### Comparing a sandbox with its snapshot (`diff`)
+
+Built on Nov 5, 2026 and tested only against `FakeEngine`, which plays the guest by streaming a bundle that ordinary git made on the host. **Never run on a real VM.** The tests show what the host does with whatever comes back, including bundles that are hostile, cut short, too big or not base64. They say nothing about the guest side.
+
+- [ ] The snapshot's `.git`, made on the host, arriving in the guest at `/work/.git` through `msb copy`, with the index and refs intact.
+- [ ] `git`, `base64` and `mktemp` existing in `docker:dind`. **Unknown, and it decides whether `diff` works at all.** The leak-probe notes below guess the image has no git. Without it, `diff` fails with the guest's `git: not found` and nothing else is affected; the fix would be a git binary the host provides, or a different image.
+- [ ] The guest script itself: a temporary index, `add --all`, `commit-tree`, and `bundle create` excluding the baseline, as root in `/work`, where the copied files may belong to another user (hence `safe.directory`).
+- [ ] **The bundle leaving the guest as base64 on `msb exec` output**, through the engine adapter's streamed exec. It is line-buffered and passed through the secret redactor: a delivered secret's value appearing in the base64 text would be masked and the bundle refused, and how the real engine handles a stream of this size is unmeasured. The 128 MB cap is enforced on the bytes as they arrive.
+- [ ] Time to bundle and review a project the size of `demo_shop`, against the 10-minute limit in the daemon and the 3-minute limit in the full-screen interface and the desktop app. `secbox diff` itself waits as long as the daemon does.
+- [ ] The hostile demo's planted `.claude/settings.json` appearing in `/work` through the `api` container's mount, and `diff` flagging it. See `tests/fixtures/hostile-demo/README.md`.
+
+There is deliberately no copy-out step: the engine has none, and one would have the engine write guest-shaped files on the host.
 
 ## Built, but never run against anything real
 
@@ -147,7 +160,7 @@ Nothing below exists, so there is nothing to test yet.
 - `sync`.
 - `net log`, `net allow`, a record of blocked raw IP, metadata and UDP attempts, and a clear error inside the app for a blocked request.
 - `rebuild`, its review steps and rollback.
-- `diff` and `export`. They still exit 69.
+- `export`. It still exits 69. `diff` is built; see above.
 - A Touch ID approver, and a passphrase approver for headless Linux.
 - Git history between a sandbox's commits and a real remote, and SSH remotes.
 - Everything under AI and MCP.
