@@ -125,6 +125,16 @@ Not run, or not known:
 - `demo_shop` at debug. How fast its build fills the 50 MB is unmeasured. One small Compose start wrote about 5 MB.
 - The cost of debug logging. One tight file-activity loop ran about 9% slower than at the default level, from one run of each.
 
+## The hostile demo
+
+`tests/fixtures/hostile-demo-run` holds a secret in `api` and tries to send it out. On a real VM, run it as in `tests/fixtures/hostile-demo/README.md` and record what each probe printed. Until then, these are claims:
+
+- every probe prints BLOCKED, including the raw IP, metadata and token-in-DNS ones;
+- `net blocked` lists `exfil.example.net` and `build-exfil.example.net`;
+- reading `/run/secbox/env.api` from inside `api` fails.
+
+Known gap, not a test: the 12 build hosts stay reachable while the project runs, and some accept uploads from anyone. A secret held by a service could be sent there. `status` and every plan list them under "Where secrets could go".
+
 ## Not built at all
 
 Nothing below exists, so there is nothing to test yet.

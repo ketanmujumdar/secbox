@@ -303,6 +303,11 @@
     clear($('blocked-top'));
     $('blocked-note').textContent = 'Blocked hostnames only. Raw IP, metadata and UDP attempts are blocked but not recorded, so zero proves nothing.';
 
+    const exposure = $('exposure');
+    clear(exposure);
+    show($('exposure-card'), s.exposure.length > 0);
+    for (const line of s.exposure) exposure.appendChild(el('li', line));
+
     for (const text of s.notes) notes.appendChild(el('li', text, 'warn'));
   }
 
@@ -351,6 +356,7 @@
         section(body, 'Hosts allowed during the build', plan.build_hosts, 'None.', true);
         section(body, 'Hosts allowed while it runs', plan.run_hosts, 'None. Everything else is refused.', true);
         section(body, 'Secrets (names only)', plan.secrets, 'None.');
+        if (plan.exposure.length) section(body, 'Where your secrets could go', plan.exposure, '', true);
         body.appendChild(el('h3', 'Limits'));
         body.appendChild(el('p', `${plan.resources.memory} memory, ${plan.resources.cpus} CPUs, ${plan.resources.disk} disk, ${plan.resources.build_memory} during the build.`));
         if (plan.findings.length) section(body, 'What the checks found', plan.findings, '');

@@ -155,6 +155,9 @@ pub struct StatusView {
     /// `None` when the daemon did not say, which is not zero.
     pub blocked_total: Option<u64>,
     pub blocked_domains: Option<u64>,
+    /// Which secret goes to which service, and every host it could be sent
+    /// to. Empty when no secret is assigned. Escaped.
+    pub exposure: Vec<String>,
     pub notes: Vec<String>,
 }
 
@@ -221,6 +224,16 @@ pub fn status_view(report: &StatusReport) -> StatusView {
         resources: report.resources.as_ref().map(resources),
         blocked_total,
         blocked_domains,
+        exposure: report
+            .exposure
+            .as_ref()
+            .map(|e| {
+                proto::exposure_lines(&e.secrets, e.reachable_hosts.as_deref(), false)
+                    .iter()
+                    .map(|line| text::escape(line))
+                    .collect()
+            })
+            .unwrap_or_default(),
         notes,
     }
 }
@@ -253,6 +266,8 @@ pub struct PlanView {
     /// for it, one escaped line per entry. Empty for a Compose project. It is
     /// part of what the plan's digest covers, so it is shown before agreeing.
     pub generated_compose: Vec<String>,
+    /// Which secret goes to which service, and every host it could be sent to.
+    pub exposure: Vec<String>,
     /// Reasons it cannot start. When there are any, no start is offered.
     pub blockers: Vec<String>,
 }
@@ -298,6 +313,14 @@ pub fn plan_view(plan: &PlanReport) -> PlanView {
     PlanView {
         path: text::escape(&plan.project_path),
         digest: plan.digest.clone(),
+        exposure: proto::exposure_lines(
+            &proto::held_from_plan(&plan.secrets),
+            Some(&proto::reachable_while_running(&plan.network)),
+            false,
+        )
+        .iter()
+        .map(|line| text::escape(line))
+        .collect(),
         generated_compose: plan
             .generated_compose
             .as_deref()
@@ -723,6 +746,22 @@ mod tests {
         assert_eq!(view.generated_compose.len(), 3);
         assert_eq!(view.generated_compose[0], "services:");
         assert!(view.generated_compose.iter().all(|line| !line.contains('\u{1b}')));
+    }
+
+    #[test]
+    fn the_plan_says_where_a_secret_could_be_sent_including_build_hosts() {
+        let mut plan = sample_plan();
+        assert!(plan_view(&plan).exposure.is_empty());
+        plan.secrets = vec![proto::SecretPlan {
+            name: "DEMO_TOKEN".to_owned(),
+            route: proto::SecretRoute::Injected,
+            services: vec!["web".to_owned()],
+            bound_host: None,
+        }];
+        let lines = plan_view(&plan).exposure;
+        assert_eq!(lines[0], "DEMO_TOKEN is given to web");
+        // Build hosts stay open in this plan, so they are listed.
+        assert!(lines.iter().any(|l| l.trim() == "registry.npmjs.org"), "{lines:?}");
     }
 
     fn sample_plan() -> PlanReport {

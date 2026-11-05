@@ -150,6 +150,10 @@ pub struct SandboxRecord {
     /// has none, and is treated as recording nothing rather than guessed at.
     #[serde(default)]
     pub log_level: Option<String>,
+    /// Every host it can reach while running, as created. `None` for a
+    /// sandbox made before this was recorded, which is not the same as none.
+    #[serde(default)]
+    pub reachable_hosts: Option<Vec<String>>,
 }
 
 const RECORD_FILE: &str = "sandbox.json";
@@ -280,6 +284,7 @@ mod tests {
             ports: vec![3000],
             plan_digest: "abc".to_owned(),
             log_level: Some("debug".to_owned()),
+            reachable_hosts: Some(vec!["registry.npmjs.org".to_owned()]),
         };
         record.save(dir.path()).unwrap();
         assert_eq!(SandboxRecord::load(dir.path()).unwrap(), Some(record));

@@ -174,6 +174,7 @@ mod tests {
                 trust: LogTrust::HostOnly,
                 problem: None,
             }),
+            exposure: None,
         }
     }
 

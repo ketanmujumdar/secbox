@@ -320,7 +320,18 @@ fn refresh_panel_if_showing(
 /// state folder and asks nothing of the daemon, so it needs no limit.
 fn refresh_secrets(deps: &mut Deps, model: &mut Model) {
     match model.selected_row().cloned() {
-        Some(row) => secrets::refresh(deps.env, &mut model.secrets, &row.name),
+        Some(row) => {
+            secrets::refresh(deps.env, &mut model.secrets, &row.name);
+            model.secrets.reach = status_of(deps, &row.path)
+                .and_then(|report| report.exposure)
+                .map(|e| {
+                    proto::exposure_lines(&e.secrets, e.reachable_hosts.as_deref(), true)
+                        .iter()
+                        .map(|line| crate::ui::esc(line))
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
         None => model.secrets = view::SecretsPanel::default(),
     }
 }
@@ -490,6 +501,15 @@ fn dialog_lines(plan: &PlanReport, ports: &[u16]) -> Vec<String> {
     ));
     if plan.network.merged_for_whole_life {
         lines.push("Build hosts stay reachable after the build.".to_owned());
+    }
+    let exposure = proto::exposure_lines(
+        &proto::held_from_plan(&plan.secrets),
+        Some(&proto::reachable_while_running(&plan.network)),
+        true,
+    );
+    if !exposure.is_empty() {
+        lines.push(String::new());
+        lines.extend(exposure);
     }
     lines
 }

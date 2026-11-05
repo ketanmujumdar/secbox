@@ -326,6 +326,8 @@ pub struct SecretsPanel {
     pub rows: Vec<SecretRow>,
     /// Why there are no rows, when there are none.
     pub note: Option<Line>,
+    /// Where the secrets could be sent, from the daemon. Already escaped.
+    pub reach: Vec<String>,
 }
 
 /// What the Traffic panel shows for the selected project.
@@ -1039,6 +1041,19 @@ fn secrets_body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize
             width,
             Style::WindowDim,
         );
+        at += 1;
+    }
+    // Where they could go, in the room left, wrapped rather than cut so a
+    // host name is never shown half missing.
+    at += 1;
+    for line in &panel.reach {
+        for piece in wrap(line, width) {
+            if at >= rows_bottom {
+                return;
+            }
+            screen.text_cut(x + 1, at, &piece, width, Style::WindowWarn);
+            at += 1;
+        }
     }
 }
 
@@ -1474,6 +1489,32 @@ mod tests {
             },
         ];
         m
+    }
+
+    #[test]
+    fn the_secrets_panel_says_where_the_secrets_could_be_sent() {
+        let mut model = Model {
+            projects: vec![Row {
+                name: "demo".into(),
+                path: "/p/demo".into(),
+                state: RowState::Running,
+            }],
+            pane: PaneState(Pane::Secrets),
+            ..Model::default()
+        };
+        model.secrets.rows = vec![SecretRow {
+            name: "DEMO_TOKEN".into(),
+            source: "keychain".into(),
+            goes_to: "api".into(),
+        }];
+        model.secrets.reach = proto::exposure_lines(
+            &[proto::HeldSecret { name: "DEMO_TOKEN".into(), services: vec!["api".into()] }],
+            Some(&["storage.googleapis.com".to_owned()]),
+            true,
+        );
+        let text = compose(&model, 100, 30).plain();
+        assert!(text.contains("DEMO_TOKEN is given to api"), "{text}");
+        assert!(text.contains("storage.googleapis.com"), "{text}");
     }
 
     #[test]

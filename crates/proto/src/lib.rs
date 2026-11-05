@@ -569,6 +569,97 @@ pub struct StatusReport {
     /// `None` from a daemon too old to send it, which is not the same as zero.
     #[serde(default)]
     pub blocked: Option<BlockedSummary>,
+    /// Which secrets this project's services are given, and every host the
+    /// sandbox can reach while it runs. `None` from an older daemon.
+    #[serde(default)]
+    pub exposure: Option<Box<SecretExposure>>,
+}
+
+/// Where a project's secrets could be sent. Names only, never a value.
+///
+/// A service that holds a secret can send it to any host the sandbox can
+/// reach, and the network rules are per sandbox, not per service. So the
+/// honest answer to "where can this key go" is this whole list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretExposure {
+    pub secrets: Vec<HeldSecret>,
+    /// Every host reachable while it runs, build hosts included when they
+    /// stay open. `None` for a sandbox created before this was recorded.
+    pub reachable_hosts: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeldSecret {
+    pub name: String,
+    pub services: Vec<String>,
+}
+
+/// Hosts the sandbox planned here can reach while it runs.
+pub fn reachable_while_running(network: &NetworkPlan) -> Vec<String> {
+    let mut hosts: Vec<String> = network.run_hosts.clone();
+    if network.merged_for_whole_life {
+        hosts.extend(network.build_hosts.iter().cloned());
+    }
+    hosts.sort();
+    hosts.dedup();
+    hosts
+}
+
+/// The same words in every client: which secret is held by which service,
+/// and where it could be sent. Empty when no secret is assigned.
+/// The secrets a plan would deliver, as [`HeldSecret`]s.
+pub fn held_from_plan(secrets: &[SecretPlan]) -> Vec<HeldSecret> {
+    secrets
+        .iter()
+        .map(|s| HeldSecret {
+            name: s.name.clone(),
+            services: s.services.clone(),
+        })
+        .collect()
+}
+
+/// With `one_line`, the hosts are joined on one line for a narrow box.
+pub fn exposure_lines(secrets: &[HeldSecret], hosts: Option<&[String]>, one_line: bool) -> Vec<String> {
+    if secrets.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = secrets
+        .iter()
+        .map(|s| {
+            let to = if s.services.is_empty() {
+                "no service".to_owned()
+            } else {
+                s.services.join(", ")
+            };
+            format!("{} is given to {}", s.name, to)
+        })
+        .collect();
+    match hosts {
+        None => lines.push(
+            "Where they could be sent is not recorded for this sandbox. Recreate it to see.".to_owned(),
+        ),
+        Some([]) => lines.push(
+            "They cannot be sent anywhere: every outgoing connection is refused.".to_owned(),
+        ),
+        Some(hosts) => {
+            lines.push(format!(
+                "Code in those services could send them to any of these {} hosts, and nowhere else:",
+                hosts.len()
+            ));
+            if one_line {
+                lines.push(hosts.join(", "));
+            } else {
+                lines.extend(hosts.iter().map(|h| format!("  {h}")));
+            }
+            lines.push(
+                "Some of these accept uploads from anyone, such as storage.googleapis.com and the Docker and npm registries."
+                    .to_owned(),
+            );
+        }
+    }
+    lines
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -594,6 +685,34 @@ pub struct ServiceState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exposure_names_every_reachable_host_and_never_says_nowhere_when_unknown() {
+        let held = vec![HeldSecret { name: "DEMO_TOKEN".into(), services: vec!["api".into()] }];
+        let hosts = vec!["a.example".to_owned(), "b.example".to_owned()];
+        let lines = exposure_lines(&held, Some(&hosts), false);
+        assert_eq!(lines[0], "DEMO_TOKEN is given to api");
+        assert!(lines.iter().any(|l| l.contains("these 2 hosts")));
+        assert!(lines.iter().any(|l| l.trim() == "b.example"));
+        let none = exposure_lines(&held, Some(&[]), false);
+        assert!(none.iter().any(|l| l.contains("cannot be sent anywhere")));
+        let unknown = exposure_lines(&held, None, false);
+        assert!(!unknown.iter().any(|l| l.contains("cannot be sent")));
+        assert!(exposure_lines(&[], Some(&hosts), false).is_empty());
+    }
+
+    #[test]
+    fn build_hosts_count_as_reachable_only_when_they_stay_open() {
+        let mut network = NetworkPlan {
+            build_hosts: vec!["registry.npmjs.org".into()],
+            run_hosts: vec!["api.stripe.com".into()],
+            tls: TlsPlan::ServerNameOnly,
+            merged_for_whole_life: true,
+        };
+        assert_eq!(reachable_while_running(&network), vec!["api.stripe.com", "registry.npmjs.org"]);
+        network.merged_for_whole_life = false;
+        assert_eq!(reachable_while_running(&network), vec!["api.stripe.com"]);
+    }
 
     fn round_trip(request: Request) {
         let envelope = Envelope::new(request.clone());

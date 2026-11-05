@@ -307,6 +307,7 @@ fn create(
         ports: ports.to_vec(),
         plan_digest: args.plan_digest.clone(),
         log_level: Some(crate::blocked::created_level()),
+        reachable_hosts: Some(proto::reachable_while_running(&plan.network)),
     }
     .save(&project.dir)
     .map_err(internal)?;
@@ -626,7 +627,26 @@ pub fn status(service: &Service, project: &Project) -> Result<StatusReport, ApiE
         // are ever recorded, and only by a sandbox created to record them.
         blocked_count: blocked.total,
         blocked: Some(blocked),
+        exposure: Some(Box::new(proto::SecretExposure {
+            secrets: held_secrets(project)?,
+            reachable_hosts: record.as_ref().and_then(|r| r.reachable_hosts.clone()),
+        })),
     })
+}
+
+/// The secrets assigned to this project, by name, and who gets each.
+fn held_secrets(project: &Project) -> Result<Vec<proto::HeldSecret>, ApiError> {
+    let Some(meta) = hoststate::read_meta(&project.dir).map_err(internal)? else {
+        return Ok(Vec::new());
+    };
+    Ok(meta
+        .assignments
+        .iter()
+        .map(|a| proto::HeldSecret {
+            name: text::escape(a.name().as_str()),
+            services: a.services().iter().map(|s| text::escape(s.as_str())).collect(),
+        })
+        .collect())
 }
 
 pub(crate) fn status_of(service: &Service, project: &Project) -> Result<SandboxState, ApiError> {
