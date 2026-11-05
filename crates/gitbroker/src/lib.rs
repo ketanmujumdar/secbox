@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! Quarantine::create -> import_bundle -> review -> approve -> push
-//! snapshot: trusted repo -> directory for the VM, without .env files
+//! snapshot: trusted repo -> directory for the VM, without secret files
 //! ```
 //!
 //! Every git process goes through one hardened helper (`git` module): fixed
@@ -56,6 +56,7 @@ mod git;
 mod push;
 mod quarantine;
 mod review;
+mod secretpath;
 mod snapshot;
 mod tar;
 mod validate;
@@ -67,5 +68,6 @@ pub use error::Error;
 pub use push::{PushAuth, PushReceipt};
 pub use quarantine::{ImportedBundle, ImportedRef, Quarantine};
 pub use review::{ChangeStatus, FileChange, Flag, FlagKind, Review, ReviewLimits};
-pub use snapshot::{snapshot, ExcludedEntry, ExclusionReason, SnapshotReport};
+pub use secretpath::ExclusionReason;
+pub use snapshot::{snapshot, ContentWarning, ExcludedEntry, SnapshotReport};
 pub use validate::{validate_remote_url, validate_task_name};
