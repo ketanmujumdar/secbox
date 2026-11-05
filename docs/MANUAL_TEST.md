@@ -289,7 +289,7 @@ cd /tmp/agent-test && claude
 2. Ask it to list the project's files and read the README. It should use the server's `exec` and `read_file`.
 3. Ask it to run `ls ~` on this machine. It should say it can't, because `Bash` is denied, rather than asking for permission.
 4. Ask it to read a file by an absolute host path. It should be refused the same way.
-5. Stop the sandbox with `secbox down --project "$P"` in another terminal, and ask it to run `ls`. The tool should fail, saying the sandbox is stopped and how to start it.
+5. Stop the sandbox with `secbox down "$P"` in another terminal, and ask it to run `ls`. The tool should fail, saying the sandbox is stopped and how to start it.
 
 Running `secbox mcp setup claude /tmp/agent-test` a second time should refuse because the folder is not empty, and `secbox mcp setup claude "$P/agent"` should refuse because it overlaps the project. Clean up with `rm -r /tmp/agent-test`.
 

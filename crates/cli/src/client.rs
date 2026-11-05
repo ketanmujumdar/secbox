@@ -56,6 +56,18 @@ impl CallError {
             Self::Stopped => "stopped".to_owned(),
         }
     }
+
+    /// The message, safe to print on a terminal. The lines this program wrote
+    /// itself keep their line breaks, and the one path in them is already
+    /// escaped. Anything else came from the daemon or the system, so every
+    /// control character is escaped, line breaks included, and it cannot
+    /// fake a line of its own.
+    pub fn for_terminal(&self) -> String {
+        match self {
+            Self::NotRunning { .. } => self.message(),
+            _ => crate::ui::esc(&self.message()),
+        }
+    }
 }
 
 /// Somewhere to send a request. A trait so that a test can drive the real
@@ -325,6 +337,29 @@ mod tests {
     use super::*;
     use std::io::Read;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn not_running_keeps_its_own_line_breaks_on_a_terminal() {
+        let error = CallError::NotRunning {
+            socket: PathBuf::from("/tmp/odd\u{1b}[2J/secboxd.sock"),
+        };
+        let text = error.for_terminal();
+        assert_eq!(text.lines().count(), 3, "{text}");
+        assert!(!text.contains("\\u{a}"), "{text}");
+        assert!(text.contains("\\u{1b}[2J"), "the path is still escaped: {text}");
+        assert!(!text.contains('\u{1b}'), "{text}");
+    }
+
+    #[test]
+    fn text_from_the_daemon_cannot_fake_a_line_on_a_terminal() {
+        let error = CallError::Refused(ApiError::new(
+            ErrorCode::BadRequest,
+            "refused\nStarted   in 1s\u{1b}[2J",
+        ));
+        let text = error.for_terminal();
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(text.contains("\\u{a}") && text.contains("\\u{1b}"), "{text}");
+    }
 
     fn follow_request() -> Request {
         Request::Logs(proto::LogsArgs {

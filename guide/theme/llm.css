@@ -1,0 +1,50 @@
+/* The "Copy page" and "Markdown" buttons added by llm.js. */
+.right-buttons .llm-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35em;
+    box-sizing: border-box;
+    height: 30px;
+    margin: 0 0.35em;
+    padding: 0 0.7em;
+    border: 1px solid var(--searchbar-border-color);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--icons);
+    font: inherit;
+    font-size: 1.4rem;
+    line-height: 1;
+    cursor: pointer;
+    text-decoration: none;
+    vertical-align: middle;
+}
+
+.right-buttons .llm-button:hover,
+.right-buttons .llm-button:focus-visible {
+    color: var(--icons-hover);
+    border-color: var(--icons-hover);
+    text-decoration: none;
+}
+
+.llm-icon svg {
+    width: 1.1em;
+    height: 1.1em;
+    fill: currentColor;
+}
+
+/* On narrow screens keep the icons and drop the words. */
+@media only screen and (max-width: 620px) {
+    .llm-label {
+        display: none;
+    }
+    .right-buttons .llm-button {
+        padding: 0 0.45em;
+        margin: 0 0.15em;
+    }
+}
+
+@media print {
+    .llm-button {
+        display: none;
+    }
+}

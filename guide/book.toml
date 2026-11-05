@@ -1,0 +1,27 @@
+[book]
+title = "secbox documentation"
+description = "Run a project and its AI agent inside a disposable microVM, so a compromised dependency or a tricked agent stays away from your machine."
+authors = ["The secbox contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+site-url = "/secbox/"
+git-repository-url = "https://github.com/ketanmujumdar/secbox"
+edit-url-template = "https://github.com/ketanmujumdar/secbox/edit/main/guide/{path}"
+additional-css = ["theme/llm.css"]
+additional-js = ["theme/llm.js"]
+no-section-label = true
+smart-punctuation = false
+
+[output.html.search]
+limit-results = 20
+use-boolean-and = true
+
+[output.html.fold]
+enable = true
+level = 1
