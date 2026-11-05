@@ -9,12 +9,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use daemon::{Deps, Progress, Quiet, Service};
-use engine::{Engine, FakeCall, FakeEngine};
+use engine::{Engine, EngineLocation, FakeCall, FakeEngine, OutputStream as StreamKind};
 use hoststate::host::{HostInfo, Hypervisor};
 use hoststate::StatePaths;
 use proto::{
-    DownArgs, ErrorCode, PlanArgs, ProjectArgs, Reply, Request, SandboxState, SnapshotCounts,
-    SnapshotPlan, Source, UpArgs,
+    DownArgs, ErrorCode, LogsArgs, OutputStream, PlanArgs, ProjectArgs, Reply, Request,
+    SandboxState, SnapshotCounts, SnapshotPlan, Source, TerminalArgs, UpArgs,
 };
 use secrets::{MemoryStore, ProjectId, SecretStore};
 
@@ -242,6 +242,7 @@ fn starting_follows_the_sequence_the_engine_spike_found_works() {
             FakeCall::Destroy(_) => "destroy",
             FakeCall::Status(_) => "status",
             FakeCall::Exec(..) => "exec",
+            FakeCall::ExecStream(..) => "exec-stream",
             FakeCall::ExecDetached(..) => "exec-detached",
             FakeCall::CopyIn(..) => "copy-in",
             FakeCall::Logs(..) => "logs",
@@ -607,4 +608,395 @@ fn what_happened_is_written_to_the_hosts_own_record() {
     for line in text.lines() {
         serde_json::from_str::<serde_json::Value>(line).expect("every entry is one JSON line");
     }
+}
+
+// ---- logs and terminals
+
+/// Keeps the output a request sends, in order.
+#[derive(Default)]
+struct Kept {
+    output: Vec<(OutputStream, String)>,
+}
+
+impl Progress for Kept {
+    fn step(&mut self, _step: &str, _detail: Option<&str>) {}
+    fn output(&mut self, stream: OutputStream, text: &str) -> bool {
+        self.output.push((stream, text.to_owned()));
+        true
+    }
+}
+
+impl Kept {
+    fn text(&self, wanted: OutputStream) -> String {
+        self.output
+            .iter()
+            .filter(|(stream, _)| *stream == wanted)
+            .map(|(_, text)| text.as_str())
+            .collect()
+    }
+}
+
+impl Fixture {
+    fn logs_args(&self, service: Option<&str>, tail: u32, follow: bool) -> Request {
+        Request::Logs(LogsArgs {
+            project: self.path(),
+            service: service.map(str::to_owned),
+            tail,
+            follow,
+        })
+    }
+
+    fn terminal_args(&self, service: Option<&str>) -> Request {
+        Request::Terminal(TerminalArgs {
+            project: self.path(),
+            service: service.map(str::to_owned),
+        })
+    }
+
+    fn started(self) -> Self {
+        self.up(Vec::new()).unwrap();
+        self
+    }
+
+    fn stopped(self) -> Self {
+        let started = self.started();
+        started
+            .call(Request::Down(DownArgs {
+                project: started.path(),
+                destroy: false,
+            }))
+            .unwrap();
+        started
+    }
+
+    fn logs(&self, service: Option<&str>) -> Result<(proto::LogsReport, Kept), proto::ApiError> {
+        let mut kept = Kept::default();
+        let reply = self
+            .service
+            .handle(&self.logs_args(service, 200, false), &mut kept)?;
+        match reply {
+            Reply::Logs(report) => Ok((report, kept)),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+}
+
+/// The engine's `exec` boots a stopped sandbox, so the only call allowed on one
+/// that is not running is asking what state it is in.
+fn assert_only_status(calls: &[FakeCall]) {
+    assert!(
+        calls.iter().all(|call| matches!(call, FakeCall::Status(_))),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn logs_run_compose_in_the_project_folder() {
+    let f = fixture().started();
+    f.logs(Some("web")).unwrap();
+    let request = f
+        .deps
+        .engine
+        .calls()
+        .into_iter()
+        .find_map(|call| match call {
+            FakeCall::ExecStream(_, request) => Some(request),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        request.command,
+        ["docker", "compose", "logs", "--no-color", "--tail", "200", "web"]
+    );
+    assert_eq!(request.workdir.unwrap().as_str(), "/work");
+    assert!(request.timeout.is_some());
+}
+
+#[test]
+fn log_output_is_filtered_here_even_when_a_sequence_is_split_across_chunks() {
+    let f = fixture().started();
+    for chunk in [
+        &b"a\x1b[3"[..],
+        b"1mb\x1b]0;evil\x07c\xe2\x82",
+        b"\xac\x07\n",
+    ] {
+        f.deps.engine.push_stream_output(StreamKind::Stdout, chunk);
+    }
+    f.deps
+        .engine
+        .push_stream_output(StreamKind::Stderr, b"oops\x1b[2J\n");
+    f.deps.engine.set_stream_code(4);
+    let (report, kept) = f.logs(None).unwrap();
+    assert_eq!(kept.text(OutputStream::Stdout), "abc\u{20ac}\\u{7}\n");
+    assert_eq!(kept.text(OutputStream::Stderr), "oops\n");
+    assert_eq!(report.code, Some(4));
+    assert!(!report.truncated);
+}
+
+#[test]
+fn an_unfinished_character_at_the_end_of_the_output_is_still_sent_safely() {
+    let f = fixture().started();
+    f.deps
+        .engine
+        .push_stream_output(StreamKind::Stdout, b"end\xe2\x82");
+    let (_, kept) = f.logs(None).unwrap();
+    assert_eq!(kept.text(OutputStream::Stdout), "end\u{fffd}");
+}
+
+/// Each byte here grows to several in the output, and a frame over the limit
+/// would be refused, so the largest chunk the engine sends must still fit.
+#[test]
+fn output_that_grows_when_escaped_still_fits_in_a_frame() {
+    let f = fixture().started();
+    let chunk = vec![0x07u8; 80 * 1024];
+    f.deps.engine.push_stream_output(StreamKind::Stdout, &chunk);
+    let (_, kept) = f.logs(None).unwrap();
+    for (stream, text) in kept.output {
+        let frame = proto::Frame::Output { stream, text };
+        let mut buffer = Vec::new();
+        proto::write_frame(&mut buffer, &frame).unwrap();
+    }
+}
+
+#[test]
+fn a_plain_read_stops_at_its_size_limit_and_says_so() {
+    let f = fixture().started();
+    for _ in 0..70 {
+        f.deps
+            .engine
+            .push_stream_output(StreamKind::Stdout, &vec![b'x'; 1024 * 1024]);
+    }
+    let (report, kept) = f.logs(None).unwrap();
+    assert!(report.truncated);
+    assert_eq!(report.code, None);
+    assert!(kept.text(OutputStream::Stdout).len() <= 64 * 1024 * 1024);
+}
+
+#[test]
+fn a_bad_service_name_is_refused_before_the_engine_is_asked_anything() {
+    let f = fixture().started();
+    let earlier = f.deps.engine.calls().len();
+    for name in ["-f", "--follow", "a;b", "a b", "", "$(id)", "a/b", "a\nb"] {
+        for request in [
+            f.logs_args(Some(name), 10, false),
+            f.logs_args(Some(name), 10, true),
+            f.terminal_args(Some(name)),
+        ] {
+            let error = f.call(request).unwrap_err();
+            assert_eq!(error.code, ErrorCode::BadRequest, "{name:?}");
+        }
+    }
+    assert_eq!(f.deps.engine.calls().len(), earlier);
+}
+
+#[test]
+fn asking_for_too_many_lines_is_refused() {
+    let f = fixture().started();
+    let error = f
+        .call(f.logs_args(None, proto::MAX_LOG_TAIL + 1, false))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::BadRequest);
+}
+
+#[test]
+fn logs_and_terminals_refuse_a_stopped_sandbox_without_booting_it() {
+    let f = fixture().stopped();
+    f.deps.engine.set_location(EngineLocation {
+        binary: "/engine/bin".into(),
+        home: "/engine/home".into(),
+    });
+    let earlier = f.deps.engine.calls().len();
+    for request in [
+        f.logs_args(None, 10, false),
+        f.logs_args(Some("web"), 10, true),
+        f.terminal_args(None),
+        f.terminal_args(Some("web")),
+    ] {
+        let error = f.call(request).unwrap_err();
+        assert_eq!(error.code, ErrorCode::WrongState);
+        assert!(error.message.contains("stopped"), "{}", error.message);
+        assert!(error.message.contains(" up "), "{}", error.message);
+    }
+    assert_only_status(&f.deps.engine.calls()[earlier..]);
+    assert_eq!(
+        f.deps.engine.status(&sandbox_of(&f)).unwrap(),
+        engine::SandboxStatus::Stopped
+    );
+}
+
+fn sandbox_of(f: &Fixture) -> engine::SandboxName {
+    f.deps
+        .engine
+        .calls()
+        .into_iter()
+        .find_map(|call| match call {
+            FakeCall::Create(spec) => Some(spec.name),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[test]
+fn logs_and_terminals_refuse_a_project_with_no_sandbox() {
+    let f = fixture();
+    for request in [f.logs_args(None, 10, false), f.terminal_args(None)] {
+        let error = f.call(request).unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotFound);
+        assert!(error.message.contains(" up "), "{}", error.message);
+    }
+    assert_only_status(&f.deps.engine.calls());
+}
+
+#[test]
+fn a_terminal_gets_the_sandbox_and_the_engine_and_nothing_runs_for_it() {
+    let f = fixture().started();
+    f.deps.engine.set_location(EngineLocation {
+        binary: "/engine/bin".into(),
+        home: "/engine/home".into(),
+    });
+    let earlier = f.deps.engine.calls().len();
+    let Reply::Terminal(report) = f.call(f.terminal_args(Some("web"))).unwrap() else {
+        panic!("unexpected reply");
+    };
+    assert_eq!(report.sandbox, sandbox_of(&f).as_str());
+    assert_eq!(report.engine_binary, "/engine/bin");
+    assert_eq!(report.engine_home, "/engine/home");
+    assert_eq!(report.workdir, "/work");
+    assert_only_status(&f.deps.engine.calls()[earlier..]);
+
+    let audit = std::fs::read_to_string(f.service.audit().path()).unwrap();
+    assert!(audit.contains("terminal_opened"), "{audit}");
+    assert!(audit.contains("\"subject\":\"web\""), "{audit}");
+}
+
+#[test]
+fn an_engine_with_nowhere_to_run_from_is_refused() {
+    let f = fixture().started();
+    let error = f.call(f.terminal_args(None)).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported);
+}
+
+#[test]
+fn an_engine_path_that_could_not_arrive_exactly_is_refused() {
+    let f = fixture().started();
+    f.deps.engine.set_location(EngineLocation {
+        binary: "/engine\u{1b}[0m/bin".into(),
+        home: "/engine/home".into(),
+    });
+    let error = f.call(f.terminal_args(None)).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Internal);
+}
+
+/// A client on a real socket: what Ctrl-C on a followed log looks like from
+/// here is a connection closing while nothing is being written.
+#[test]
+fn a_followed_log_stops_when_the_client_disconnects_and_the_sandbox_keeps_running() {
+    let dir = tempfile::Builder::new().prefix("d").tempdir_in("/tmp").unwrap();
+    let deps = Arc::new(TestDeps::new());
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("compose.yaml"), COMPOSE).unwrap();
+    std::fs::create_dir_all(project.path().join("web")).unwrap();
+    std::fs::write(project.path().join("web/Dockerfile"), "FROM scratch\n").unwrap();
+    std::fs::write(
+        project.path().join(brand::CONFIG_FILE),
+        "resources:\n  memory: 4G\n  cpus: 2\n  disk: 30G\n",
+    )
+    .unwrap();
+    let state = dir.path().join(brand::STATE_DIR);
+    let service = Arc::new(
+        Service::new(
+            StatePaths {
+                state: state.clone(),
+                overridden: true,
+            },
+            Arc::clone(&deps) as Arc<dyn Deps>,
+        )
+        .unwrap(),
+    );
+    let root = project.path().to_string_lossy().into_owned();
+    let Reply::Plan(plan) = service
+        .handle(
+            &Request::Plan(PlanArgs {
+                project: root.clone(),
+                source: Source::default(),
+            }),
+            &mut Quiet,
+        )
+        .unwrap()
+    else {
+        panic!("unexpected reply");
+    };
+    service
+        .handle(
+            &Request::Up(UpArgs {
+                project: root.clone(),
+                source: Source::default(),
+                plan_digest: plan.digest,
+                approve_ports: Vec::new(),
+            }),
+            &mut Quiet,
+        )
+        .unwrap();
+
+    let listener = daemon::server::bind(&state).unwrap();
+    let serving = Arc::clone(&service);
+    std::thread::spawn(move || daemon::server::serve(serving, &listener));
+
+    deps.engine
+        .push_stream_output(StreamKind::Stdout, b"first line\n");
+    deps.engine.keep_streams_open();
+
+    let stream = std::os::unix::net::UnixStream::connect(daemon::server::socket_path(&state)).unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    proto::write_frame(
+        &mut writer,
+        &proto::Envelope::new(Request::Logs(LogsArgs {
+            project: root,
+            service: None,
+            tail: 10,
+            follow: true,
+        })),
+    )
+    .unwrap();
+    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+    let frame: proto::Frame = proto::read_frame(&mut reader).unwrap().unwrap();
+    assert_eq!(
+        frame,
+        proto::Frame::Output {
+            stream: OutputStream::Stdout,
+            text: "first line\n".to_owned()
+        }
+    );
+    assert_eq!(deps.engine.streams_stopped(), 0, "it should still be following");
+
+    drop(reader);
+    drop(writer);
+    drop(stream);
+
+    let started = std::time::Instant::now();
+    while deps.engine.streams_stopped() == 0 {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the followed log was not stopped"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let name = deps
+        .engine
+        .calls()
+        .into_iter()
+        .find_map(|call| match call {
+            FakeCall::Create(spec) => Some(spec.name),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        deps.engine.status(&name).unwrap(),
+        engine::SandboxStatus::Running
+    );
+    assert!(!deps
+        .engine
+        .calls()
+        .iter()
+        .any(|call| matches!(call, FakeCall::Stop(_) | FakeCall::Destroy(_))));
 }

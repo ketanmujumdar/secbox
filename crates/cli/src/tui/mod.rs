@@ -9,6 +9,7 @@
 //! box showing what would happen and waits. Nothing is forwarded by a
 //! keystroke that did not see what it was agreeing to.
 
+mod logs;
 mod screen;
 mod style;
 mod term;
@@ -16,11 +17,12 @@ mod view;
 
 use std::io::{BufRead, IsTerminal};
 
-use proto::{DownArgs, PlanArgs, PlanReport, ProjectArgs, Reply, Request, SandboxState, Source};
+use proto::{DownArgs, PlanArgs, PlanReport, Reply, Request, SandboxState, Source};
 
 use crate::{exit, tell, Deps};
 use style::Style;
-use view::{Dialog, Key, Line, Model, PaneState, Row, RowState};
+pub(crate) use term::SavedSettings;
+use view::{Dialog, Key, Line, Model, Pane, PaneState, Row, RowState};
 
 /// What a keystroke is waiting for a person to confirm.
 struct Pending {
@@ -49,12 +51,30 @@ pub fn run(deps: &mut Deps) -> i32 {
 
     let mut model = Model::default();
     let mut pending: Option<Pending> = None;
+    let mut confirming: Option<bool> = None;
     load_projects(deps, &mut model);
 
     loop {
         draw(deps, &model);
         let Some(bytes) = read_key(deps.input) else { break };
         let key = view::key(&bytes);
+
+        if let Some(destroy) = confirming {
+            match key {
+                Key::Yes => {
+                    confirming = None;
+                    model.dialog = None;
+                    stop(deps, &mut model, destroy);
+                }
+                Key::No | Key::Quit => {
+                    confirming = None;
+                    model.dialog = None;
+                    model.message = Some("Nothing was changed.".to_owned());
+                }
+                _ => {}
+            }
+            continue;
+        }
 
         if pending.is_some() {
             match key {
@@ -78,26 +98,68 @@ pub fn run(deps: &mut Deps) -> i32 {
             Key::Up => {
                 model.move_by(-1);
                 show_selected(deps, &mut model);
+                refresh_logs_if_showing(deps, &mut model);
             }
             Key::Down => {
                 model.move_by(1);
                 show_selected(deps, &mut model);
+                refresh_logs_if_showing(deps, &mut model);
             }
             Key::Tab => {
                 model.pane = PaneState(model.pane.0.next());
                 model.message = None;
+                refresh_logs_if_showing(deps, &mut model);
             }
-            Key::Refresh => load_projects(deps, &mut model),
+            Key::Refresh => {
+                load_projects(deps, &mut model);
+                refresh_logs_if_showing(deps, &mut model);
+            }
+            Key::PreviousService | Key::NextService if model.pane.0 == Pane::Logs => {
+                model.logs.choose(if key == Key::NextService { 1 } else { -1 });
+                refresh_logs_if_showing(deps, &mut model);
+            }
             Key::Start => pending = propose_start(deps, &mut model),
-            Key::Stop => stop(deps, &mut model, false),
-            Key::Destroy => stop(deps, &mut model, true),
+            Key::Open(pane) => {
+                model.pane = PaneState(pane);
+                model.message = None;
+                refresh_logs_if_showing(deps, &mut model);
+            }
+            Key::Stop => {
+                if let Some(row) = model.selected_row().cloned() {
+                    model.dialog = Some(Dialog {
+                        title: format!("Stop {}", screen::cut(&row.name, 30)),
+                        lines: vec![
+                            "Its services stop and their ports close.".to_owned(),
+                            "Its data is kept for the next start.".to_owned(),
+                        ],
+                    });
+                    confirming = Some(false);
+                }
+            }
+            Key::Destroy => {
+                if let Some(row) = model.selected_row().cloned() {
+                    model.dialog = Some(Dialog {
+                        title: format!("Destroy {}", screen::cut(&row.name, 30)),
+                        lines: vec![
+                            "This removes the sandbox and everything in it,".to_owned(),
+                            "including its database and uploads.".to_owned(),
+                            String::new(),
+                            "This cannot be undone.".to_owned(),
+                        ],
+                    });
+                    confirming = Some(true);
+                }
+            }
+            Key::Help if model.pane.0 == Pane::Logs => {
+                model.message = Some(logs::HELP.to_owned());
+            }
             Key::Help => {
                 model.message = Some(
-                    "Arrows move. 2 or u starts, 3 or s stops, x destroys, 5 refreshes, 6 or tab changes panel, 10 or q quits."
+                    "Red letters open panels. Arrows move. 2 starts, 3 stops, x destroys, 5 refreshes, tab changes panel, q quits."
                         .to_owned(),
                 );
             }
-            Key::Yes | Key::No | Key::Other => {}
+            Key::PreviousService | Key::NextService | Key::Yes | Key::No | Key::Other => {}
         }
     }
     drop(raw);
@@ -107,13 +169,14 @@ pub fn run(deps: &mut Deps) -> i32 {
 fn draw(deps: &mut Deps, model: &Model) {
     let (width, height) = term::size(deps.input, deps.out);
     let rows = view::render(model, width as usize, height as usize);
+    let fixed = has_fixed_colours(deps);
     let mut out = String::from("\x1b[H");
     let last = rows.len().saturating_sub(1);
     for (index, row) in rows.iter().enumerate() {
         for span in row {
             if deps.color {
                 out.push_str("\x1b[");
-                out.push_str(span.style.codes());
+                out.push_str(&span.style.sequence(fixed));
                 out.push('m');
                 out.push_str(&span.text);
             } else {
@@ -131,6 +194,13 @@ fn draw(deps: &mut Deps, model: &Model) {
     }
     let _ = deps.out.write_all(out.as_bytes());
     let _ = deps.out.flush();
+}
+
+/// Whether the terminal has the 256-colour table, whose colours themes leave alone.
+fn has_fixed_colours(deps: &Deps) -> bool {
+    let term = (deps.env)("TERM").unwrap_or_default();
+    let colorterm = (deps.env)("COLORTERM").unwrap_or_default();
+    term.to_string_lossy().contains("256color") || !colorterm.is_empty()
 }
 
 /// Reads one keystroke. An escape sequence usually arrives in one read, so
@@ -177,15 +247,24 @@ fn load_projects(deps: &mut Deps, model: &mut Model) {
 }
 
 fn status_of(deps: &mut Deps, path: &str) -> Option<proto::StatusReport> {
-    match deps.daemon.call(
-        Request::Status(ProjectArgs {
-            project: path.to_owned(),
-        }),
-        &mut |_, _| {},
-    ) {
-        Ok(Reply::Status(report)) => Some(report),
-        _ => None,
+    logs::status(deps.daemon, path).ok()
+}
+
+/// Reads the logs if that panel is showing. This waits for the daemon, but only
+/// up to the limits in [`logs`], so a slow sandbox cannot freeze the interface.
+fn refresh_logs_if_showing(deps: &mut Deps, model: &mut Model) {
+    if model.pane.0 != Pane::Logs {
+        return;
     }
+    let Some(row) = model.selected_row().cloned() else {
+        model.logs = view::LogsPanel::default();
+        return;
+    };
+    model.logs.belong_to(&row.path);
+    model.busy = Some("Reading logs.".to_owned());
+    draw(deps, model);
+    logs::refresh(deps.daemon, &mut model.logs, &row.path);
+    model.busy = None;
 }
 
 fn show_selected(deps: &mut Deps, model: &mut Model) {

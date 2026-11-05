@@ -10,7 +10,8 @@ use crate::error::{EngineError, Result};
 use crate::process;
 use crate::redact::{Chain, LiteralRedactor, NoRedaction, Redactor};
 use crate::types::{
-    CreateSpec, ExecOutput, ExecRequest, GuestPath, LogOptions, SandboxName, SandboxStatus,
+    CreateSpec, EngineLocation, ExecOutput, ExecRequest, GuestPath, LogOptions, OutputSink,
+    SandboxName, SandboxStatus, StreamEnd,
 };
 use crate::Engine;
 
@@ -186,7 +187,7 @@ impl MsbEngine {
     fn env(&self) -> BTreeMap<String, String> {
         let mut env = self.secret_env.clone();
         env.insert(
-            "MSB_HOME".to_owned(),
+            argv::HOME_VAR.to_owned(),
             self.home.to_string_lossy().into_owned(),
         );
         env
@@ -367,6 +368,34 @@ impl Engine for MsbEngine {
         })
     }
 
+    fn exec_stream(
+        &self,
+        name: &SandboxName,
+        request: &ExecRequest,
+        sink: &mut dyn OutputSink,
+    ) -> Result<StreamEnd> {
+        let args = argv::exec_stream(name, request)?;
+        self.require_running(name)?;
+        let limit = request.timeout.map(|timeout| timeout + EXEC_MARGIN);
+        let (end, status) = process::stream(
+            &self.binary,
+            &args,
+            &self.env(),
+            limit,
+            "msb exec",
+            &Chain(self.redactor.as_ref(), &self.secret_redactor),
+            sink,
+        )?;
+        if status.is_some_and(|status| status.code().is_none()) {
+            return Err(EngineError::CommandFailed {
+                operation: "msb exec".to_owned(),
+                code: None,
+                stderr: "the command was ended by a signal".to_owned(),
+            });
+        }
+        Ok(end)
+    }
+
     fn exec_detached(&self, name: &SandboxName, request: &ExecRequest) -> Result<String> {
         let args = argv::exec_detached(name, request)?;
         self.require_running(name)?;
@@ -386,6 +415,13 @@ impl Engine for MsbEngine {
     fn logs(&self, name: &SandboxName, options: &LogOptions) -> Result<String> {
         let done = self.run("msb logs", &argv::logs(name, options), self.timeout)?;
         self.expect_success("msb logs", Some(name), done)
+    }
+
+    fn location(&self) -> Option<EngineLocation> {
+        Some(EngineLocation {
+            binary: self.binary.clone(),
+            home: self.home.clone(),
+        })
     }
 }
 
@@ -781,6 +817,162 @@ touch "$(dirname "$0")/ran""#,
             Err(EngineError::InvalidState { .. })
         ));
         assert!(!stub.dir.join("ran").exists());
+    }
+
+    #[derive(Default)]
+    struct Collect {
+        out: Vec<u8>,
+        err: Vec<u8>,
+        stop_after_first: bool,
+    }
+
+    impl OutputSink for Collect {
+        fn output(&mut self, stream: crate::types::OutputStream, bytes: &[u8]) -> bool {
+            match stream {
+                crate::types::OutputStream::Stdout => self.out.extend_from_slice(bytes),
+                crate::types::OutputStream::Stderr => self.err.extend_from_slice(bytes),
+            }
+            !self.stop_after_first
+        }
+    }
+
+    #[test]
+    fn a_stream_separates_output_and_reports_the_code() {
+        let stub = running_stub("echo out; echo err >&2; exit 7");
+        let mut sink = Collect::default();
+        let end = stub
+            .engine()
+            .exec_stream(&name(), &ExecRequest::new(["x"]), &mut sink)
+            .unwrap();
+        assert_eq!(end, StreamEnd::Exited(7));
+        assert_eq!(sink.out, b"out\n");
+        assert_eq!(sink.err, b"err\n");
+    }
+
+    /// Following is no use if nothing shows until the command ends. The command
+    /// here outlives the test's patience, so only early delivery can pass.
+    #[test]
+    fn a_stream_delivers_output_before_the_command_ends() {
+        for script in ["echo first; exec sleep 60", "printf 'no newline'; exec sleep 60"] {
+            let stub = running_stub(script);
+            let mut sink = Collect {
+                stop_after_first: true,
+                ..Collect::default()
+            };
+            let started = std::time::Instant::now();
+            let end = stub
+                .engine()
+                .exec_stream(&name(), &ExecRequest::new(["x"]), &mut sink)
+                .unwrap();
+            assert_eq!(end, StreamEnd::Stopped, "{script}");
+            assert!(started.elapsed() < Duration::from_secs(30), "{script}");
+            assert!(!sink.out.is_empty(), "{script}");
+        }
+    }
+
+    #[test]
+    fn whole_lines_keep_their_order_and_a_late_line_is_not_lost() {
+        let stub = running_stub("echo first; sleep 1; echo second");
+        let mut sink = Collect::default();
+        stub.engine()
+            .exec_stream(&name(), &ExecRequest::new(["x"]), &mut sink)
+            .unwrap();
+        assert_eq!(sink.out, b"first\nsecond\n");
+    }
+
+    #[test]
+    fn a_stream_stops_a_command_when_the_sink_says_so() {
+        let stub = running_stub("echo first; exec sleep 30");
+        let mut sink = Collect {
+            stop_after_first: true,
+            ..Collect::default()
+        };
+        let started = std::time::Instant::now();
+        let end = stub
+            .engine()
+            .exec_stream(&name(), &ExecRequest::new(["x"]), &mut sink)
+            .unwrap();
+        assert_eq!(end, StreamEnd::Stopped);
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_quiet_stream_stops_when_its_reader_has_gone() {
+        struct Gone;
+        impl OutputSink for Gone {
+            fn output(&mut self, _: crate::types::OutputStream, _: &[u8]) -> bool {
+                true
+            }
+            fn cancelled(&self) -> bool {
+                true
+            }
+        }
+        let stub = running_stub("exec sleep 30");
+        let started = std::time::Instant::now();
+        let end = stub
+            .engine()
+            .exec_stream(&name(), &ExecRequest::new(["x"]), &mut Gone)
+            .unwrap();
+        assert_eq!(end, StreamEnd::Stopped);
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_stream_with_a_limit_is_stopped_at_it() {
+        let stub = running_stub("exec sleep 30");
+        let mut request = ExecRequest::new(["x"]);
+        request.timeout = Some(Duration::from_secs(0));
+        let started = std::time::Instant::now();
+        let result = stub
+            .engine()
+            .exec_stream(&name(), &request, &mut Collect::default());
+        assert!(matches!(result, Err(EngineError::Timeout { .. })));
+        assert!(started.elapsed() < Duration::from_secs(20));
+    }
+
+    #[test]
+    fn a_stream_with_no_limit_passes_no_timeout_to_the_cli() {
+        let stub = running_stub(r#"printf '%s\n' "$@" > "$(dirname "$0")/args""#);
+        stub.engine()
+            .exec_stream(&name(), &ExecRequest::new(["x"]), &mut Collect::default())
+            .unwrap();
+        let args = fs::read_to_string(stub.dir.join("args")).unwrap();
+        assert!(!args.contains("--timeout"), "{args}");
+        assert!(args.starts_with("exec\n--stream\n--no-tty\n"), "{args}");
+    }
+
+    #[test]
+    fn a_stream_is_redacted_even_when_a_value_arrives_in_two_pieces() {
+        let stub = running_stub("printf 'value sk-fa'; printf 'ke-1 end\\n'");
+        let engine = stub
+            .engine()
+            .with_redactor(Arc::new(LiteralRedactor::new(["sk-fake-1"])));
+        let mut sink = Collect::default();
+        engine
+            .exec_stream(&name(), &ExecRequest::new(["x"]), &mut sink)
+            .unwrap();
+        assert_eq!(sink.out, b"value [REDACTED] end\n");
+    }
+
+    #[test]
+    fn a_stream_refuses_a_stopped_sandbox_without_running_it() {
+        let stub = Stub::new(
+            r#"if [ "$1" = status ]; then echo '{"status":"Stopped"}'; exit 0; fi
+touch "$(dirname "$0")/ran""#,
+        );
+        let result = stub
+            .engine()
+            .exec_stream(&name(), &ExecRequest::new(["x"]), &mut Collect::default());
+        assert!(matches!(result, Err(EngineError::InvalidState { .. })));
+        assert!(!stub.dir.join("ran").exists());
+    }
+
+    #[test]
+    fn the_engine_says_where_it_is() {
+        let stub = Stub::new("exit 0");
+        let location = stub.engine().location().unwrap();
+        assert_eq!(location.binary, stub.binary);
+        assert_eq!(location.home, PathBuf::from("/nonexistent/h"));
     }
 
     #[test]

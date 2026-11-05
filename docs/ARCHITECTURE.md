@@ -284,7 +284,7 @@ secbox does not build or ship an editor or an editor plug-in. VS Code Remote-SSH
 - **Fixes:** `secbox check --fix` changes user settings only with consent and keeps a backup. It does not change project files.
 - **Limit:** opening a folder another way skips the gate, so this makes the safe path easier but is not a security boundary.
 
-App, Docker and VM logs are written inside the VM and could be faked by a compromised VM. Blocked-traffic and audit logs are recorded by the host daemon. `logs` strips terminal control codes and masks known secret values, though an encoded secret can still slip through. An interactive shell must pass control codes through, so it can't have the same protection.
+App, Docker and VM logs are written inside the VM and could be faked by a compromised VM. Blocked-traffic and audit logs are recorded by the host daemon. `logs` strips terminal control codes. Masking of known secret values is planned alongside secret delivery, and even then an encoded secret could slip through. An interactive shell must pass control codes through, so it can't have the same protection.
 
 ## RAM and CPU
 

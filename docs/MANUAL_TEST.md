@@ -205,11 +205,54 @@ unset SECBOX_HOME
 rm -rf /tmp/sbtest /tmp/secbox-install
 ```
 
+## 10. Logs, shell and exec
+
+These need a running sandbox and a daemon built from this code. They only read, apart from anything you type into the shell. Set `P` to a project with a running sandbox, and leave `SECBOX_HOME` unset if that is where its daemon is.
+
+```sh
+P=~/code/demo_shop
+secbox logs --tail 2 --project "$P"; echo "exit $?"          # 0, lines from each service
+secbox logs api --tail 2 --project "$P"; echo "exit $?"      # 0, one service
+secbox logs nosuch --project "$P"; echo "exit $?"            # no such service, 1
+secbox logs --project "$P" -- -f; echo "exit $?"             # refused, 2
+secbox logs 'a;b' --project "$P"; echo "exit $?"             # refused, 2
+secbox exec --project "$P" -- sh -c 'pwd; exit 7'; echo "exit $?"   # /work, 7
+secbox exec --service postgres --project "$P" -- hostname; echo "exit $?"
+```
+
+Follow a log, then press Ctrl-C:
+
+```sh
+secbox logs api -f --project "$P"
+```
+
+Lines should appear as they are written. Ctrl-C returns you to a normal prompt, and the shell reports exit 130. Then check that the sandbox is still running and nothing was left behind:
+
+```sh
+secbox status "$P"
+secbox exec --project "$P" -- sh -c 'ps -o args | grep -c "[c]ompose logs"'   # 0
+```
+
+Open a shell. It prints the notice first, and `pwd` shows `/work`:
+
+```sh
+secbox shell --project "$P"
+```
+
+`exit 3` leaves it, and `echo $?` on the host shows 3. Typing into a shell writes a history file inside the sandbox, as any shell does. `secbox shell postgres --project "$P"` opens one in that container.
+
+In the full-screen interface, press `l` for Logs, `[` and `]` to choose a service or All, `5` to read again, `1` for help and `q` to quit. Do not press `3` or `x`, and answer `n` if a box appears.
+
+On a project that is stopped, every command above refuses, says how to start it, and starts nothing. Check with `secbox status` afterwards.
+
+After a daemon built before these commands, they say the daemon is older and needs a restart. `status` keeps working.
+
 ## What can't be tested yet
 
 These are not built, so nothing above tests them, and no output above is evidence of protection:
 
 - Starting a project in a VM, stopping it and resource limits actually applying (`up`, `down`, `status`).
+- Masking secret values in `logs`, which is not built. No secret reaches a sandbox yet.
 - Network enforcement. `net check` explains a policy, and no proxy applies it.
 - Delivering secrets to a VM by proxy, injection or build secret. Assignments are only recorded.
 - Git review and export (`diff`, `export`).

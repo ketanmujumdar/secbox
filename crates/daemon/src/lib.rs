@@ -14,6 +14,7 @@
 //! and never a reason to widen a rule.
 
 pub mod audit;
+pub mod debug;
 pub mod gitref;
 pub mod plan;
 pub mod run;
@@ -33,6 +34,15 @@ use secrets::{ProjectId, SecretStore};
 /// arrive, so they must not carry anything secret.
 pub trait Progress {
     fn step(&mut self, step: &str, detail: Option<&str>);
+    /// Sends some already filtered output. Returns `false` once nobody is
+    /// reading it.
+    fn output(&mut self, _stream: proto::OutputStream, _text: &str) -> bool {
+        true
+    }
+    /// Whoever asked has gone away, even if nothing has been sent to notice it.
+    fn cancelled(&self) -> bool {
+        false
+    }
 }
 
 /// Throws progress away. Useful in tests and for requests nobody watches.
@@ -125,6 +135,16 @@ impl Service {
             Request::Status(args) => {
                 let project = self.open(&args.project)?;
                 run::status(self, &project).map(Reply::Status)
+            }
+            Request::Logs(args) => {
+                debug::check_logs_args(args)?;
+                let project = self.open(&args.project)?;
+                debug::logs(self, &project, args, progress).map(Reply::Logs)
+            }
+            Request::Terminal(args) => {
+                debug::check_terminal_args(args)?;
+                let project = self.open(&args.project)?;
+                debug::terminal(self, &project, args).map(Reply::Terminal)
             }
         }
     }

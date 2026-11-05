@@ -17,8 +17,9 @@ pub use fake::{FakeCall, FakeEngine};
 pub use msb::{MsbEngine, MsbLocation, DERIVED_SOCKET_SUFFIX_BYTES, TESTED_VERSION};
 pub use redact::{LiteralRedactor, NoRedaction, Redactor};
 pub use types::{
-    CreateSpec, ExecOutput, ExecRequest, GuestPath, HostPort, LogOptions, NetworkPolicy, Resources,
-    SandboxName, SandboxStatus, SecretRule, TlsMode,
+    CreateSpec, EngineLocation, ExecOutput, ExecRequest, GuestPath, HostPort, LogOptions,
+    NetworkPolicy, OutputSink, OutputStream, Resources, SandboxName, SandboxStatus, SecretRule,
+    StreamEnd, TlsMode,
 };
 
 use std::path::Path;
@@ -38,10 +39,22 @@ pub trait Engine: Send + Sync {
     fn status(&self, name: &SandboxName) -> Result<SandboxStatus>;
     /// Runs a command in a running sandbox, without a shell on the host side.
     fn exec(&self, name: &SandboxName, request: &ExecRequest) -> Result<ExecOutput>;
+    /// Runs a command in a running sandbox and hands over its output as it
+    /// arrives. It has no time limit unless the request sets one. A sandbox that
+    /// is not running is refused, not booted.
+    fn exec_stream(
+        &self,
+        name: &SandboxName,
+        request: &ExecRequest,
+        sink: &mut dyn OutputSink,
+    ) -> Result<StreamEnd>;
     /// Starts a command that keeps running, and returns its job ID.
     fn exec_detached(&self, name: &SandboxName, request: &ExecRequest) -> Result<String>;
     /// Copies a host file or directory into a running sandbox.
     fn copy_in(&self, name: &SandboxName, host: &Path, guest: &GuestPath) -> Result<()>;
     /// Returns captured sandbox output.
     fn logs(&self, name: &SandboxName, options: &LogOptions) -> Result<String>;
+    /// Where a client can run this engine on a person's own terminal, for an
+    /// engine that has such a place.
+    fn location(&self) -> Option<EngineLocation>;
 }

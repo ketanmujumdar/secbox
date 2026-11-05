@@ -25,11 +25,31 @@ any of it can be called working.
 | `secrets import/set/list/rm` | Works, with the OS keychain. Nothing delivers secrets to a VM yet |
 | `net check <policy> <METHOD> <url>` | Works. Explains a policy decision, but nothing enforces it yet |
 | `uninstall --purge` | Works. Removes the state folder only |
-| `up`, `down`, `status` | Built, never run against a real VM. They need the daemon |
+| `up`, `down`, `status` | Built. They need the daemon |
+| `logs [SERVICE] [-f] [--tail N] [--project PATH]` | Works on a running sandbox, through the daemon. Removes terminal control codes. Does not mask secret values |
+| `shell [SERVICE]`, `exec [--service S] -- CMD...` | Work on a running sandbox, on your real terminal. Control codes can't be filtered there |
 | `diff`, `export` | Not built |
 
-`up`, `down` and `status` send requests to a daemon, `secboxd`, which holds the
-secrets, the policy and the approvals. With no daemon running they say so.
+`up`, `down`, `status`, `logs`, `shell` and `exec` send requests to a daemon,
+`secboxd`, which holds the secrets, the policy and the approvals. With no daemon
+running they say so.
+
+## Looking inside a sandbox
+
+```sh
+secbox logs                     # the last 200 lines from each service
+secbox logs api -f              # follow one service; Ctrl-C stops following only
+secbox shell                    # a shell in the VM, in /work
+secbox shell postgres           # docker compose exec postgres sh
+secbox exec -- ls -la           # one command, with its exit code passed back
+secbox exec --service api -- env
+```
+
+Add `--project PATH` to name a project from another folder. None of these starts a stopped sandbox: they refuse and tell you how to start it.
+
+There is no SSH server and no open port in the VM. For `shell` and `exec` the daemon checks the sandbox is running and tells the CLI where the engine is, and the CLI runs the engine with a cleared environment. Anything you paste into that shell is inside the sandbox.
+
+`logs` masks nothing yet, because no secret reaches a sandbox yet. If that changes, it has to change too.
 
 ## Quick start
 

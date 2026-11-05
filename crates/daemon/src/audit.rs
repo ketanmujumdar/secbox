@@ -41,6 +41,9 @@ pub enum Action {
     BuildStarted,
     BuildFinished,
     RequestRefused,
+    /// A client was told how to open a terminal in a running sandbox. What
+    /// happens in that terminal is not recorded.
+    TerminalOpened,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

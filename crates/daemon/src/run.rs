@@ -31,7 +31,7 @@ use crate::{
 /// The guest image. The spike ran this one, and it already carries Compose.
 const IMAGE: &str = "docker:dind";
 /// Where the project's files live inside the guest.
-const WORK_DIR: &str = "/work";
+pub(crate) const WORK_DIR: &str = "/work";
 /// How long to wait for the Docker daemon inside the guest. The spike saw it
 /// ready in 2.2 to 3.1 seconds.
 const DOCKER_READY_LIMIT: Duration = Duration::from_secs(90);
@@ -507,7 +507,7 @@ pub fn status(service: &Service, project: &Project) -> Result<StatusReport, ApiE
     })
 }
 
-fn status_of(service: &Service, project: &Project) -> Result<SandboxState, ApiError> {
+pub(crate) fn status_of(service: &Service, project: &Project) -> Result<SandboxState, ApiError> {
     match service.deps().engine().status(&project.sandbox) {
         Ok(SandboxStatus::NotFound) => Ok(SandboxState::None),
         Ok(SandboxStatus::Stopped) => Ok(SandboxState::Stopped),

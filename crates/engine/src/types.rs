@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::{EngineError, Result};
@@ -190,6 +191,40 @@ pub struct ExecOutput {
     pub code: i32,
     pub stdout: String,
     pub stderr: String,
+}
+
+/// Which of a command's output streams some bytes came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+/// Receives a command's output as it arrives.
+pub trait OutputSink {
+    /// Takes the next bytes, which can end anywhere. Returning `false` stops
+    /// the command.
+    fn output(&mut self, stream: OutputStream, bytes: &[u8]) -> bool;
+    /// Whoever wanted this output has gone away, so the command should stop
+    /// even if it has nothing to say.
+    fn cancelled(&self) -> bool {
+        false
+    }
+}
+
+/// How a streamed command ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamEnd {
+    Exited(i32),
+    /// The sink stopped it. Only that command stops; the sandbox keeps running.
+    Stopped,
+}
+
+/// Where the engine is, for a client running it on a person's own terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineLocation {
+    pub binary: PathBuf,
+    pub home: PathBuf,
 }
 
 /// Which log entries to return.

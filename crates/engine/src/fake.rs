@@ -4,10 +4,12 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use crate::error::{EngineError, Result};
 use crate::types::{
-    CreateSpec, ExecOutput, ExecRequest, GuestPath, LogOptions, SandboxName, SandboxStatus,
+    CreateSpec, EngineLocation, ExecOutput, ExecRequest, GuestPath, LogOptions, OutputSink,
+    OutputStream, SandboxName, SandboxStatus, StreamEnd,
 };
 use crate::Engine;
 
@@ -20,6 +22,7 @@ pub enum FakeCall {
     Destroy(SandboxName),
     Status(SandboxName),
     Exec(SandboxName, ExecRequest),
+    ExecStream(SandboxName, ExecRequest),
     ExecDetached(SandboxName, ExecRequest),
     CopyIn(SandboxName, PathBuf, GuestPath),
     Logs(SandboxName, LogOptions),
@@ -39,6 +42,11 @@ struct State {
     calls: Vec<FakeCall>,
     exec_results: VecDeque<ExecOutput>,
     next_error: Option<EngineError>,
+    stream_chunks: VecDeque<(OutputStream, Vec<u8>)>,
+    stream_code: i32,
+    stream_stays_open: bool,
+    streams_stopped: usize,
+    location: Option<EngineLocation>,
 }
 
 /// In-memory [`Engine`]. `create` leaves a sandbox running, matching the CLI's
@@ -62,6 +70,33 @@ impl FakeEngine {
     /// with empty output.
     pub fn push_exec_result(&self, output: ExecOutput) {
         self.lock().exec_results.push_back(output);
+    }
+
+    /// Queues output for the next `exec_stream`.
+    pub fn push_stream_output(&self, stream: OutputStream, bytes: &[u8]) {
+        self.lock().stream_chunks.push_back((stream, bytes.to_vec()));
+    }
+
+    /// Sets the code the next `exec_stream` exits with.
+    pub fn set_stream_code(&self, code: i32) {
+        self.lock().stream_code = code;
+    }
+
+    /// Makes `exec_stream` behave like following a log: after its output, it
+    /// stays open until its sink stops it.
+    pub fn keep_streams_open(&self) {
+        self.lock().stream_stays_open = true;
+    }
+
+    /// How many streams were stopped by their sink rather than exiting.
+    pub fn streams_stopped(&self) -> usize {
+        self.lock().streams_stopped
+    }
+
+    /// Sets what [`Engine::location`] reports. With none set, there is no
+    /// place a client could run this engine from.
+    pub fn set_location(&self, location: EngineLocation) {
+        self.lock().location = Some(location);
     }
 
     /// Makes the next operation fail with this error. The call is still recorded.
@@ -106,6 +141,9 @@ impl FakeEngine {
         }
     }
 }
+
+/// How long a stream left open waits for its sink before giving up.
+const FAKE_STREAM_LIMIT: Duration = Duration::from_secs(20);
 
 fn not_found(name: &SandboxName) -> EngineError {
     EngineError::NotFound {
@@ -191,6 +229,48 @@ impl Engine for FakeEngine {
         Ok(state.exec_results.pop_front().unwrap_or_default())
     }
 
+    fn exec_stream(
+        &self,
+        name: &SandboxName,
+        request: &ExecRequest,
+        sink: &mut dyn OutputSink,
+    ) -> Result<StreamEnd> {
+        let (chunks, code, stays_open) = {
+            let mut state = self.begin(FakeCall::ExecStream(name.clone(), request.clone()))?;
+            crate::argv::exec_stream(name, request)?;
+            running_box(&mut state, name)?;
+            (
+                std::mem::take(&mut state.stream_chunks),
+                state.stream_code,
+                state.stream_stays_open,
+            )
+        };
+        let stopped = || {
+            self.lock().streams_stopped += 1;
+            Ok(StreamEnd::Stopped)
+        };
+        for (stream, bytes) in chunks {
+            if sink.cancelled() || !sink.output(stream, &bytes) {
+                return stopped();
+            }
+        }
+        if stays_open {
+            // Bounded so a broken test fails rather than hanging for ever.
+            let started = Instant::now();
+            while started.elapsed() < FAKE_STREAM_LIMIT {
+                if sink.cancelled() {
+                    return stopped();
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            return Err(EngineError::Timeout {
+                operation: "fake stream".to_owned(),
+                seconds: FAKE_STREAM_LIMIT.as_secs(),
+            });
+        }
+        Ok(StreamEnd::Exited(code))
+    }
+
     fn exec_detached(&self, name: &SandboxName, request: &ExecRequest) -> Result<String> {
         let mut state = self.begin(FakeCall::ExecDetached(name.clone(), request.clone()))?;
         crate::argv::exec_detached(name, request)?;
@@ -219,6 +299,10 @@ impl Engine for FakeEngine {
             .tail
             .map_or(0, |n| entry.log.len().saturating_sub(n as usize));
         Ok(entry.log[skip..].join("\n"))
+    }
+
+    fn location(&self) -> Option<EngineLocation> {
+        self.lock().location.clone()
     }
 }
 
@@ -326,6 +410,44 @@ mod tests {
         e.create(&spec()).unwrap();
         assert!(matches!(
             e.start(&name()),
+            Err(EngineError::InvalidState { .. })
+        ));
+    }
+
+    #[derive(Default)]
+    struct Collect(Vec<u8>);
+
+    impl OutputSink for Collect {
+        fn output(&mut self, _stream: OutputStream, bytes: &[u8]) -> bool {
+            self.0.extend_from_slice(bytes);
+            true
+        }
+    }
+
+    /// The fake follows the real adapter's rule: a stopped sandbox is refused.
+    #[test]
+    fn a_stream_follows_the_same_rules_as_exec() {
+        let e = FakeEngine::new();
+        let req = ExecRequest::new(["x"]);
+        assert!(matches!(
+            e.exec_stream(&name(), &req, &mut Collect::default()),
+            Err(EngineError::NotFound { .. })
+        ));
+        e.create(&spec()).unwrap();
+        e.push_stream_output(OutputStream::Stdout, b"hello");
+        e.set_stream_code(3);
+        let mut sink = Collect::default();
+        assert_eq!(
+            e.exec_stream(&name(), &req, &mut sink).unwrap(),
+            StreamEnd::Exited(3)
+        );
+        assert_eq!(sink.0, b"hello");
+        assert!(e
+            .exec_stream(&name(), &ExecRequest::new(Vec::<String>::new()), &mut sink)
+            .is_err());
+        e.stop(&name()).unwrap();
+        assert!(matches!(
+            e.exec_stream(&name(), &req, &mut sink),
             Err(EngineError::InvalidState { .. })
         ));
     }

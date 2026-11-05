@@ -279,6 +279,8 @@ Out of memory: Killed process 227 (python3) total-vm:485368kB, anon-rss:466432kB
 | `dockerd` doesn't start by itself, and a stale pid file blocks it after restart | The daemon has to handle both |
 | `exec` on a stopped sandbox boots it for that command, and `copy` tries to | The adapter checks state first |
 | `--quiet` hides errors on `remove` and `start` | The adapter doesn't use it there |
+| `exec --no-tty` holds all output back until the command ends; `exec --stream --no-tty` delivers it as it arrives | Streaming and piped commands use `--stream`. `--stream` conflicts with `--tty` |
+| Killing the `exec` client, even with SIGKILL, ended `docker compose logs -f` in the guest within 2 seconds, and the sandbox kept running | Stopping a followed log needs no cleanup inside the guest |
 | A secret's host variable is needed again at each start | The daemon must supply it for the sandbox's whole life |
 | The state directory must be 53 bytes or shorter | See below |
 | Interception's CA private key is stored at `~/.secbox/msb/tls/ca.key` | A shared host secret. Mode is `0600` |

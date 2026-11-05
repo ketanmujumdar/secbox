@@ -18,13 +18,15 @@
 //! There is no network port, by design: a browser cannot be made to reach a
 //! Unix socket, so a compromised page on `localhost` has nothing to aim at.
 
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use proto::{ApiError, Envelope, ErrorCode, Frame, Outcome, PROTOCOL_VERSION};
+use proto::{ApiError, Envelope, ErrorCode, Frame, Outcome, OutputStream, Request, PROTOCOL_VERSION};
 
 use crate::{audit, Progress, Service};
 
@@ -111,6 +113,7 @@ fn handle_connection(service: &Service, stream: UnixStream, me: u32) -> Result<(
             return Err(reason);
         }
     }
+    let closer = stream.try_clone().map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
     let mut writer = BufWriter::new(stream);
 
@@ -133,15 +136,35 @@ fn handle_connection(service: &Service, stream: UnixStream, me: u32) -> Result<(
         return finish(&mut writer, Outcome::Error { error: api });
     }
 
+    // A log being followed can be silent for hours, so writing to a client that
+    // has gone would never fail. A client sends nothing after its request, so
+    // this read ends only when it has closed the connection.
+    let gone = Arc::new(AtomicBool::new(false));
+    let watched = matches!(envelope.request, Request::Logs(_));
+    if watched {
+        let gone = Arc::clone(&gone);
+        std::thread::spawn(move || {
+            let mut ignored = [0u8; 64];
+            while matches!(reader.read(&mut ignored), Ok(read) if read > 0) {}
+            gone.store(true, Ordering::SeqCst);
+        });
+    }
+
     let mut progress = FrameProgress {
         writer: &mut writer,
         failed: false,
+        gone,
     };
     let outcome = match service.handle(&envelope.request, &mut progress) {
         Ok(reply) => Outcome::Ok { reply },
         Err(error) => Outcome::Error { error },
     };
-    finish(&mut writer, outcome)
+    let finished = finish(&mut writer, outcome);
+    if watched {
+        // Wakes the watching thread if the client is keeping the socket open.
+        let _ = closer.shutdown(Shutdown::Both);
+    }
+    finished
 }
 
 fn finish<W: Write>(writer: &mut W, outcome: Outcome) -> Result<(), String> {
@@ -153,6 +176,7 @@ fn finish<W: Write>(writer: &mut W, outcome: Outcome) -> Result<(), String> {
 struct FrameProgress<'a, W: Write> {
     writer: &'a mut W,
     failed: bool,
+    gone: Arc<AtomicBool>,
 }
 
 impl<W: Write> Progress for FrameProgress<'_, W> {
@@ -167,5 +191,23 @@ impl<W: Write> Progress for FrameProgress<'_, W> {
         if proto::write_frame(self.writer, &frame).is_err() {
             self.failed = true;
         }
+    }
+
+    fn output(&mut self, stream: OutputStream, text: &str) -> bool {
+        if self.failed {
+            return false;
+        }
+        let frame = Frame::Output {
+            stream,
+            text: text.to_owned(),
+        };
+        if proto::write_frame(self.writer, &frame).is_err() {
+            self.failed = true;
+        }
+        !self.failed
+    }
+
+    fn cancelled(&self) -> bool {
+        self.failed || self.gone.load(Ordering::SeqCst)
     }
 }

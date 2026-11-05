@@ -25,7 +25,14 @@
 //!
 //! Every string the daemon sends has already been through [`text::escape`].
 //! It may still be a lie, because it can come from a compromised sandbox, but
-//! it cannot carry terminal control sequences or hidden bidi characters.
+//! it cannot carry terminal control sequences or hidden bidi characters. Log
+//! output goes through [`text::TerminalFilter`] instead, which also keeps its
+//! tabs and newlines.
+//!
+//! # Compatibility
+//!
+//! A new request is an addition rather than a new version. A daemon that does
+//! not know it refuses that one request, and every other request keeps working.
 
 pub mod text;
 pub mod wire;
@@ -67,6 +74,55 @@ pub enum Request {
     Down(DownArgs),
     /// Report on a project's sandbox.
     Status(ProjectArgs),
+    /// Read what a project's services have logged. Never starts anything.
+    Logs(LogsArgs),
+    /// Ask how to open a terminal in a running sandbox. Never starts anything.
+    Terminal(TerminalArgs),
+}
+
+/// The most log lines one request may ask for from each service.
+pub const MAX_LOG_TAIL: u32 = 100_000;
+const MAX_SERVICE_NAME_BYTES: usize = 128;
+
+/// Checks that a Compose service name is only a name. It goes on a command
+/// line inside the sandbox, so it must not be readable as a flag.
+pub fn check_service_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() {
+        return Err("a service name must not be empty");
+    }
+    if name.len() > MAX_SERVICE_NAME_BYTES {
+        return Err("that service name is too long");
+    }
+    if name.starts_with('-') {
+        return Err("a service name must not start with '-'");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err("a service name may only use letters, digits, '.', '_' and '-'");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogsArgs {
+    pub project: String,
+    /// One service, or `None` for all of them.
+    pub service: Option<String>,
+    /// How many recent lines to show from each service.
+    pub tail: u32,
+    /// Keep going until the client disconnects.
+    pub follow: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalArgs {
+    pub project: String,
+    /// The service the terminal is for, which the daemon checks and records.
+    pub service: Option<String>,
 }
 
 /// Naming a project. The daemon canonicalises the path itself and derives the
@@ -131,8 +187,18 @@ pub struct DownArgs {
 pub enum Frame {
     /// A step finished. Clients may show these as they arrive.
     Progress { step: String, detail: Option<String> },
+    /// Some of a command's output, already filtered. It can end anywhere, so
+    /// it is not necessarily a whole line.
+    Output { stream: OutputStream, text: String },
     /// The last frame on a connection.
     Done(Outcome),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputStream {
+    Stdout,
+    Stderr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +217,33 @@ pub enum Reply {
     Up(UpReport),
     Down(DownReport),
     Status(StatusReport),
+    Logs(LogsReport),
+    Terminal(TerminalReport),
+}
+
+/// How a log request ended. The output itself came in [`Frame::Output`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogsReport {
+    /// What the log command exited with, or `None` if it was stopped first.
+    pub code: Option<i32>,
+    /// The output reached the daemon's limit, so the rest was not sent.
+    pub truncated: bool,
+}
+
+/// What a client needs in order to run the engine on the person's own
+/// terminal. No secret is here, and a process of the same user could already
+/// read all of it from the state folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalReport {
+    pub sandbox: String,
+    /// The absolute path of the engine's binary.
+    pub engine_binary: String,
+    /// The absolute path of the engine's state folder.
+    pub engine_home: String,
+    /// The project's folder inside the sandbox.
+    pub workdir: String,
 }
 
 /// Why a request did not succeed. The message is already safe to print.
@@ -411,6 +504,61 @@ mod tests {
         round_trip(Request::Status(ProjectArgs {
             project: "/p".to_owned(),
         }));
+        round_trip(Request::Logs(LogsArgs {
+            project: "/p".to_owned(),
+            service: Some("web".to_owned()),
+            tail: 200,
+            follow: true,
+        }));
+        round_trip(Request::Terminal(TerminalArgs {
+            project: "/p".to_owned(),
+            service: None,
+        }));
+    }
+
+    #[test]
+    fn output_survives_the_wire_as_one_frame() {
+        let frame = Frame::Output {
+            stream: OutputStream::Stderr,
+            text: "a\tb\nc".to_owned(),
+        };
+        let mut buffer = Vec::new();
+        write_frame(&mut buffer, &frame).unwrap();
+        assert_eq!(buffer.iter().filter(|b| **b == b'\n').count(), 1);
+        let back: Frame = read_frame(&mut buffer.as_slice()).unwrap().unwrap();
+        assert_eq!(back, frame);
+    }
+
+    #[test]
+    fn ordinary_service_names_are_accepted() {
+        for name in ["web", "api-1", "my_service", "a.b", "A9", "worker.2_x-y"] {
+            assert_eq!(check_service_name(name), Ok(()), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_service_name_that_could_be_anything_else_is_refused() {
+        let long = "a".repeat(129);
+        for name in [
+            "",
+            "-f",
+            "--follow",
+            "-",
+            "a;b",
+            "a b",
+            "a/b",
+            "$(x)",
+            "`x`",
+            "a|b",
+            "a&b",
+            "a\nb",
+            "a\0b",
+            "a\u{1b}[0m",
+            "caf\u{e9}",
+            long.as_str(),
+        ] {
+            assert!(check_service_name(name).is_err(), "{name:?}");
+        }
     }
 
     #[test]

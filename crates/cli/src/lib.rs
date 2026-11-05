@@ -5,6 +5,7 @@
 
 mod check;
 pub mod client;
+mod debug;
 mod doctor;
 mod editor;
 pub mod host;
@@ -98,6 +99,12 @@ enum Command {
     Down(vm::DownArgsCli),
     /// Show a project's sandbox
     Status(vm::StatusArgsCli),
+    /// Show what a project's services have logged, with control codes removed
+    Logs(debug::LogsArgsCli),
+    /// Open a shell inside a running sandbox
+    Shell(debug::ShellArgsCli),
+    /// Run one command inside a running sandbox, and pass back its exit code
+    Exec(debug::ExecArgsCli),
     /// Not built yet: review changes made in a VM
     Diff(NotBuiltArgs),
     /// Not built yet: export reviewed changes through Git
@@ -170,6 +177,9 @@ where
         Command::Up(args) => vm::up(&args, deps),
         Command::Down(args) => vm::down(&args, deps),
         Command::Status(args) => vm::status(&args, deps),
+        Command::Logs(args) => debug::logs(&args, deps),
+        Command::Shell(args) => debug::shell(&args, deps),
+        Command::Exec(args) => debug::exec(&args, deps),
         Command::Diff(_) => not_built("diff", deps),
         Command::Export(_) => not_built("export", deps),
     }

@@ -63,6 +63,9 @@ fn validate_env_name(name: &str) -> Result<()> {
     }
 }
 
+/// The variable that tells the CLI where its state directory is.
+pub const HOME_VAR: &str = "MSB_HOME";
+
 pub fn version() -> Vec<String> {
     strings(["--version"])
 }
@@ -202,6 +205,40 @@ pub fn exec(name: &SandboxName, request: &ExecRequest) -> Result<Vec<String>> {
     Ok(args)
 }
 
+/// Like [`exec`], for output wanted as it arrives. Measured on v0.7.13, plain
+/// `--no-tty` holds all output back until the command ends, and `--stream` does
+/// not. It takes the standard input the CLI was given, so the caller gives it
+/// none. Output stays separated, and exit codes and `--timeout` work the same.
+pub fn exec_stream(name: &SandboxName, request: &ExecRequest) -> Result<Vec<String>> {
+    let mut args = strings(["exec", "--stream", "--no-tty"]);
+    exec_options(&mut args, request)?;
+    if let Some(timeout) = request.timeout {
+        args.push("--timeout".to_owned());
+        args.push(format!("{}s", timeout.as_secs().max(1)));
+    }
+    args.push(name.as_str().to_owned());
+    args.push("--".to_owned());
+    args.extend(request.command.iter().cloned());
+    Ok(args)
+}
+
+/// Runs a command on the caller's own terminal or pipes, so unlike [`exec`] it
+/// leaves standard input connected. The CLI's `exec` boots a stopped sandbox,
+/// so the caller must have checked that this one is running. `--tty` conflicts
+/// with `--stream`, so a real terminal gets one and pipes get the other.
+pub fn exec_terminal(name: &SandboxName, request: &ExecRequest, tty: bool) -> Result<Vec<String>> {
+    let mut args = if tty {
+        strings(["exec", "--tty"])
+    } else {
+        strings(["exec", "--stream", "--no-tty"])
+    };
+    exec_options(&mut args, request)?;
+    args.push(name.as_str().to_owned());
+    args.push("--".to_owned());
+    args.extend(request.command.iter().cloned());
+    Ok(args)
+}
+
 /// Starts a job that keeps running, such as `dockerd`. The CLI prints its job ID.
 pub fn exec_detached(name: &SandboxName, request: &ExecRequest) -> Result<Vec<String>> {
     let mut args = strings(["exec", "--detach", "--no-stdin"]);
@@ -264,6 +301,38 @@ mod tests {
             secrets: vec![],
             ports: vec![HostPort(3000)],
         }
+    }
+
+    #[test]
+    fn a_terminal_command_keeps_stdin_and_chooses_its_tty() {
+        let mut request = ExecRequest::new(["sh"]);
+        request.workdir = Some(GuestPath::new("/work").unwrap());
+        assert_eq!(
+            exec_terminal(&name(), &request, true).unwrap(),
+            ["exec", "--tty", "--workdir", "/work", "demo", "--", "sh"]
+        );
+        assert_eq!(
+            exec_terminal(&name(), &request, false).unwrap(),
+            ["exec", "--stream", "--no-tty", "--workdir", "/work", "demo", "--", "sh"]
+        );
+        assert!(exec_terminal(&name(), &ExecRequest::new(Vec::<String>::new()), true).is_err());
+    }
+
+    #[test]
+    fn a_stream_asks_for_output_as_it_arrives() {
+        let mut request = ExecRequest::new(["docker", "compose", "logs"]);
+        request.workdir = Some(GuestPath::new("/work").unwrap());
+        assert_eq!(
+            exec_stream(&name(), &request).unwrap(),
+            [
+                "exec", "--stream", "--no-tty", "--workdir", "/work", "demo", "--", "docker",
+                "compose", "logs"
+            ]
+        );
+        request.timeout = Some(Duration::from_secs(60));
+        let args = exec_stream(&name(), &request).unwrap();
+        assert_eq!(args[5..7], ["--timeout", "60s"]);
+        assert!(exec_stream(&name(), &ExecRequest::new(Vec::<String>::new())).is_err());
     }
 
     #[test]

@@ -40,10 +40,10 @@ Most cloud environments are Linux and may have no KVM, so they can't run the VM 
 | `egress` | Rule engine done | No proxy; no CONNECT pre-check; method-override headers and keys in query strings not handled. **Nothing calls it on real traffic** |
 | `gitbroker` | Done | No real HTTPS push; no SSH remotes; no Touch ID approver; no working-tree snapshot |
 | `engine` | Done on macOS | Secrets need TLS interception; Linux untested |
-| `proto` | Done | The API covers `plan`, `up`, `down` and `status` only |
+| `proto` | Done | The API covers `plan`, `up`, `down`, `status`, `logs` and terminal access only |
 | `hoststate` | Done | Project identity still hashes the full path, so moving a project loses its secrets |
 | `daemon` | Core done, against `FakeEngine` | Never run against a real VM; no secret delivery; no gateway log |
-| `cli` | `up`, `down`, `status`, `open` and `checks` done | `diff` and `export` refuse; no `logs`, `shell`, `exec`, `sync`, `net` or `rebuild` |
+| `cli` | `up`, `down`, `status`, `open`, `checks`, `logs`, `shell` and `exec` done | `diff` and `export` refuse; no `sync`, `net` or `rebuild` |
 
 `docs/NEEDS_A_VM.md` is the standing list of what has not run on real hardware.
 
@@ -75,7 +75,8 @@ Done when: `secbox up` runs `demo_shop` in a VM with no real secrets, on a Mac, 
 
 ## Milestone 2: daily use
 
-- `secbox logs`, `shell`, `exec` and `sync`. `logs` strips control codes and masks known secret values.
+- `secbox logs`, `shell` and `exec` are built, and ran against a real VM. `logs` strips control codes. **It does not mask secret values yet:** no secret reaches a sandbox and the daemon loads none to compare against, so add masking with secret delivery.
+- `secbox sync`.
 - `secbox net blocked`, `net log` and `net allow`, with decisions recorded on the host, and a system approval to loosen policy. Blocked HTTP requests get a clear error.
 - `secbox rebuild`, with the review steps, rollback and the five actions in the architecture doc.
 - `secbox uninstall --purge` must keep refusing while a sandbox is running.

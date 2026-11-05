@@ -140,13 +140,19 @@ fn run() -> Result<(), String> {
     hoststate::ensure_state(&paths)?;
 
     let home = paths.state.join(hoststate::ENGINE_DIR);
+    // The state folder belongs to this user, and the same place is what the
+    // doctor command checks. Nothing searches the path or the current folder.
     let binary = match env(&hoststate::engine_bin_var()) {
         Some(path) => std::path::PathBuf::from(path),
-        None => return Err(format!(
-            "no engine binary. Set {} to its absolute path.",
-            hoststate::engine_bin_var()
-        )),
+        None => home.join("bin").join("msb"),
     };
+    if !binary.is_file() {
+        return Err(format!(
+            "no engine binary at {}. Put it there, or set {} to its absolute path.",
+            proto::text::escape_path(&binary),
+            hoststate::engine_bin_var()
+        ));
+    }
     let engine = MsbEngine::new(MsbLocation::Explicit {
         binary,
         home: home.clone(),

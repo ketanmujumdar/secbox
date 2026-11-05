@@ -48,6 +48,30 @@ impl Drop for RawMode {
     }
 }
 
+/// Puts the terminal settings back when dropped, for a child process that is
+/// allowed to change them and might not live to undo that itself.
+pub struct SavedSettings {
+    original: Termios,
+}
+
+impl SavedSettings {
+    /// Reads the current settings, if standard input is a terminal.
+    pub fn read() -> Option<Self> {
+        let stdin = io::stdin();
+        if !stdin.is_terminal() {
+            return None;
+        }
+        let original = termios::tcgetattr(stdin.as_fd()).ok()?;
+        Some(Self { original })
+    }
+}
+
+impl Drop for SavedSettings {
+    fn drop(&mut self) {
+        let _ = termios::tcsetattr(io::stdin().as_fd(), SetArg::TCSANOW, &self.original);
+    }
+}
+
 /// The window size.
 ///
 /// Both handles are passed in. Nothing here may reach for the process's own

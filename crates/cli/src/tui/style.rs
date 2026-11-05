@@ -71,9 +71,57 @@ impl Style {
     }
 }
 
+/// The same colour from the fixed part of the 256-colour table. Terminal themes
+/// recolour the first sixteen entries, which can turn the blue purple, and
+/// leave these alone.
+fn fixed_index(code: u16) -> Option<u16> {
+    Some(match code {
+        30 => 16,
+        31 => 124,
+        32 => 34,
+        33 => 142,
+        34 => 19,
+        35 => 127,
+        36 => 37,
+        37 => 250,
+        90 => 244,
+        91 => 196,
+        92 => 46,
+        93 => 226,
+        94 => 21,
+        95 => 201,
+        96 => 51,
+        97 => 231,
+        _ => return None,
+    })
+}
+
+impl Style {
+    /// The escape parameters for this style, on a terminal that does or does
+    /// not have the 256-colour table.
+    pub fn sequence(self, fixed: bool) -> String {
+        let codes = self.codes();
+        if !fixed {
+            return codes.to_owned();
+        }
+        let converted = codes.split_once(';').and_then(|(fg, bg)| {
+            let fg = fixed_index(fg.parse().ok()?)?;
+            let bg = fixed_index(bg.parse::<u16>().ok()?.checked_sub(10)?)?;
+            Some(format!("38;5;{fg};48;5;{bg}"))
+        });
+        converted.unwrap_or_else(|| codes.to_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Style;
+
+    #[test]
+    fn the_window_is_the_same_blue_whatever_the_theme_says() {
+        assert_eq!(Style::Window.sequence(true), "38;5;250;48;5;19");
+        assert_eq!(Style::Window.sequence(false), "37;44");
+    }
 
     /// Every style has to be one of the pairs a text terminal of the time
     /// could show: one foreground, one background, nothing else.

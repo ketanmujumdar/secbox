@@ -16,6 +16,15 @@ hand on a Mac. Nothing in `crates/daemon` or `crates/cli` was part of that run.
 | No `/dev/kvm`, no engine binary | Nothing can boot. Every VM path is unexercised |
 | git 2.43, and `gitbroker` requires 2.50 | 10 unit tests, all 54 tests in `tests/hostile.rs` and the one in `tests/env_scrub.rs` never ran. They compile |
 
+## Logs and terminals: what ran on a real VM
+
+On Nov 5, 2026, on a Mac, against a running `demo_shop` sandbox, using a second daemon with its own state folder. Its engine path was a test wrapper that pinned the engine's state folder, refused lifecycle commands and set `HISTFILE=/dev/null`.
+
+- Ran: `logs` for all services and for one, `-f` with Ctrl-C on a pty, `shell`, `shell SERVICE`, `exec` on a terminal and on pipes, and the TUI Logs panel. After Ctrl-C the sandbox was still running, no `compose logs` process was left in the guest, and the terminal settings were unchanged.
+- [ ] Refusing a sandbox that is really stopped. This ran only with a stub engine that reports `Stopped`, because the real sandbox was in use.
+- [ ] Hostile output from inside a VM. Hostile bytes ran only from a stub engine through the real binaries and socket, and in tests.
+- [ ] Commands typed into `shell SERVICE`. Only opening it and leaving with Ctrl-D ran, so as not to write a history file in the container.
+
 ## Must run on a real VM before any of this is described as working
 
 ### The start sequence

@@ -123,6 +123,49 @@ pub struct Dialog {
     pub lines: Vec<String>,
 }
 
+/// What the Logs panel shows for the selected project.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LogsPanel {
+    /// The project all of this belongs to.
+    pub project: String,
+    /// The services that can be chosen. All of them is always a choice too.
+    pub services: Vec<String>,
+    /// The chosen service, or `None` for all of them.
+    pub chosen: Option<String>,
+    /// The most recent lines, oldest first, filtered and with no tabs left.
+    pub lines: Vec<String>,
+    /// Why there are no lines, or something else worth saying about them.
+    pub note: Option<Line>,
+}
+
+impl LogsPanel {
+    /// Clears everything if it belongs to another project, so that one
+    /// project's lines are never drawn under another's name while reading.
+    pub fn belong_to(&mut self, project: &str) {
+        if self.project != project {
+            *self = Self {
+                project: project.to_owned(),
+                ..Self::default()
+            };
+        }
+    }
+
+    /// Moves along All and the services, stopping at each end.
+    pub fn choose(&mut self, delta: isize) {
+        let at = self.chosen_index();
+        let next = at.saturating_add_signed(delta).min(self.services.len());
+        self.chosen = next.checked_sub(1).map(|index| self.services[index].clone());
+    }
+
+    /// Where the choice is along All and the services, with All first.
+    fn chosen_index(&self) -> usize {
+        self.chosen
+            .as_ref()
+            .and_then(|name| self.services.iter().position(|s| s == name))
+            .map_or(0, |index| index + 1)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Model {
     pub projects: Vec<Row>,
@@ -132,6 +175,7 @@ pub struct Model {
     pub busy: Option<String>,
     pub pane: PaneState,
     pub dialog: Option<Dialog>,
+    pub logs: LogsPanel,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -165,13 +209,13 @@ impl Model {
 /// otherwise read as "nothing happened".
 fn not_built(pane: Pane) -> &'static [&'static str] {
     match pane {
-        Pane::Projects => &[],
+        Pane::Projects | Pane::Logs => &[],
         Pane::Traffic => &[
             "Outbound requests are not recorded on the host yet.",
             "",
-            "There is no gateway and no proxy, so nothing decides or logs a",
-            "request on real traffic. An empty panel here does not mean",
-            "nothing was blocked: it means nothing is watching.",
+            "The engine blocks hosts that are not on the allowlist, but it",
+            "does not report them here. An empty panel does not mean nothing",
+            "was blocked: it means nothing is being shown yet.",
         ],
         Pane::Secrets => &[
             "Secrets are stored, but nothing delivers them to a sandbox.",
@@ -185,13 +229,6 @@ fn not_built(pane: Pane) -> &'static [&'static str] {
             "",
             "The broker that quarantines a bundle, flags risky paths and pushes",
             "one approved commit exists, but no command reaches it yet.",
-        ],
-        Pane::Logs => &[
-            "Reading a sandbox's logs is not built.",
-            "",
-            "When it is, remember that logs come from inside the sandbox, so",
-            "they can be wrong. Only the host's own records cannot be edited",
-            "from in there.",
         ],
     }
 }
@@ -297,6 +334,10 @@ fn status_bar(screen: &mut Screen) {
 fn body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, h: usize) {
     // One line at the bottom is always the note.
     let room = h.saturating_sub(1);
+    if model.pane.0 == Pane::Logs {
+        logs_body(model, screen, x, y, w, room);
+        return;
+    }
     if model.pane.0 != Pane::Projects {
         for (offset, text) in not_built(model.pane.0).iter().take(room).enumerate() {
             screen.text_cut(x + 1, y + offset, text, w - 2, Style::Window);
@@ -368,6 +409,74 @@ fn body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, h: usi
     }
 }
 
+/// The services along the top, then as many of the most recent lines as fit.
+fn logs_body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, room: usize) {
+    let panel = &model.logs;
+    let Some(row) = model.selected_row() else {
+        screen.text_cut(
+            x + 1,
+            y,
+            "No project has been started on this machine.",
+            w - 2,
+            Style::Window,
+        );
+        return;
+    };
+    screen.text_cut(x + 1, y, &row.name, w - 2, Style::WindowDim);
+    service_bar(panel, screen, x + 1, y + 1, w - 2);
+    screen.text_cut(
+        x + 1,
+        y + 2,
+        "[ ] choose  5 refresh. From inside the sandbox, so they can be wrong.",
+        w - 2,
+        Style::WindowDim,
+    );
+    if room <= 4 {
+        return;
+    }
+    screen.rule(x - 1, y + 3, w + 2, Style::Frame);
+    let mut at = y + 4;
+    let bottom = y + room;
+    if let Some(note) = &panel.note {
+        screen.text_cut(x + 1, at, &note.text, w - 2, note.style);
+        at += 1;
+    }
+    let fits = bottom.saturating_sub(at);
+    let first = panel.lines.len().saturating_sub(fits);
+    for line in &panel.lines[first..] {
+        screen.text_cut(x + 1, at, line, w - 2, Style::Window);
+        at += 1;
+    }
+}
+
+/// `All` and each service, with the choice highlighted. The row slides along
+/// when there are more than fit, so the choice is always on screen.
+fn service_bar(panel: &LogsPanel, screen: &mut Screen, x: usize, y: usize, w: usize) {
+    const LONGEST: usize = 20;
+    let names: Vec<String> = std::iter::once("All".to_owned())
+        .chain(panel.services.iter().map(|name| cut(name, LONGEST)))
+        .collect();
+    let chosen = panel.chosen_index();
+    let widths: Vec<usize> = names.iter().map(|name| name.chars().count() + 2).collect();
+    let mut start = 0;
+    while start < chosen && widths[start..=chosen].iter().sum::<usize>() > w {
+        start += 1;
+    }
+    let mut at = x;
+    for (index, name) in names.iter().enumerate().skip(start) {
+        if at + widths[index] > x + w {
+            break;
+        }
+        let style = if index == chosen {
+            Style::Selected
+        } else {
+            Style::Window
+        };
+        screen.text(at, y, &format!(" {name} "), style);
+        at += widths[index];
+    }
+}
+
 fn draw_dialog(screen: &mut Screen, dialog: &Dialog) {
     let width = (screen.width() * 3 / 4).clamp(40, 76);
     let height = (dialog.lines.len() + 6).min(screen.height().saturating_sub(4));
@@ -400,6 +509,7 @@ fn draw_dialog(screen: &mut Screen, dialog: &Dialog) {
 /// A key the interface understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
+    Open(Pane),
     Up,
     Down,
     Tab,
@@ -409,6 +519,8 @@ pub enum Key {
     Stop,
     Destroy,
     Help,
+    PreviousService,
+    NextService,
     Yes,
     No,
     Other,
@@ -420,13 +532,23 @@ pub fn key(bytes: &[u8]) -> Key {
     match bytes {
         b"\x1b[A" | b"k" => Key::Up,
         b"\x1b[B" | b"j" => Key::Down,
-        b"\t" | b"\x1bOU" | b"\x1b[17~" => Key::Tab,
-        b"q" | b"\x03" | b"\x1b[21~" => Key::Quit,
-        b"r" | b"\x1b[15~" => Key::Refresh,
-        b"u" | b"\x1bOQ" => Key::Start,
-        b"s" | b"\x1bOR" => Key::Stop,
+        b"\t" | b"6" | b"\x1bOU" | b"\x1b[17~" => Key::Tab,
+        b"q" | b"0" | b"\x03" | b"\x1b[21~" => Key::Quit,
+        // The red letter in the menu always opens that panel, so a key someone
+        // presses to look at something can never also stop a sandbox.
+        b"p" | b"P" => Key::Open(Pane::Projects),
+        b"t" | b"T" => Key::Open(Pane::Traffic),
+        b"s" | b"S" => Key::Open(Pane::Secrets),
+        b"r" | b"R" => Key::Open(Pane::Review),
+        b"l" | b"L" => Key::Open(Pane::Logs),
+        // The numbers in the bar along the bottom, and the function keys.
+        b"5" | b"\x1b[15~" => Key::Refresh,
+        b"2" | b"u" | b"\x1bOQ" => Key::Start,
+        b"3" | b"\x1bOR" => Key::Stop,
         b"x" => Key::Destroy,
-        b"?" | b"\x1bOP" => Key::Help,
+        b"[" => Key::PreviousService,
+        b"]" => Key::NextService,
+        b"?" | b"1" | b"\x1bOP" => Key::Help,
         b"y" | b"Y" => Key::Yes,
         b"n" | b"N" | b"\x1b" => Key::No,
         _ => Key::Other,
@@ -550,7 +672,6 @@ mod tests {
             (Pane::Traffic, "are not recorded on the host yet"),
             (Pane::Secrets, "nothing delivers them to a sandbox"),
             (Pane::Review, "is not built"),
-            (Pane::Logs, "is not built"),
         ] {
             let mut m = model();
             m.pane = PaneState(pane);
@@ -559,11 +680,110 @@ mod tests {
         }
     }
 
+    fn logs_model() -> Model {
+        let mut m = model();
+        m.pane = PaneState(Pane::Logs);
+        m.logs.services = vec!["api".to_owned(), "web".to_owned()];
+        m
+    }
+
     #[test]
-    fn the_traffic_panel_says_nothing_is_watching() {
+    fn the_logs_panel_shows_its_services_and_lines_and_no_longer_says_not_built() {
+        let mut m = logs_model();
+        m.logs.lines = vec!["api-1  | hello there".to_owned()];
+        let text = plain(&m, 80, 24);
+        assert!(!text.contains("is not built"), "{text}");
+        assert!(text.contains(" All  api  web "), "{text}");
+        assert!(text.contains("api-1  | hello there"), "{text}");
+        assert!(text.contains("[ ] choose"), "{text}");
+        assert!(text.contains("╡ Logs ╞"), "{text}");
+    }
+
+    #[test]
+    fn the_logs_panel_keeps_the_newest_lines_when_they_do_not_all_fit() {
+        let mut m = logs_model();
+        m.logs.lines = (0..500).map(|n| format!("line-{n:03}")).collect();
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("line-499"), "{text}");
+        assert!(!text.contains("line-000"), "{text}");
+    }
+
+    #[test]
+    fn a_long_log_line_cannot_break_the_frame() {
+        let mut m = logs_model();
+        m.logs.lines = vec!["x".repeat(5000)];
+        for line in plain(&m, 80, 24).lines() {
+            assert_eq!(line.chars().count(), 80);
+        }
+    }
+
+    #[test]
+    fn the_choice_moves_along_all_and_the_services_and_stops_at_each_end() {
+        let mut panel = logs_model().logs;
+        assert_eq!(panel.chosen, None);
+        panel.choose(-1);
+        assert_eq!(panel.chosen, None);
+        panel.choose(1);
+        assert_eq!(panel.chosen.as_deref(), Some("api"));
+        panel.choose(1);
+        assert_eq!(panel.chosen.as_deref(), Some("web"));
+        panel.choose(1);
+        assert_eq!(panel.chosen.as_deref(), Some("web"));
+        panel.choose(-1);
+        panel.choose(-1);
+        assert_eq!(panel.chosen, None);
+        let mut empty = LogsPanel::default();
+        empty.choose(1);
+        assert_eq!(empty.chosen, None);
+    }
+
+    #[test]
+    fn another_project_starts_with_an_empty_panel() {
+        let mut panel = logs_model().logs;
+        panel.project = "/p/one".to_owned();
+        panel.lines = vec!["from one".to_owned()];
+        panel.chosen = Some("api".to_owned());
+        panel.belong_to("/p/one");
+        assert_eq!(panel.lines, ["from one"]);
+        panel.belong_to("/p/two");
+        assert_eq!(panel.project, "/p/two");
+        assert!(panel.lines.is_empty());
+        assert!(panel.services.is_empty());
+        assert_eq!(panel.chosen, None);
+    }
+
+    #[test]
+    fn the_chosen_service_is_highlighted_even_far_along_a_long_row() {
+        let mut m = logs_model();
+        m.logs.services = (0..40).map(|n| format!("service-{n:02}")).collect();
+        m.logs.chosen = Some("service-39".to_owned());
+        let rows = render(&m, 80, 24);
+        let highlighted: String = rows
+            .iter()
+            .flatten()
+            .filter(|span| span.style == Style::Selected)
+            .map(|span| span.text.as_str())
+            .collect();
+        assert!(highlighted.contains("service-39"), "{highlighted}");
+    }
+
+    /// The keys that choose a service must not do anything else, and none of
+    /// the keys that act on a sandbox may have moved onto them.
+    #[test]
+    fn choosing_a_service_uses_its_own_keys() {
+        assert_eq!(key(b"["), Key::PreviousService);
+        assert_eq!(key(b"]"), Key::NextService);
+        assert_eq!(key(b"3"), Key::Stop);
+        assert_eq!(key(b"x"), Key::Destroy);
+        assert_eq!(key(b"l"), Key::Open(Pane::Logs));
+        assert_eq!(key(b"5"), Key::Refresh);
+    }
+
+    #[test]
+    fn the_traffic_panel_says_an_empty_list_is_not_proof() {
         let mut m = model();
         m.pane = PaneState(Pane::Traffic);
-        assert!(plain(&m, 80, 24).contains("nothing is watching"));
+        assert!(plain(&m, 80, 24).contains("nothing is being shown yet"));
     }
 
     #[test]
@@ -609,7 +829,10 @@ mod tests {
         assert_eq!(key(b"\x1bOQ"), Key::Start);
         assert_eq!(key(b"u"), Key::Start);
         assert_eq!(key(b"\x1bOR"), Key::Stop);
-        assert_eq!(key(b"s"), Key::Stop);
+        assert_eq!(key(b"3"), Key::Stop);
+        // The menu's red letter opens its panel and never stops a sandbox.
+        assert_eq!(key(b"s"), Key::Open(Pane::Secrets));
+        assert_eq!(key(b"r"), Key::Open(Pane::Review));
         assert_eq!(key(b"\x1b[15~"), Key::Refresh);
         assert_eq!(key(b"\x1b[21~"), Key::Quit);
         assert_eq!(key(b"q"), Key::Quit);
