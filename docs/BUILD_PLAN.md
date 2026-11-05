@@ -130,3 +130,4 @@ Milestones 0 to 5 are complete, the leak suite passes on a real VM, and an indep
 - Public repo, signed releases, automatic engine download with checksum check, the Homebrew tap, and the final name.
 - Projects without Compose or a Dockerfile.
 - V2 interface: retro terminal UI or the Tauri app. Evaluate the terminal UI first, since it needs no web view.
+  - A first cut of the Tauri app is in `apps/desktop`, as its own Cargo workspace so this one still builds without WebKit: a menu bar icon that starts the daemon and stays running, and a window with the overview, start with plan approval, stop, destroy, logs and blocked hostnames. It has the same powers as the CLI and ships the CLI and daemon inside its bundle. It has run on Linux under Xvfb only; macOS bundling and the menu bar icon are untested. See `apps/desktop/README.md`.
