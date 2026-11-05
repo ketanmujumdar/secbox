@@ -70,6 +70,8 @@ impl Deps for TestDeps {
         if self.snapshot_fails {
             return Err("refused on purpose".to_owned());
         }
+        // The real snapshot creates its destination and refuses one that exists.
+        std::fs::create_dir(dest).expect("snapshot destination must not exist yet");
         std::fs::write(dest.join("compose.yaml"), std::fs::read(root.join("compose.yaml")).unwrap())
             .unwrap();
         Ok(SnapshotPlan {

@@ -103,7 +103,13 @@ pub fn up(
 
     if fresh {
         progress.step("snapshot", None);
-        copy_in_snapshot(service, project, args)?;
+        if let Err(error) = copy_in_snapshot(service, project, args) {
+            // Code is copied only into a new sandbox, so one left behind here
+            // would be reused empty by the next start. It holds nothing yet.
+            let _ = service.deps().engine().destroy(&project.sandbox);
+            let _ = SandboxRecord::remove(&project.dir);
+            return Err(error);
+        }
     }
 
     progress.step("docker", None);
@@ -262,9 +268,11 @@ fn spec_host_count(spec: &CreateSpec) -> usize {
 
 fn copy_in_snapshot(service: &Service, project: &Project, args: &UpArgs) -> Result<(), ApiError> {
     let staging = tempdir_in_state(service)?;
+    // The snapshot creates its own destination and refuses one that exists.
+    let snapshot = staging.path().join("snapshot");
     let report = service
         .deps()
-        .snapshot(&project.root, &args.source, staging.path())
+        .snapshot(&project.root, &args.source, &snapshot)
         .map_err(|reason| internal(format!("cannot take a snapshot: {reason}")))?;
     for excluded in &report.excluded {
         service.record(
@@ -278,7 +286,7 @@ fn copy_in_snapshot(service: &Service, project: &Project, args: &UpArgs) -> Resu
     service
         .deps()
         .engine()
-        .copy_in(&project.sandbox, staging.path(), &guest)
+        .copy_in(&project.sandbox, &snapshot, &guest)
         .map_err(|e| engine_error(e.to_string()))?;
     service.record(
         audit::entry(service.deps().now_unix(), audit::Action::SnapshotTaken)
