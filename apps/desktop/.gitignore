@@ -1,0 +1,5 @@
+# Build output, Tauri's generated schemas, and the binaries copied in by
+# scripts/prepare-sidecars.sh. None of it belongs in the repository.
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/gen/
