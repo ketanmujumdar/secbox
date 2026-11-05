@@ -31,6 +31,8 @@ any of it can be called working.
 | `up`, `down`, `status` | Built, for Compose projects and projects with only a Dockerfile. They need the daemon |
 | `logs [SERVICE] [-f] [--tail N] [--project PATH]` | Works on a running sandbox, through the daemon. Removes terminal control codes. Does not mask secret values |
 | `shell [SERVICE]`, `exec [--service S] -- CMD...` | Work on a running sandbox, on your real terminal. Control codes can't be filtered there |
+| `mcp serve --project PATH` | Built, never run on a real VM. An MCP server on stdin and stdout that lets an AI agent on this machine work in one project's sandbox. See [AI agents](#ai-agents-claude-code-codex) |
+| `mcp setup claude FOLDER`, `mcp setup codex` | Works. Makes a folder for Claude Code with its own host tools denied, or prints how to add the server to Codex |
 | `diff`, `export` | Not built |
 | Desktop app (`apps/desktop`) | Early first cut. A menu bar icon that keeps the daemon running, and a window for status, start with plan approval, stop, destroy, logs and blocked hostnames. Same daemon, same powers as the CLI. Run on Linux under Xvfb only; macOS untested. See [its README](apps/desktop/README.md) |
 
@@ -65,6 +67,20 @@ In the full-screen interface, the Logs panel follows new lines by itself. Scroll
 There is no SSH server and no open port in the VM. For `shell` and `exec` the daemon checks the sandbox is running and tells the CLI where the engine is, and the CLI runs the engine with a cleared environment. Anything you paste into that shell is inside the sandbox.
 
 `logs` masks nothing. A service given a secret can print it, and `logs` will then show it.
+
+## AI agents (Claude Code, Codex)
+
+The code is in the sandbox, so an agent on your machine can't see it. `secbox mcp serve` is an MCP server the agent starts as a child process. It speaks over stdin and stdout, never a port, and is bound to one project. Its tools (`status`, `logs`, `exec`, `read_file`, `write_file`) act only inside that project's sandbox, through the daemon, with the same checks as `secbox exec`.
+
+```sh
+secbox up --project ~/code/myapp
+secbox mcp setup claude ~/agents/myapp --project ~/code/myapp
+cd ~/agents/myapp && claude
+```
+
+`setup claude` makes a new folder outside the project. Its settings deny Claude Code's own shell, file and web tools there, and allow the sandbox's. `secbox mcp setup codex` prints the equivalent for Codex, which is weaker because Codex can't turn its shell off.
+
+MCP adds a way into the sandbox. It doesn't take away what the agent can already do on your machine: only the agent's own settings do that, and secbox can't enforce them. Secrets delivered into the sandbox can be read with `exec`, and changes can't be brought back to the host yet. Read [docs/MCP.md](docs/MCP.md) before using it.
 
 ## Blocked hostnames
 

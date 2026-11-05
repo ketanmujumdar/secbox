@@ -190,7 +190,7 @@ fn shell_command(service: Option<&str>, tty: bool) -> Vec<String> {
 }
 
 /// What runs inside the sandbox for `exec`.
-fn exec_command(service: Option<&str>, command: &[String], tty: bool) -> Vec<String> {
+pub(crate) fn exec_command(service: Option<&str>, command: &[String], tty: bool) -> Vec<String> {
     match service {
         Some(service) => compose_exec(service, command, tty),
         None => command.to_vec(),
@@ -317,7 +317,7 @@ pub(crate) fn prepare_shell(
 /// Everything short of running the engine: the checks, the daemon's answer,
 /// and the command built from it. Nothing has touched the terminal yet, so a
 /// caller can still show a refusal its own way.
-fn prepare_terminal(
+pub(crate) fn prepare_terminal(
     service: Option<&str>,
     project: Option<&Path>,
     command: &[String],

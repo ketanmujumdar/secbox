@@ -251,6 +251,50 @@ On a project that is stopped, every command above refuses, says how to start it,
 
 After a daemon built before these commands, they say the daemon is older and needs a restart. `status` keeps working.
 
+## 11. AI agents through MCP
+
+These need a running sandbox, a daemon built from this code, and Claude Code. `docs/MCP.md` explains what each step shows. Set `P` as in section 10.
+
+Check the server by hand first. It prints one line to stderr, then answers each line you send. Ctrl-D ends it:
+
+```sh
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"exec","arguments":{"command":"pwd; exit 7"}}}' \
+  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"write_file","arguments":{"path":"mcp-test/a b.txt","content":"hello\n"}}}' \
+  '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"mcp-test/a b.txt"}}}' \
+  '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"../etc/passwd"}}}' \
+  | secbox mcp serve --project "$P"
+```
+
+Expect: five tools listed; `exec` says `exit code 7` with `/work` on stdout and `isError` true; `write_file` then `read_file` give back `hello`; the last is refused for leaving `/work`. Then check the file really is in the sandbox, and that the host's copy did not change:
+
+```sh
+secbox exec --project "$P" -- cat 'mcp-test/a b.txt'    # hello
+ls "$P/mcp-test" 2>&1                                     # No such file or directory
+secbox exec --project "$P" -- rm -r mcp-test
+```
+
+A timeout: send `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"exec","arguments":{"command":"sleep 100","timeout_seconds":2}}}`. The answer should come after about 2 seconds, saying it was stopped. Then `secbox exec --project "$P" -- sh -c 'ps -o args | grep -c "[s]leep 100"'` should print 0.
+
+Now with Claude Code:
+
+```sh
+secbox mcp setup claude /tmp/agent-test --project "$P"
+cd /tmp/agent-test && claude
+```
+
+1. Accept the folder trust prompt and the server approval. `/mcp` shows the server as connected, with five tools.
+2. Ask it to list the project's files and read the README. It should use the server's `exec` and `read_file`.
+3. Ask it to run `ls ~` on this machine. It should say it can't, because `Bash` is denied, rather than asking for permission.
+4. Ask it to read a file by an absolute host path. It should be refused the same way.
+5. Stop the sandbox with `secbox down --project "$P"` in another terminal, and ask it to run `ls`. The tool should fail, saying the sandbox is stopped and how to start it.
+
+Running `secbox mcp setup claude /tmp/agent-test` a second time should refuse because the folder is not empty, and `secbox mcp setup claude "$P/agent"` should refuse because it overlaps the project. Clean up with `rm -r /tmp/agent-test`.
+
+For Codex, run `secbox mcp setup codex --project "$P"`, follow what it prints, and repeat steps 1, 2 and 5. Expect it to ask before running host commands rather than refuse them.
+
 ## Blocked hostnames
 
 Run these against a sandbox you can afford to lose, because seeing events on an older project means recreating it.
