@@ -7,6 +7,8 @@ members = [
     "crates/secrets",
     "crates/egress",
     "crates/engine",
+    "crates/proto",
+    "crates/hoststate",
     "crates/daemon",
     "crates/cli",
 ]
@@ -24,6 +26,9 @@ gitbroker = { path = "crates/gitbroker" }
 secrets = { path = "crates/secrets" }
 egress = { path = "crates/egress" }
 engine = { path = "crates/engine" }
+proto = { path = "crates/proto" }
+hoststate = { path = "crates/hoststate" }
+daemon = { path = "crates/daemon" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_norway = "0.9"

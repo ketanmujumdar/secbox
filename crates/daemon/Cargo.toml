@@ -8,8 +8,24 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[lib]
+name = "daemon"
+path = "src/lib.rs"
+
 [[bin]]
 name = "secboxd"
 path = "src/main.rs"
 
 [dependencies]
+brand = { workspace = true }
+proto = { workspace = true }
+engine = { workspace = true }
+hoststate = { workspace = true }
+projectcheck = { workspace = true }
+secrets = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+nix = { version = "0.29", default-features = false, features = ["socket", "user"] }
+tempfile = { workspace = true }
+
