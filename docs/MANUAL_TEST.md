@@ -241,7 +241,7 @@ secbox shell --project "$P"
 
 `exit 3` leaves it, and `echo $?` on the host shows 3. Typing into a shell writes a history file inside the sandbox, as any shell does. `secbox shell postgres --project "$P"` opens one in that container.
 
-In the full-screen interface, press `l` for Logs, the left and right arrows or `[` and `]` to choose a service or All, up, down, PgUp and PgDn to scroll, `5` to read again, `1` for help and `q` to quit. Do not press `3` or `x`, and answer `n` if a box appears.
+In the full-screen interface, press `l` for Logs, the left and right arrows or `[` and `]` to choose a service or All, up, down, PgUp and PgDn to scroll, `5` to read again, `1` for help and `q` to quit. The bar along the bottom changes with the panel: on Logs it shows Service, Scroll, Follow and Shell, and no Start, Stop or Destroy. Pressing `2`, `3` or `x` there does nothing; they work only on Projects.
 
 The Logs panel follows on its own, and says `Following` at the top right. From a second terminal, make a service write a line, for example `secbox exec --service api --project "$P" -- sh -c 'echo hello > /proc/1/fd/1'`. It appears within about a second without a key being pressed. Press up: the tag changes to `Paused`, the view stays still while more lines arrive, and the tag counts them. `f` or End, or scrolling back down to the newest line, follows again. Choosing another service or panel, or quitting, ends the log command inside the sandbox: check with the `ps` line above, which should print 0 once you are back on Projects.
 

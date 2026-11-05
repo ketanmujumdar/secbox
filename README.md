@@ -50,7 +50,7 @@ secbox exec --service api -- env
 
 Add `--project PATH` to name a project from another folder. None of these starts a stopped sandbox: they refuse and tell you how to start it.
 
-In the full-screen interface, the Logs panel follows new lines by itself. Scrolling up pauses it, and `f` or End follows again. Press `e` on Projects or Logs to open the same shell as `secbox shell`, in the service chosen on Logs if there is one. The interface steps aside while the shell runs and comes back when you leave it.
+In the full-screen interface, the Logs panel follows new lines by itself. Scrolling up pauses it, and `f` or End follows again. Press `e` on Projects or Logs to open the same shell as `secbox shell`, in the service chosen on Logs if there is one. The interface steps aside while the shell runs and comes back when you leave it. The bar along the bottom lists only the keys that work on the panel showing, and `1` or `?` explains them. Starting, stopping and destroying (`2`, `3`, `x`) work only on Projects.
 
 There is no SSH server and no open port in the VM. For `shell` and `exec` the daemon checks the sandbox is running and tells the CLI where the engine is, and the CLI runs the engine with a cleared environment. Anything you paste into that shell is inside the sandbox.
 

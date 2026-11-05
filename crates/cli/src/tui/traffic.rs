@@ -14,8 +14,6 @@ use super::view::{Line, TrafficPanel};
 
 const READ_LIMIT: Duration = Duration::from_secs(15);
 
-pub const HELP: &str = "Traffic: up, down, PgUp and PgDn scroll, 5 reads the newest.";
-
 fn styled(weight: Weight, text: String) -> Line {
     Line::styled(
         text,

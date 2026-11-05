@@ -164,7 +164,11 @@ pub fn run(deps: &mut Deps) -> i32 {
                 model.logs.choose(if key == Key::NextService { 1 } else { -1 });
                 refresh_panel_if_showing(deps, &mut model, &mut follow);
             }
-            Key::Start => pending = propose_start(deps, &mut model),
+            // What acts on a sandbox works only where the project list is,
+            // so a key pressed while reading something else cannot stop one.
+            Key::Start if model.pane.0 == Pane::Projects => {
+                pending = propose_start(deps, &mut model);
+            }
             Key::Shell if matches!(model.pane.0, Pane::Projects | Pane::Logs) => {
                 open_shell(deps, &mut model, &raw);
                 // Whatever was typed for the shell was the shell's.
@@ -175,7 +179,7 @@ pub fn run(deps: &mut Deps) -> i32 {
                 model.message = None;
                 refresh_panel_if_showing(deps, &mut model, &mut follow);
             }
-            Key::Stop => {
+            Key::Stop if model.pane.0 == Pane::Projects => {
                 if let Some(row) = model.selected_row().cloned() {
                     model.dialog = Some(Dialog {
                         title: format!("Stop {}", screen::cut(&row.name, 30)),
@@ -187,7 +191,7 @@ pub fn run(deps: &mut Deps) -> i32 {
                     confirming = Some(false);
                 }
             }
-            Key::Destroy => {
+            Key::Destroy if model.pane.0 == Pane::Projects => {
                 if let Some(row) = model.selected_row().cloned() {
                     model.dialog = Some(Dialog {
                         title: format!("Destroy {}", screen::cut(&row.name, 30)),
@@ -201,19 +205,11 @@ pub fn run(deps: &mut Deps) -> i32 {
                     confirming = Some(true);
                 }
             }
-            Key::Help if model.pane.0 == Pane::Logs => {
-                model.message = Some(logs::HELP.to_owned());
-            }
-            Key::Help if model.pane.0 == Pane::Traffic => {
-                model.message = Some(traffic::HELP.to_owned());
-            }
-            Key::Help => {
-                model.message = Some(
-                    "Red letters open panels. Arrows move. 2 starts, 3 stops, x destroys, 5 refreshes, tab changes panel, q quits."
-                        .to_owned(),
-                );
-            }
-            Key::PreviousService
+            Key::Help => model.message = Some(view::help_for(model.pane.0).to_owned()),
+            Key::Start
+            | Key::Stop
+            | Key::Destroy
+            | Key::PreviousService
             | Key::NextService
             | Key::Follow
             | Key::Shell

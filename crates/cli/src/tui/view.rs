@@ -320,16 +320,63 @@ fn not_built(pane: Pane) -> &'static [&'static str] {
     }
 }
 
-/// The bar along the bottom. A number and a word, as every program of the
-/// period had.
-const KEYS: [(&str, &str); 6] = [
-    ("1", "Help"),
-    ("2", "Start"),
-    ("3", "Stop"),
-    ("5", "Refresh"),
-    ("6", "Panel"),
-    ("10", "Quit"),
-];
+/// One entry in the bar along the bottom: the key, then what it does.
+pub type KeyLabel = (&'static str, &'static str);
+
+/// The bar along the bottom, as every program of the period had: a key and a
+/// word. It lists only what works on the panel showing, so that nothing on it
+/// is a key that does nothing, and the keys that act on a sandbox appear only
+/// where they work, on Projects.
+pub fn keys_for(pane: Pane) -> &'static [KeyLabel] {
+    match pane {
+        Pane::Projects => &[
+            ("1", "Help"),
+            ("2", "Start"),
+            ("3", "Stop"),
+            ("x", "Destroy"),
+            ("e", "Shell"),
+            ("5", "Refresh"),
+            ("6", "Panel"),
+            ("10", "Quit"),
+        ],
+        Pane::Logs => &[
+            ("1", "Help"),
+            ("←→", "Service"),
+            ("↑↓", "Scroll"),
+            ("f", "Follow"),
+            ("e", "Shell"),
+            ("5", "Refresh"),
+            ("6", "Panel"),
+            ("10", "Quit"),
+        ],
+        Pane::Traffic => &[
+            ("1", "Help"),
+            ("↑↓", "Scroll"),
+            ("5", "Refresh"),
+            ("6", "Panel"),
+            ("10", "Quit"),
+        ],
+        Pane::Secrets => &[
+            ("1", "Help"),
+            ("↑↓", "Project"),
+            ("5", "Refresh"),
+            ("6", "Panel"),
+            ("10", "Quit"),
+        ],
+        Pane::Review => &[("1", "Help"), ("6", "Panel"), ("10", "Quit")],
+    }
+}
+
+/// What `?` says on each panel. It names the same keys as the bar, in words.
+pub fn help_for(pane: Pane) -> &'static str {
+    match pane {
+        Pane::Projects => "Up and down choose. 2 starts, 3 stops, x destroys, e opens a shell, 5 reads again. Red letters open panels, tab moves on, q quits.",
+        Pane::Logs => "New lines follow by themselves. Left and right choose a service or All. Up and PgUp scroll back and pause; f or End follows again. e opens a shell in the chosen service. 5 reads again.",
+        Pane::Traffic => "Up, down, PgUp and PgDn scroll. 5 reads the newest.",
+        Pane::Secrets => "Names and where they go, never values. Up and down choose the project, 5 reads again. Change them with the secrets command.",
+        Pane::Review => "Reviewing changes is not built yet. Red letters open panels, tab moves on, q quits.",
+    }
+}
 
 const MIN_WIDTH: usize = 60;
 const MIN_HEIGHT: usize = 14;
@@ -348,7 +395,7 @@ pub fn compose(model: &Model, width: usize, height: usize) -> Screen {
     let mut screen = Screen::new(width, height, '▒', Style::Desktop);
 
     menu_bar(&mut screen, model.pane.0);
-    status_bar(&mut screen);
+    status_bar(&mut screen, model.pane.0);
 
     let window = Rect::new(1, 1, width - 4, height - 4);
     screen.shadow(window);
@@ -404,17 +451,34 @@ fn menu_bar(screen: &mut Screen, active: Pane) {
     }
 }
 
-fn status_bar(screen: &mut Screen) {
+/// Draws the panel's keys. When they do not all fit, the gaps close up first,
+/// then the least needed go, from the middle of the list: help and quitting
+/// stay at the two ends, where they always were.
+fn status_bar(screen: &mut Screen, pane: Pane) {
     let y = screen.height() - 1;
     screen.fill(0, y, screen.width(), 1, ' ', Style::StatusLabel);
+    let mut keys: Vec<KeyLabel> = keys_for(pane).to_vec();
+    let room = screen.width().saturating_sub(2);
+    let needed = |keys: &[KeyLabel], gap: usize| -> usize {
+        let text: usize = keys
+            .iter()
+            .map(|(key, word)| key.chars().count() + word.chars().count())
+            .sum();
+        text + gap * keys.len().saturating_sub(1)
+    };
+    let mut gap = 2;
+    if needed(&keys, gap) > room {
+        gap = 1;
+    }
+    while needed(&keys, gap) > room && keys.len() > 2 {
+        // Just before Quit is the least needed, so it goes first.
+        keys.remove(keys.len() - 2);
+    }
     let mut x = 1;
-    for (number, word) in KEYS {
-        if x + number.len() + word.len() + 2 >= screen.width() {
-            break;
-        }
-        x += screen.text(x, y, number, Style::StatusKey);
+    for (key, word) in keys {
+        x += screen.text(x, y, key, Style::StatusKey);
         x += screen.text(x, y, word, Style::StatusLabel);
-        x += 2;
+        x += gap;
     }
 }
 
@@ -529,7 +593,7 @@ fn logs_body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, r
     screen.text_cut(
         x + 1,
         y + 2,
-        "<- -> service  Up Down scroll  f follow. Output can be wrong.",
+        "Output comes from inside the sandbox, so it can be wrong.",
         w - 2,
         Style::WindowDim,
     );
@@ -860,7 +924,7 @@ mod tests {
         assert!(text.contains("╡ Projects ╞"), "no title in the rule");
         assert!(text.contains('▲') && text.contains('▼'), "no scrollbar");
         let bottom = text.lines().last().unwrap();
-        for (number, word) in KEYS {
+        for (number, word) in keys_for(Pane::Projects) {
             assert!(bottom.contains(&format!("{number}{word}")), "{bottom}");
         }
         let top = text.lines().next().unwrap();
@@ -950,8 +1014,8 @@ mod tests {
         assert!(!text.contains("is not built"), "{text}");
         assert!(text.contains(" All  api  web "), "{text}");
         assert!(text.contains("api-1  | hello there"), "{text}");
-        assert!(text.contains("<- -> service"), "{text}");
-        assert!(text.contains("Output can be wrong"), "{text}");
+        assert!(text.lines().last().unwrap().contains("←→Service"), "{text}");
+        assert!(text.contains("so it can be wrong"), "{text}");
         assert!(text.contains("╡ Logs ╞"), "{text}");
     }
 
@@ -1224,6 +1288,71 @@ mod tests {
         empty.move_by(1);
         assert_eq!(empty.selected, 0);
         assert!(empty.selected_row().is_none());
+    }
+
+    fn bar(m: &Model, width: usize) -> String {
+        plain(m, width, 24).lines().last().unwrap().to_owned()
+    }
+
+    /// Only keys that do something on the panel showing, and the keys that act
+    /// on a sandbox only where the project list is.
+    #[test]
+    fn each_panel_shows_only_its_own_keys() {
+        let mut m = model();
+        let projects = bar(&m, 100);
+        for shown in ["2Start", "3Stop", "xDestroy", "eShell", "5Refresh", "1Help", "10Quit"] {
+            assert!(projects.contains(shown), "{shown}: {projects}");
+        }
+        assert!(!projects.contains("Follow"), "{projects}");
+
+        m.pane = PaneState(Pane::Logs);
+        let logs = bar(&m, 100);
+        for shown in ["←→Service", "↑↓Scroll", "fFollow", "eShell", "5Refresh"] {
+            assert!(logs.contains(shown), "{shown}: {logs}");
+        }
+        for hidden in ["Start", "Stop", "Destroy"] {
+            assert!(!logs.contains(hidden), "{hidden}: {logs}");
+        }
+
+        m.pane = PaneState(Pane::Traffic);
+        let traffic = bar(&m, 100);
+        assert!(traffic.contains("↑↓Scroll") && traffic.contains("5Refresh"), "{traffic}");
+        for hidden in ["Start", "Shell", "Service", "Follow"] {
+            assert!(!traffic.contains(hidden), "{hidden}: {traffic}");
+        }
+    }
+
+    /// On the narrowest screen the bar still fits, still starts with help and
+    /// still ends with quitting.
+    #[test]
+    fn the_key_bar_fits_the_narrowest_screen_with_help_and_quit() {
+        for pane in Pane::ALL {
+            let mut m = model();
+            m.pane = PaneState(pane);
+            let line = bar(&m, MIN_WIDTH);
+            assert_eq!(line.chars().count(), MIN_WIDTH);
+            assert!(line.trim_start().starts_with("1Help"), "{line}");
+            assert!(line.trim_end().ends_with("10Quit"), "{line}");
+        }
+    }
+
+    /// Help names the keys the bar shows, so the two cannot drift apart.
+    #[test]
+    fn help_mentions_what_the_bar_offers() {
+        for pane in Pane::ALL {
+            let help = help_for(pane);
+            for (key, _) in keys_for(pane) {
+                let named = match *key {
+                    "←→" => "Left and right",
+                    "↑↓" => "Up",
+                    "6" => continue,
+                    "10" => continue,
+                    "1" => continue,
+                    other => other,
+                };
+                assert!(help.contains(named), "{}: {named}: {help}", pane.label());
+            }
+        }
     }
 
     #[test]

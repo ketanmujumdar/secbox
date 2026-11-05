@@ -31,8 +31,6 @@ const KEPT_LINE_CHARS: usize = 1000;
 const TAKEN_PER_TURN: usize = 64;
 const TAB: &str = "    ";
 
-pub const HELP: &str = "Logs follow new lines. Left and right choose a service or All. Up and PgUp scroll back and pause; f or End follows again. 5 reads again.";
-
 pub fn status(client: &dyn DaemonClient, path: &str) -> Result<StatusReport, CallError> {
     match client.stream(
         Request::Status(ProjectArgs {
@@ -65,7 +63,7 @@ fn usable_services(report: &StatusReport) -> Vec<String> {
 
 fn not_running_note(state: SandboxState, path: &str) -> String {
     let start = format!(
-        "Press 2 to start it, or run: {} up {}",
+        "Start it from Projects with 2, or run: {} up {}",
         brand::CLI_BIN,
         text::escape(path)
     );
@@ -441,7 +439,7 @@ mod tests {
             let panel = filled(&daemon);
             assert!(!daemon.asked_for_logs(), "{state:?}");
             let note = panel.note.unwrap().text;
-            assert!(note.contains("Press 2"), "{note}");
+            assert!(note.contains("Projects with 2"), "{note}");
             assert!(note.contains(" up /p"), "{note}");
             assert!(panel.lines.is_empty());
         }
