@@ -18,7 +18,11 @@ const TICK_TENTHS: u8 = 2;
 /// Restores the terminal when dropped.
 pub struct RawMode {
     original: Termios,
+    raw: Termios,
 }
+
+const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[?25l";
+const LEAVE_SCREEN: &[u8] = b"\x1b[0m\x1b[?25h\x1b[?1049l";
 
 impl RawMode {
     /// Enters raw mode, or returns why it could not.
@@ -44,9 +48,28 @@ impl RawMode {
             .map_err(|e| format!("cannot set the terminal: {e}"))?;
         let mut out = io::stdout();
         // Alternate screen, cursor hidden.
-        let _ = out.write_all(b"\x1b[?1049h\x1b[?25l");
+        let _ = out.write_all(ENTER_SCREEN);
         let _ = out.flush();
-        Ok(Self { original })
+        Ok(Self { original, raw })
+    }
+
+    /// Hands the terminal back as it was found, for a program that needs it,
+    /// such as a shell. The interface stays paused until [`RawMode::resume`].
+    pub fn pause(&self) {
+        let mut out = io::stdout();
+        let _ = out.write_all(LEAVE_SCREEN);
+        let _ = out.flush();
+        let _ = termios::tcsetattr(io::stdin().as_fd(), SetArg::TCSANOW, &self.original);
+    }
+
+    /// Takes the terminal back after a pause. The caller draws everything
+    /// again, because the screen it left is not guaranteed to be there.
+    pub fn resume(&self) {
+        let _ = termios::tcsetattr(io::stdin().as_fd(), SetArg::TCSANOW, &self.raw);
+        let mut out = io::stdout();
+        let _ = out.write_all(ENTER_SCREEN);
+        let _ = out.write_all(b"\x1b[2J");
+        let _ = out.flush();
     }
 }
 
@@ -54,7 +77,7 @@ impl Drop for RawMode {
     fn drop(&mut self) {
         let mut out = io::stdout();
         // Leave the alternate screen, show the cursor, reset colour.
-        let _ = out.write_all(b"\x1b[0m\x1b[?25h\x1b[?1049l");
+        let _ = out.write_all(LEAVE_SCREEN);
         let _ = out.flush();
         let _ = termios::tcsetattr(io::stdin().as_fd(), SetArg::TCSANOW, &self.original);
     }

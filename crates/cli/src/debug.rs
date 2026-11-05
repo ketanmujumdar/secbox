@@ -13,6 +13,7 @@ use std::io::{IsTerminal, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use clap::Args;
 use engine::{argv, ExecRequest, GuestPath, SandboxName};
@@ -274,39 +275,88 @@ fn open_terminal(
     tty: bool,
     deps: &mut Deps,
 ) -> i32 {
-    if !valid_service(service, name, deps) {
-        return exit::USAGE;
+    match prepare_terminal(service, project, command, tty, None, deps) {
+        Ok(engine) => run_engine(name, engine, tty, deps),
+        Err(refusal) => {
+            tell!(deps, "{name}: {}", refusal.reason);
+            refusal.code
+        }
     }
-    let Some(project) = root_text(project, name, deps) else {
-        return exit::FAILED;
-    };
+}
+
+/// Why a terminal was not opened, and the exit code that says so. The reason
+/// is already escaped.
+pub(crate) struct Refusal {
+    pub code: i32,
+    pub reason: String,
+}
+
+impl Refusal {
+    fn failed(reason: impl Into<String>) -> Self {
+        Self {
+            code: exit::FAILED,
+            reason: reason.into(),
+        }
+    }
+}
+
+/// The shell the full-screen interface opens. It is the same request, the
+/// same checks and the same engine command as `shell` on a terminal; the only
+/// difference is a time limit on asking the daemon, because the interface is
+/// still on screen while it asks.
+pub(crate) fn prepare_shell(
+    service: Option<&str>,
+    project: &Path,
+    limit: Duration,
+    deps: &mut Deps,
+) -> Result<Command, Refusal> {
+    let command = shell_command(service, true);
+    prepare_terminal(service, Some(project), &command, true, Some(limit), deps)
+}
+
+/// Everything short of running the engine: the checks, the daemon's answer,
+/// and the command built from it. Nothing has touched the terminal yet, so a
+/// caller can still show a refusal its own way.
+fn prepare_terminal(
+    service: Option<&str>,
+    project: Option<&Path>,
+    command: &[String],
+    tty: bool,
+    limit: Option<Duration>,
+    deps: &mut Deps,
+) -> Result<Command, Refusal> {
+    if let Some(Err(reason)) = service.map(check_service_name) {
+        return Err(Refusal {
+            code: exit::USAGE,
+            reason: format!("{reason}."),
+        });
+    }
+    let project = project_dir(project, deps)
+        .map_err(Refusal::failed)?
+        .to_string_lossy()
+        .into_owned();
     // The engine's own `exec` boots a stopped sandbox, so the daemon checks the
     // state first and refuses. Nothing below runs unless it said yes.
-    let report = match deps.daemon.call(
-        Request::Terminal(TerminalArgs {
-            project,
-            service: service.map(str::to_owned),
-        }),
-        &mut |_, _| {},
-    ) {
+    let request = Request::Terminal(TerminalArgs {
+        project,
+        service: service.map(str::to_owned),
+    });
+    let answer = match limit {
+        Some(limit) => deps.daemon.stream(request, &mut |_, _| true, Some(limit)),
+        None => deps.daemon.call(request, &mut |_, _| {}),
+    };
+    let report = match answer {
         Ok(Reply::Terminal(report)) => report,
-        Ok(_) => {
-            tell!(deps, "{name}: the daemon answered something else.");
-            return exit::FAILED;
-        }
-        Err(error) => {
-            tell!(deps, "{name}: {}", esc(&error.message()));
-            return exit::FAILED;
-        }
+        Ok(_) => return Err(Refusal::failed("the daemon answered something else.")),
+        Err(error) => return Err(Refusal::failed(esc(&error.message()))),
     };
     let term = (deps.env)("TERM").map(|term| term.to_string_lossy().into_owned());
-    let mut engine = match engine_command(&report, command, tty, term.as_deref()) {
-        Ok(engine) => engine,
-        Err(reason) => {
-            tell!(deps, "{name}: {reason}");
-            return exit::FAILED;
-        }
-    };
+    engine_command(&report, command, tty, term.as_deref()).map_err(Refusal::failed)
+}
+
+/// Runs the engine on the person's own terminal and passes back its exit code.
+/// The terminal has to be in its ordinary state already.
+pub(crate) fn run_engine(name: &str, mut engine: Command, tty: bool, deps: &mut Deps) -> i32 {
     notice(deps);
     let _ = deps.err.flush();
     let _ = deps.out.flush();
@@ -419,6 +469,91 @@ mod tests {
         let mut bad = report();
         bad.workdir = "work".to_owned();
         assert!(engine_command(&bad, &strings(&["sh"]), true, None).is_err());
+    }
+
+    /// Answers a terminal request the way the daemon does for a running
+    /// sandbox, and remembers what it was asked and whether a limit was set.
+    struct Terminal {
+        asked: std::cell::RefCell<Vec<(Request, bool)>>,
+        answer: fn() -> Result<Reply, CallError>,
+    }
+
+    impl crate::DaemonClient for Terminal {
+        fn call(
+            &self,
+            request: Request,
+            _progress: &mut dyn FnMut(&str, Option<&str>),
+        ) -> Result<Reply, CallError> {
+            self.asked.borrow_mut().push((request, false));
+            (self.answer)()
+        }
+
+        fn stream(
+            &self,
+            request: Request,
+            _output: &mut dyn FnMut(OutputStream, &str) -> bool,
+            limit: Option<std::time::Duration>,
+        ) -> Result<Reply, CallError> {
+            self.asked.borrow_mut().push((request, limit.is_some()));
+            (self.answer)()
+        }
+    }
+
+    fn prepared(
+        service: Option<&str>,
+        answer: fn() -> Result<Reply, CallError>,
+    ) -> (Result<Command, Refusal>, Vec<(Request, bool)>) {
+        let project = tempfile::tempdir().unwrap();
+        let daemon = Terminal {
+            asked: std::cell::RefCell::new(Vec::new()),
+            answer,
+        };
+        let env = |name: &str| (name == "TERM").then(|| "xterm".into());
+        let result = crate::with_test_deps(project.path(), &env, &daemon, |deps| {
+            prepare_shell(service, project.path(), Duration::from_secs(1), deps)
+        });
+        (result, daemon.asked.into_inner())
+    }
+
+    /// The interface's shell is the command line's shell: the same request,
+    /// and the same engine command, with a limit on asking the daemon.
+    #[test]
+    fn the_interface_shell_is_the_same_request_and_command_with_a_limit() {
+        let (result, asked) = prepared(Some("web"), || Ok(Reply::Terminal(report())));
+        let engine = result.ok().expect("a shell was prepared");
+        let args: Vec<_> = engine.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(
+            args,
+            ["exec", "--tty", "--workdir", "/work", "demo", "--", "docker", "compose", "exec", "web", "sh"]
+        );
+        assert_eq!(asked.len(), 1);
+        let (request, limited) = &asked[0];
+        assert!(limited, "the interface must not wait for ever");
+        assert!(matches!(
+            request,
+            Request::Terminal(TerminalArgs { service: Some(s), .. }) if s == "web"
+        ));
+    }
+
+    #[test]
+    fn the_interface_shell_passes_on_a_refusal_without_running_anything() {
+        let (result, _) = prepared(None, || {
+            Err(CallError::Refused(proto::ApiError::new(
+                proto::ErrorCode::WrongState,
+                "not running\u{1b}[2J",
+            )))
+        });
+        let refusal = result.expect_err("refused");
+        assert_eq!(refusal.code, exit::FAILED);
+        assert!(refusal.reason.contains("not running"), "{}", refusal.reason);
+        assert!(!refusal.reason.contains('\u{1b}'), "{}", refusal.reason);
+    }
+
+    #[test]
+    fn a_bad_service_name_is_refused_before_the_daemon_is_asked() {
+        let (result, asked) = prepared(Some("-f"), || Ok(Reply::Terminal(report())));
+        assert_eq!(result.expect_err("refused").code, exit::USAGE);
+        assert!(asked.is_empty());
     }
 
     #[test]

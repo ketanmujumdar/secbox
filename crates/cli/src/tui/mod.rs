@@ -17,10 +17,11 @@ mod traffic;
 mod view;
 
 use std::io::IsTerminal;
+use std::time::Duration;
 
 use proto::{DownArgs, PlanArgs, PlanReport, Reply, Request, SandboxState, Source};
 
-use crate::{exit, tell, Deps};
+use crate::{debug, exit, tell, Deps};
 use style::Style;
 pub(crate) use term::SavedSettings;
 use view::{Dialog, Key, Line, Model, Pane, PaneState, Row, RowState};
@@ -164,6 +165,11 @@ pub fn run(deps: &mut Deps) -> i32 {
                 refresh_panel_if_showing(deps, &mut model, &mut follow);
             }
             Key::Start => pending = propose_start(deps, &mut model),
+            Key::Shell if matches!(model.pane.0, Pane::Projects | Pane::Logs) => {
+                open_shell(deps, &mut model, &raw);
+                // Whatever was typed for the shell was the shell's.
+                queued.clear();
+            }
             Key::Open(pane) => {
                 model.pane = PaneState(pane);
                 model.message = None;
@@ -210,6 +216,7 @@ pub fn run(deps: &mut Deps) -> i32 {
             Key::PreviousService
             | Key::NextService
             | Key::Follow
+            | Key::Shell
             | Key::PageUp
             | Key::PageDown
             | Key::Yes
@@ -384,6 +391,58 @@ fn show_selected(deps: &mut Deps, model: &mut Model) {
             Style::WindowWarn,
         ));
     }
+}
+
+/// How long to wait for the daemon's say-so before a shell. The sandbox has
+/// already been seen running, so this is only a slow daemon.
+const SHELL_LIMIT: Duration = Duration::from_secs(15);
+
+/// Opens a shell for the selected project, on the person's own terminal, the
+/// way `shell` does: into the service chosen on the Logs panel, if there is
+/// one, or the sandbox itself. The interface steps aside while it runs and
+/// comes back when it ends.
+fn open_shell(deps: &mut Deps, model: &mut Model, raw: &term::RawMode) {
+    let Some(row) = model.selected_row().cloned() else {
+        return;
+    };
+    // Asked here, where a refusal can still be shown on this screen, rather
+    // than after it has gone.
+    match logs::status(deps.daemon, &row.path) {
+        Ok(report) if report.sandbox == SandboxState::Running => {}
+        Ok(_) => {
+            model.message = Some(
+                "There is no running sandbox to open a shell in. Start it from Projects with 2."
+                    .to_owned(),
+            );
+            return;
+        }
+        Err(error) => {
+            model.message = Some(logs::failure(&error).text);
+            return;
+        }
+    }
+    let service = if model.logs.project == row.path {
+        model.logs.chosen.clone()
+    } else {
+        None
+    };
+    let engine = match debug::prepare_shell(
+        service.as_deref(),
+        std::path::Path::new(&row.path),
+        SHELL_LIMIT,
+        deps,
+    ) {
+        Ok(engine) => engine,
+        Err(refusal) => {
+            model.message = Some(format!("No shell: {}", refusal.reason));
+            return;
+        }
+    };
+    raw.pause();
+    let code = debug::run_engine("shell", engine, true, deps);
+    raw.resume();
+    let place = service.map_or_else(|| "the sandbox".to_owned(), |name| screen::cut(&name, 20));
+    model.message = Some(format!("The shell in {place} ended with exit code {code}."));
 }
 
 /// Builds a plan and shows it in a box, so that Yes agrees to something seen.

@@ -722,6 +722,8 @@ pub enum Key {
     PageDown,
     /// Back to the newest line, which resumes following a log.
     Follow,
+    /// A shell in the selected project's sandbox.
+    Shell,
     Yes,
     No,
     Other,
@@ -750,6 +752,7 @@ pub fn key(bytes: &[u8]) -> Key {
         b"2" | b"u" | b"\x1bOQ" => Key::Start,
         b"3" | b"\x1bOR" => Key::Stop,
         b"x" => Key::Destroy,
+        b"e" | b"E" => Key::Shell,
         b"[" | b"\x1b[D" | b"\x1bOD" => Key::PreviousService,
         b"]" | b"\x1b[C" | b"\x1bOC" => Key::NextService,
         b"?" | b"1" | b"\x1bOP" => Key::Help,
@@ -1250,6 +1253,7 @@ mod tests {
         assert_eq!(key(b"y"), Key::Yes);
         assert_eq!(key(b"n"), Key::No);
         assert_eq!(key(b"\x1b"), Key::No);
+        assert_eq!(key(b"e"), Key::Shell);
         assert_eq!(key(b"Z"), Key::Other);
     }
 }

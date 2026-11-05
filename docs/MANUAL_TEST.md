@@ -245,6 +245,8 @@ In the full-screen interface, press `l` for Logs, the left and right arrows or `
 
 The Logs panel follows on its own, and says `Following` at the top right. From a second terminal, make a service write a line, for example `secbox exec --service api --project "$P" -- sh -c 'echo hello > /proc/1/fd/1'`. It appears within about a second without a key being pressed. Press up: the tag changes to `Paused`, the view stays still while more lines arrive, and the tag counts them. `f` or End, or scrolling back down to the newest line, follows again. Choosing another service or panel, or quitting, ends the log command inside the sandbox: check with the `ps` line above, which should print 0 once you are back on Projects.
 
+Still in the interface, choose `postgres` on Logs and press `e`. The interface goes, the shell notice is printed, and you are in that container. `exit 3` brings the interface back, redrawn, saying the shell ended with exit code 3. On Projects, `e` opens a shell in the sandbox itself, in `/work`. On a stopped project, `e` says there is no running sandbox and the screen stays as it was.
+
 On a project that is stopped, every command above refuses, says how to start it, and starts nothing. Check with `secbox status` afterwards.
 
 After a daemon built before these commands, they say the daemon is older and needs a restart. `status` keeps working.

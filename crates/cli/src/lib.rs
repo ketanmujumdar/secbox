@@ -198,6 +198,37 @@ fn not_built(name: &str, deps: &mut Deps) -> i32 {
     exit::NOT_BUILT
 }
 
+/// Runs `f` with outside-world handles a unit test can trust: no keychain and
+/// no prompt, both of which fail the test if anything reaches for them, and
+/// output kept in memory.
+#[cfg(test)]
+pub(crate) fn with_test_deps<R>(
+    cwd: &Path,
+    env: &dyn Fn(&str) -> Option<OsString>,
+    daemon: &dyn DaemonClient,
+    f: impl FnOnce(&mut Deps) -> R,
+) -> R {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut input = io::Cursor::new(Vec::new());
+    let store = |_: &ProjectId| -> Box<dyn SecretStore> {
+        panic!("a unit test must never open a secret store")
+    };
+    let prompt = |_: &str| -> io::Result<SecretValue> { panic!("a unit test must never prompt") };
+    let host = |_: &Path| -> HostInfo { panic!("a unit test must never probe the host") };
+    f(&mut Deps {
+        out: &mut out,
+        err: &mut err,
+        input: &mut input,
+        color: false,
+        cwd: cwd.to_path_buf(),
+        env,
+        store: &store,
+        prompt: &prompt,
+        host: &host,
+        daemon,
+    })
+}
+
 /// Resolves a project path argument to a real directory.
 pub(crate) fn project_dir(path: Option<&Path>, deps: &Deps) -> Result<PathBuf, String> {
     let raw = match path {
