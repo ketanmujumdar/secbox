@@ -18,7 +18,7 @@ mod traffic;
 mod view;
 
 use std::io::IsTerminal;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use proto::{DownArgs, PlanArgs, PlanReport, Reply, Request, SandboxState, Source};
 
@@ -29,6 +29,7 @@ use view::{Dialog, Key, Line, Model, Pane, PaneState, Row, RowState};
 
 /// What a keystroke is waiting for a person to confirm.
 struct Pending {
+    name: String,
     project: String,
     digest: String,
     ports: Vec<u16>,
@@ -419,7 +420,7 @@ fn propose_start(deps: &mut Deps, model: &mut Model) -> Option<Pending> {
         Ok(Reply::Plan(plan)) => *plan,
         Ok(_) => return None,
         Err(error) => {
-            model.message = Some(error.message());
+            model.message = Some(logs::failure(&error).text);
             return None;
         }
     };
@@ -438,6 +439,7 @@ fn propose_start(deps: &mut Deps, model: &mut Model) -> Option<Pending> {
         lines: dialog_lines(&plan, &ports),
     });
     Some(Pending {
+        name: row.name,
         project: row.path,
         digest: plan.digest,
         ports,
@@ -481,23 +483,47 @@ fn dialog_lines(plan: &PlanReport, ports: &[u16]) -> Vec<String> {
     lines
 }
 
+/// The shortest time between two drawings of the start's progress. A build
+/// can report many steps a second, and each drawing asks the terminal its size.
+const PROGRESS_EVERY: Duration = Duration::from_millis(100);
+
+/// Starts the project, showing each step the daemon reports in a box as it
+/// arrives. This has no time limit, because a first build can take minutes,
+/// and nothing else can happen until it ends.
 fn start(deps: &mut Deps, model: &mut Model, pending: Pending) {
     model.busy = Some("Starting. A first build can take minutes.".to_owned());
+    model.progress = Some(view::Progress::new(format!(
+        "Starting {}",
+        screen::cut(&pending.name, 30)
+    )));
     draw(deps, model);
-    let result = deps.daemon.call(
+    // The client is taken out first, so that the steps can be drawn while the
+    // call is still running.
+    let client = deps.daemon;
+    let mut drawn = Instant::now();
+    let result = client.call(
         Request::Up(proto::UpArgs {
             project: pending.project,
             source: Source::default(),
             plan_digest: pending.digest,
             approve_ports: pending.ports,
         }),
-        &mut |_, _| {},
+        &mut |step, detail| {
+            if let Some(progress) = &mut model.progress {
+                progress.push(step, detail);
+            }
+            if drawn.elapsed() >= PROGRESS_EVERY {
+                draw(deps, model);
+                drawn = Instant::now();
+            }
+        },
     );
     model.busy = None;
+    model.progress = None;
     model.message = Some(match result {
         Ok(Reply::Up(report)) => format!("Started in {}s.", report.seconds),
         Ok(_) => "The daemon answered something else.".to_owned(),
-        Err(error) => error.message(),
+        Err(error) => logs::failure(&error).text,
     });
     load_projects(deps, model);
 }
@@ -522,7 +548,7 @@ fn stop(deps: &mut Deps, model: &mut Model, destroy: bool) {
         }
         Ok(Reply::Down(_)) => "Stopped. Its data is kept for the next start.".to_owned(),
         Ok(_) => "The daemon answered something else.".to_owned(),
-        Err(error) => error.message(),
+        Err(error) => logs::failure(&error).text,
     });
     load_projects(deps, model);
 }

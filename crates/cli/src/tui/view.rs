@@ -162,6 +162,44 @@ pub struct Overview {
     pub blocked_alert: bool,
 }
 
+/// The steps of a start so far, shown in a box while it runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Progress {
+    pub title: String,
+    /// Oldest first, escaped and cut, and only the most recent kept.
+    pub steps: Vec<String>,
+}
+
+impl Progress {
+    /// The most steps kept. Only the last few are ever on screen.
+    const KEPT: usize = 200;
+    /// The longest a step is kept, before the box cuts it to its width.
+    const LONGEST: usize = 300;
+
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            steps: Vec::new(),
+        }
+    }
+
+    /// Adds a step as the daemon reported it. A step can name things from
+    /// the project or the sandbox, so it is escaped and cut here, and a line
+    /// break inside one becomes a space rather than a broken box.
+    pub fn push(&mut self, step: &str, detail: Option<&str>) {
+        let text = match detail {
+            Some(detail) => format!("{step}: {detail}"),
+            None => step.to_owned(),
+        };
+        let flat = text.replace(['\n', '\r'], " ");
+        self.steps
+            .push(cut(&proto::text::escape(&flat), Self::LONGEST));
+        if self.steps.len() > Self::KEPT {
+            self.steps.remove(0);
+        }
+    }
+}
+
 /// A question waiting for an answer, drawn over everything else.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dialog {
@@ -316,6 +354,7 @@ pub struct Model {
     pub busy: Option<String>,
     pub pane: PaneState,
     pub dialog: Option<Dialog>,
+    pub progress: Option<Progress>,
     pub logs: LogsPanel,
     pub traffic: TrafficPanel,
 }
@@ -465,6 +504,9 @@ pub fn compose(model: &Model, width: usize, height: usize) -> Screen {
         screen.text_cut(inner_x + 1, note_y, note, inner_w - 2, Style::WindowWarn);
     }
 
+    if let Some(progress) = &model.progress {
+        draw_progress(&mut screen, progress);
+    }
     if let Some(dialog) = &model.dialog {
         draw_dialog(&mut screen, dialog);
     }
@@ -1001,6 +1043,36 @@ fn service_bar(panel: &LogsPanel, screen: &mut Screen, x: usize, y: usize, w: us
         };
         screen.text(at, y, &format!(" {name} "), style);
         at += widths[index];
+    }
+}
+
+/// The steps of a start in a grey box over everything, the newest at the
+/// bottom and marked, the ones before it ticked off. Older steps scroll away
+/// at the top, as on a printer.
+fn draw_progress(screen: &mut Screen, progress: &Progress) {
+    let width = (screen.width() * 3 / 4).clamp(40, 76);
+    let height = (progress.steps.len().max(1) + 4).clamp(6, screen.height().saturating_sub(4).max(6));
+    let x = (screen.width().saturating_sub(width)) / 2;
+    let y = (screen.height().saturating_sub(height)) / 2;
+    let box_ = Rect::new(x, y, width, height);
+    screen.shadow(box_);
+    screen.fill(x, y, width, height, ' ', Style::Dialog);
+    screen.frame(box_, Style::DialogFrame, &progress.title, Style::Dialog);
+
+    let rows = height - 4;
+    let first = progress.steps.len().saturating_sub(rows);
+    if progress.steps.is_empty() {
+        screen.text_cut(x + 2, y + 2, "Waiting for the first step.", width - 4, Style::Dialog);
+    }
+    for (offset, step) in progress.steps[first..].iter().enumerate() {
+        let newest = first + offset + 1 == progress.steps.len();
+        let (mark, style) = if newest {
+            ('►', Style::DialogHot)
+        } else {
+            ('√', Style::Dialog)
+        };
+        screen.put(x + 2, y + 2 + offset, mark, style);
+        screen.text_cut(x + 4, y + 2 + offset, step, width - 6, Style::Dialog);
     }
 }
 
@@ -1729,6 +1801,51 @@ mod tests {
         assert!(text.contains("Yes") && text.contains("No"));
         let rows = render(&m, 90, 26);
         assert!(rows.iter().any(|r| r.iter().any(|s| s.style == Style::Button)));
+    }
+
+    #[test]
+    fn a_start_shows_its_steps_as_they_arrive_newest_last() {
+        let mut m = model();
+        m.progress = Some(Progress::new("Starting demo-shop"));
+        let text = plain(&m, 90, 26);
+        assert!(text.contains("╡ Starting demo-shop ╞"), "{text}");
+        assert!(text.contains("Waiting for the first step"), "{text}");
+
+        let progress = m.progress.as_mut().unwrap();
+        for n in 0..40 {
+            progress.push(&format!("step {n:02}"), Some("detail"));
+        }
+        let text = plain(&m, 90, 26);
+        assert!(text.contains("► step 39: detail"), "{text}");
+        assert!(text.contains("√ step 38: detail"), "{text}");
+        assert!(!text.contains("step 00"), "old steps scroll away: {text}");
+        let rows = render(&m, 90, 26);
+        assert!(rows.iter().any(|r| r.iter().any(|s| s.style == Style::Dialog)));
+    }
+
+    /// A step can carry text from the project or the sandbox.
+    #[test]
+    fn a_hostile_step_is_escaped_flattened_and_cut() {
+        let mut progress = Progress::new("Starting");
+        progress.push("build", Some("\u{1b}[2Jline one\nline two\u{7}"));
+        progress.push(&"x".repeat(100_000), None);
+        let first = &progress.steps[0];
+        assert!(first.chars().all(|c| !c.is_control()), "{first:?}");
+        assert!(first.contains("line one line two"), "{first:?}");
+        assert!(progress.steps[1].chars().count() <= Progress::LONGEST);
+        for _ in 0..1000 {
+            progress.push("again", None);
+        }
+        assert_eq!(progress.steps.len(), Progress::KEPT);
+
+        let mut m = model();
+        m.progress = Some(progress);
+        m.progress.as_mut().unwrap().push(&"y".repeat(500), None);
+        for (width, height) in [(MIN_WIDTH, MIN_HEIGHT), (80, 24), (200, 60)] {
+            for line in plain(&m, width, height).lines() {
+                assert_eq!(line.chars().count(), width);
+            }
+        }
     }
 
     #[test]
