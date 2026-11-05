@@ -190,6 +190,7 @@
       stopLogs();
       clear($('log-text'));
       $('log-note').textContent = '';
+      clearReview();
     }
     state.selected = path;
     for (const item of $('projects').children) {
@@ -465,6 +466,7 @@
     const s = state.status;
     if (!s) {
       $('log-note').textContent = 'The daemon could not report on this project, so its logs were not asked for.';
+      clearReview();
       return;
     }
     if (s.state !== 'running') {
@@ -498,6 +500,7 @@
       }
     } catch (error) {
       $('log-note').textContent = errorText(error);
+      clearReview();
     }
   }
 
@@ -549,6 +552,57 @@
 
   $('traffic-read').addEventListener('click', readTraffic);
   $('btn-traffic').addEventListener('click', () => openTab('traffic'));
+
+  // ---------- git review ----------
+
+  // Clears the page, so a comparison is never shown under another project.
+  function clearReview() {
+    clear($('review-notes'));
+    clear($('review-flags'));
+    clear($('review-files'));
+    $('review-base').textContent = '';
+  }
+
+  // Runs only when asked: the comparison runs inside the sandbox.
+  async function readReview() {
+    const row = selectedRow();
+    clearReview();
+    const notes = $('review-notes');
+    if (!row) {
+      notes.appendChild(el('li', 'No project selected.', 'warn'));
+      return;
+    }
+    busy('Comparing inside the sandbox. A large project can take a while.');
+    let view;
+    try {
+      view = await invoke('diff', { project: row.path });
+    } catch (error) {
+      notes.appendChild(el('li', errorText(error), 'alert'));
+      return;
+    } finally {
+      busy('');
+    }
+    if (state.selected !== row.path) return;
+    $('review-base').textContent = `Snapshot commit ${view.baseline}`;
+    for (const note of view.notes) notes.appendChild(el('li', note.text, note.weight === 'plain' ? '' : note.weight));
+    const flags = $('review-flags');
+    for (const flag of view.flags) {
+      const tr = el('tr', null, 'alert');
+      tr.appendChild(el('td', 'FLAG', 'flag'));
+      tr.appendChild(el('td', flag.path, 'mono'));
+      tr.appendChild(el('td', flag.message));
+      flags.appendChild(tr);
+    }
+    const files = $('review-files');
+    for (const file of view.files) {
+      const tr = el('tr');
+      tr.appendChild(el('td', file.change));
+      tr.appendChild(el('td', file.path, 'mono'));
+      files.appendChild(tr);
+    }
+  }
+
+  $('review-read').addEventListener('click', readReview);
 
   // ---------- tabs ----------
 

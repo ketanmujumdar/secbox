@@ -16,6 +16,7 @@ const COMMANDS: &[&str] = &[
     "logs",
     "logs_stop",
     "blocked",
+    "diff",
 ];
 
 fn main() {

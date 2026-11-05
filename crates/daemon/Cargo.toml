@@ -24,6 +24,7 @@ gitbroker = { workspace = true }
 hoststate = { workspace = true }
 projectcheck = { workspace = true }
 secrets = { workspace = true }
+zeroize = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -13,8 +13,9 @@ use std::time::Duration;
 
 use proto::text::{self, TerminalFilter};
 use proto::{
-    BlockedArgs, BlockedRecording, BlockedReport, DownArgs, LogTrust, LogsArgs, OutputStream,
-    PlanArgs, PlanReport, ProjectArgs, Reply, Request, SandboxState, Source, StatusReport, UpArgs,
+    BlockedArgs, BlockedRecording, BlockedReport, DiffReport, DownArgs, LogTrust, LogsArgs,
+    OutputStream, PlanArgs, PlanReport, ProjectArgs, Reply, Request, SandboxState, Source,
+    StatusReport, UpArgs,
 };
 use serde::Serialize;
 
@@ -24,6 +25,8 @@ const STATUS_LIMIT: Duration = Duration::from_secs(15);
 const PLAN_LIMIT: Duration = Duration::from_secs(60);
 const BLOCKED_LIMIT: Duration = Duration::from_secs(15);
 const LOGS_LIMIT: Duration = Duration::from_secs(20);
+/// A comparison bundles the project inside the sandbox, then reviews it.
+const DIFF_LIMIT: Duration = Duration::from_secs(180);
 /// How many recent lines to ask for from each service.
 pub const LOG_TAIL: u32 = 200;
 const MAX_PROJECTS: usize = 200;
@@ -608,6 +611,106 @@ pub fn blocked(client: &Client, path: &str) -> Result<BlockedReport, CallError> 
     }
 }
 
+/// What the Git review page shows. The wording is the terminal's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DiffView {
+    /// The first 12 characters of the commit made of the snapshot.
+    pub baseline: String,
+    pub flags: Vec<DiffFlagRow>,
+    pub files: Vec<DiffFileRow>,
+    pub notes: Vec<Note>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DiffFlagRow {
+    /// The path, with a line number when there is one.
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DiffFileRow {
+    pub change: &'static str,
+    pub path: String,
+}
+
+pub const DIFF_HEURISTIC: &str = "Flags are a heuristic aid. Read the changes yourself before anything from this sandbox reaches your machine.";
+pub const NOTHING_COPIED: &str = "Nothing was copied out of the sandbox. Export is not built yet.";
+
+pub fn diff_view(report: &DiffReport) -> DiffView {
+    let mut notes = Vec::new();
+    let note = |weight, text: &str| Note {
+        weight,
+        text: text.to_owned(),
+    };
+    if !report.complete {
+        notes.push(note(
+            Weight::Alert,
+            "The review stopped at a limit, so there may be more to flag than this.",
+        ));
+    }
+    if report.flags.is_empty() {
+        notes.push(note(Weight::Warn, &format!("Nothing was flagged. {DIFF_HEURISTIC}")));
+    } else {
+        let count = report.flags.len();
+        notes.push(note(
+            Weight::Alert,
+            &format!(
+                "{count} {} to look at. {DIFF_HEURISTIC}",
+                if count == 1 { "flag" } else { "flags" }
+            ),
+        ));
+    }
+    if report.files.is_empty() {
+        notes.push(note(Weight::Plain, "No files changed."));
+    }
+    notes.push(note(Weight::Warn, NOTHING_COPIED));
+    DiffView {
+        baseline: text::escape(report.baseline.get(..12).unwrap_or(&report.baseline)),
+        flags: report
+            .flags
+            .iter()
+            .take(2000)
+            .map(|flag| {
+                let path = text::escape(flag.path.as_deref().unwrap_or("(the whole change)"));
+                let mut message = text::escape(&flag.message);
+                if flag.earlier_commit {
+                    message.push_str(" (in an earlier commit inside the sandbox)");
+                }
+                DiffFlagRow {
+                    path: match flag.line {
+                        Some(line) => format!("{path}:{line}"),
+                        None => path,
+                    },
+                    message,
+                }
+            })
+            .collect(),
+        files: report
+            .files
+            .iter()
+            .take(5000)
+            .map(|file| DiffFileRow {
+                change: file.change.word(),
+                path: text::escape(&file.path),
+            })
+            .collect(),
+        notes,
+    }
+}
+
+pub fn diff(client: &Client, path: &str) -> Result<DiffReport, CallError> {
+    match client.call(
+        Request::Diff(ProjectArgs {
+            project: path.to_owned(),
+        }),
+        Some(DIFF_LIMIT),
+    )? {
+        Reply::Diff(report) => Ok(report),
+        _ => Err(wrong_reply()),
+    }
+}
+
 /// The names a log can be asked for by. A name from inside the sandbox that
 /// fails the check would only be refused.
 pub fn log_services(report: &StatusReport) -> Vec<String> {
@@ -682,6 +785,46 @@ pub fn logs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn diff_report(flags: Vec<proto::DiffFlag>) -> DiffReport {
+        DiffReport {
+            project_id: "p".to_owned(),
+            baseline: "1f2a12002068e9415f0b23be1962202c00fb97dd".to_owned(),
+            flags,
+            files: vec![proto::DiffFile {
+                path: ".claude/settings.json".to_owned(),
+                change: proto::FileChange::Added,
+            }],
+            commits: 1,
+            complete: true,
+        }
+    }
+
+    #[test]
+    fn a_review_lists_flags_and_files_and_says_nothing_left_the_sandbox() {
+        let view = diff_view(&diff_report(vec![proto::DiffFlag {
+            kind: "agent_hook".to_owned(),
+            path: Some(".claude/settings.json".to_owned()),
+            line: None,
+            message: "adds a hook for an AI coding tool, which would run on your machine".to_owned(),
+            earlier_commit: false,
+        }]));
+        assert_eq!(view.baseline, "1f2a12002068");
+        assert_eq!(view.flags[0].path, ".claude/settings.json");
+        assert_eq!(view.files[0].change, "added");
+        assert!(view.notes.iter().any(|n| n.weight == Weight::Alert && n.text.starts_with("1 flag ")));
+        assert!(view.notes.iter().any(|n| n.text == NOTHING_COPIED));
+    }
+
+    #[test]
+    fn a_clean_review_still_says_flags_are_a_heuristic_and_text_is_escaped() {
+        let mut report = diff_report(Vec::new());
+        report.files[0].path = "a\u{1b}[2Jb\u{202e}".to_owned();
+        let view = diff_view(&report);
+        assert!(view.flags.is_empty());
+        assert!(view.notes.iter().any(|n| n.text.contains(DIFF_HEURISTIC)));
+        assert!(!view.files[0].path.contains('\u{1b}') && !view.files[0].path.contains('\u{202e}'));
+    }
 
     #[test]
     fn sizes_read_the_way_a_person_writes_them() {

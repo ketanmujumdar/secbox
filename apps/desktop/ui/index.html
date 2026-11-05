@@ -125,11 +125,20 @@
       </section>
 
       <section class="panel hidden" data-panel="review">
-        <div class="card wide">
-          <h2>Git review</h2>
-          <p>Reviewing changes out of a sandbox is not built.</p>
-          <p>The broker that quarantines a bundle, flags risky paths and pushes one approved commit exists, but no command reaches it yet.</p>
+        <div class="toolbar">
+          <button class="small" id="review-read">Compare with the snapshot</button>
+          <span class="muted" id="review-base"></span>
         </div>
+        <p class="muted" id="review-intro">Compares the files in the running sandbox with the snapshot it started from. The comparison runs inside the sandbox; the host reviews the result and runs nothing from it. Nothing is copied out.</p>
+        <ul class="notes" id="review-notes"></ul>
+        <table class="table">
+          <thead><tr><th>Flag</th><th>Path</th><th>Why it matters</th></tr></thead>
+          <tbody id="review-flags"></tbody>
+        </table>
+        <table class="table">
+          <thead><tr><th>Change</th><th>Path</th></tr></thead>
+          <tbody id="review-files"></tbody>
+        </table>
       </section>
 
       <section class="panel hidden" data-panel="about">

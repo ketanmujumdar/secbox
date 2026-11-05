@@ -13,6 +13,7 @@ pub mod host;
 mod mcp;
 mod net;
 mod resources;
+mod review;
 mod secret_cmd;
 pub mod state;
 mod ui;
@@ -41,6 +42,8 @@ pub mod exit {
     pub const FINDINGS: i32 = 3;
     /// `net check` explained a denied request.
     pub const DENIED: i32 = 4;
+    /// `diff` found changes that need a person to look at them.
+    pub const FLAGGED: i32 = 5;
     /// The command exists but is not built yet.
     pub const NOT_BUILT: i32 = 69;
 }
@@ -109,8 +112,8 @@ enum Command {
     Exec(debug::ExecArgsCli),
     /// Let an AI agent on this machine (Claude Code, Codex) work inside a sandbox, over MCP
     Mcp(mcp::McpArgs),
-    /// Not built yet: review changes made in a VM
-    Diff(NotBuiltArgs),
+    /// Show what changed inside a sandbox, with risky files flagged first
+    Diff(review::DiffArgsCli),
     /// Not built yet: export reviewed changes through Git
     Export(NotBuiltArgs),
 }
@@ -131,8 +134,9 @@ fn command() -> clap::Command {
         .about("Run a project and its AI agent in a disposable microVM (early build)")
         .after_help(format!(
             "Status: {}\n\nExit codes: 0 ok, 1 failed or refused, 2 bad usage, 3 strict findings, \
-             4 request denied, {} not built yet.",
+             4 request denied, {} changes flagged, {} not built yet.",
             ui::not_protecting(),
+            exit::FLAGGED,
             exit::NOT_BUILT
         ))
         .help_template("{about}\n\nUsage: {usage}\n\n{all-args}{after-help}\n")
@@ -185,7 +189,7 @@ where
         Command::Shell(args) => debug::shell(&args, deps),
         Command::Exec(args) => debug::exec(&args, deps),
         Command::Mcp(args) => mcp::run(&args, deps),
-        Command::Diff(_) => not_built("diff", deps),
+        Command::Diff(args) => review::run(&args, deps),
         Command::Export(_) => not_built("export", deps),
     }
 }

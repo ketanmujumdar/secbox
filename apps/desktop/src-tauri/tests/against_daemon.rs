@@ -249,6 +249,17 @@ fn blocked_traffic_says_what_it_does_not_cover() {
     assert!(view.rows.is_empty());
 }
 
+#[test]
+fn a_review_reaches_the_daemon_and_its_refusals_read_plainly() {
+    let d = daemon();
+    let error = ops::diff(&d.client, &d.path()).unwrap_err();
+    assert!(error.message().contains("no sandbox"), "{}", error.message());
+    start(&d);
+    // The fake guest sends nothing, which is not a bundle.
+    let error = ops::diff(&d.client, &d.path()).unwrap_err();
+    assert!(error.message().contains("no bundle"), "{}", error.message());
+}
+
 /// The rule from the build plan: the product name appears in Rust only in the
 /// brand crate. The main workspace's guard does not look in here.
 #[test]

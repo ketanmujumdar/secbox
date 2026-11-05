@@ -13,6 +13,8 @@ use std::time::Duration;
 
 use engine::{EngineLocation, ExecRequest, GuestPath, OutputSink, StreamEnd};
 use proto::text::{self, TerminalFilter};
+
+use crate::mask::{Masker, StreamMasker};
 use proto::{
     check_service_name, ApiError, LogsArgs, LogsReport, OutputStream, SandboxState, TerminalArgs,
     TerminalReport, MAX_LOG_TAIL,
@@ -97,14 +99,21 @@ struct FilteredOutput<'a> {
     progress: &'a mut dyn Progress,
     stdout: TerminalFilter,
     stderr: TerminalFilter,
+    /// Secret values are replaced after control codes are removed, so an
+    /// escape sequence cannot split a value and hide it from the search.
+    masker: &'a Masker,
+    masked_out: StreamMasker,
+    masked_err: StreamMasker,
     remaining: Option<u64>,
     truncated: bool,
 }
 
 impl FilteredOutput<'_> {
     fn finish(&mut self) {
-        let out = self.stdout.finish();
-        let err = self.stderr.finish();
+        let mut out = self.masked_out.push(self.masker, &self.stdout.finish());
+        out.push_str(&self.masked_out.finish(self.masker));
+        let mut err = self.masked_err.push(self.masker, &self.stderr.finish());
+        err.push_str(&self.masked_err.finish(self.masker));
         for (stream, text) in [(OutputStream::Stdout, out), (OutputStream::Stderr, err)] {
             if !text.is_empty() {
                 self.progress.output(stream, &text);
@@ -124,8 +133,14 @@ impl OutputSink for FilteredOutput<'_> {
             *remaining -= size;
         }
         let (stream, text) = match stream {
-            engine::OutputStream::Stdout => (OutputStream::Stdout, self.stdout.push(bytes)),
-            engine::OutputStream::Stderr => (OutputStream::Stderr, self.stderr.push(bytes)),
+            engine::OutputStream::Stdout => {
+                let text = self.stdout.push(bytes);
+                (OutputStream::Stdout, self.masked_out.push(self.masker, &text))
+            }
+            engine::OutputStream::Stderr => {
+                let text = self.stderr.push(bytes);
+                (OutputStream::Stderr, self.masked_err.push(self.masker, &text))
+            }
         };
         text.is_empty() || self.progress.output(stream, &text)
     }
@@ -145,10 +160,14 @@ pub fn logs(
     let mut request = ExecRequest::new(log_command(args));
     request.workdir = Some(workdir()?);
     request.timeout = (!args.follow).then_some(TAIL_LIMIT);
+    let masker = Masker::for_project(service, project)?;
     let mut sink = FilteredOutput {
         progress,
         stdout: TerminalFilter::new(),
         stderr: TerminalFilter::new(),
+        masker: &masker,
+        masked_out: StreamMasker::default(),
+        masked_err: StreamMasker::default(),
         remaining: (!args.follow).then_some(MAX_TAIL_BYTES),
         truncated: false,
     };
