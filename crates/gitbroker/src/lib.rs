@@ -7,6 +7,7 @@
 //! ```text
 //! Quarantine::create -> import_bundle -> review -> approve -> push
 //! snapshot: trusted repo -> directory for the VM, without secret files
+//! make_baseline: that directory -> one commit, kept on the host and given to the VM
 //! ```
 //!
 //! Every git process goes through one hardened helper (`git` module): fixed
@@ -48,6 +49,7 @@ mod common;
 mod internal_tests;
 
 mod approval;
+mod baseline;
 mod bundle;
 mod detect;
 mod display;
@@ -62,6 +64,7 @@ mod tar;
 mod validate;
 
 pub use approval::{approve, Approval, ApprovalRequest, Approver, ApproverError, Decision};
+pub use baseline::{make_baseline, BASELINE_BRANCH};
 pub use detect::SecretRule;
 pub use display::escape_for_display;
 pub use error::Error;
