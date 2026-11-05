@@ -187,11 +187,7 @@ mod tests {
         fs::create_dir_all(snap.join(".githooks")).unwrap();
         let script = format!("#!/bin/sh\ntouch {}\n", marker.display());
         fs::write(snap.join(".githooks/pre-commit"), &script).unwrap();
-        fs::write(
-            snap.join(".gitattributes"),
-            "* filter=evil diff=evil\n",
-        )
-        .unwrap();
+        fs::write(snap.join(".gitattributes"), "* filter=evil diff=evil\n").unwrap();
         make_baseline(&snap, &root.join("store.git")).unwrap();
         assert!(!marker.exists());
     }
