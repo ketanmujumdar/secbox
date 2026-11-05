@@ -11,10 +11,10 @@ old="$(sed -n 's/^pub const PRODUCT_NAME: &str = "\(.*\)";/\1/p' crates/brand/sr
 [ "$old" != "$new" ] || { echo "already named $new"; exit 0; }
 oldU="$(printf '%s' "$old" | tr '[:lower:]' '[:upper:]')"; newU="$(printf '%s' "$new" | tr '[:lower:]' '[:upper:]')"
 oldT="$(printf '%s' "${old:0:1}" | tr '[:lower:]' '[:upper:]')${old:1}"; newT="$(printf '%s' "${new:0:1}" | tr '[:lower:]' '[:upper:]')${new:1}"
-excluded=(-not -path './target/*' -not -path './.git/*' -not -path './.tools/*' -not -path './.spike/*')
+excluded=(-not -path './target/*' -not -path './.git/*' -not -path './.tools/*' -not -path './.spike/*' -not -path './apps/desktop/src-tauri/target/*' -not -path './apps/desktop/src-tauri/binaries/*' -not -path './apps/desktop/src-tauri/gen/*')
 # Lines naming the unrelated openSUSE package keep the old name, since that
 # package does not change. Review the "Final name" row in the docs by hand.
-find . -type f \( -name '*.rs' -o -name '*.toml' -o -name '*.md' -o -name '*.sh' -o -name '*.yaml' -o -name '*.yml' -o -name '*.rb' -o -name '*.py' -o -name 'Cargo.lock' \) \
+find . -type f \( -name '*.rs' -o -name '*.toml' -o -name '*.md' -o -name '*.sh' -o -name '*.yaml' -o -name '*.yml' -o -name '*.rb' -o -name '*.py' -o -name 'Cargo.lock' -o -name 'tauri.conf.json' \) \
   "${excluded[@]}" -print0 |
   xargs -0 perl -pi -e "unless (/openSUSE/i) { s/$old/$new/g; s/$oldU/$newU/g; s/$oldT/$newT/g }"
 # File names carry the name too, such as the formula and config fixtures. The

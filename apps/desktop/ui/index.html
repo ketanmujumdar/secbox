@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- The same policy Tauri enforces, here too so the page never relies on one. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Desktop</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand" id="brand">&nbsp;</div>
+      <nav class="tabs" aria-label="Sections">
+        <button class="tab active" data-tab="overview">Overview</button>
+        <button class="tab" data-tab="logs">Logs</button>
+        <button class="tab" data-tab="traffic">Blocked traffic</button>
+        <button class="tab" data-tab="secrets">Secrets</button>
+        <button class="tab" data-tab="review">Git review</button>
+        <button class="tab" data-tab="about">Terminal &amp; about</button>
+      </nav>
+      <div class="side-heading">
+        <span>Projects</span>
+        <button class="link" id="refresh" title="Read the list again">Refresh</button>
+      </div>
+      <ul class="projects" id="projects"></ul>
+      <form class="add" id="add-form" autocomplete="off">
+        <input id="add-path" type="text" spellcheck="false" placeholder="/full/path/to/project" aria-label="Project folder">
+        <button type="submit" class="small">Add</button>
+      </form>
+      <div class="daemon" id="daemon">
+        <span class="dot" id="daemon-dot"></span>
+        <span id="daemon-text">Checking the daemon</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="early" role="note">
+        Early build. It has not been shown to contain anything, so don't rely on it.
+      </div>
+      <div class="notice hidden" id="notice"></div>
+      <div class="banner hidden" id="banner"></div>
+
+      <header class="head">
+        <div class="title">
+          <h1 id="project-name">No project selected</h1>
+          <span class="pill hidden" id="project-state"></span>
+        </div>
+        <div class="actions">
+          <button id="btn-start" disabled>Start</button>
+          <button id="btn-stop" disabled>Stop</button>
+          <button id="btn-destroy" class="danger" disabled>Destroy</button>
+        </div>
+      </header>
+      <div class="path" id="project-path"></div>
+      <div class="busy hidden" id="busy"></div>
+
+      <section class="panel" data-panel="overview">
+        <div class="empty hidden" id="overview-empty"></div>
+        <div class="grid" id="overview-grid">
+          <div class="card">
+            <h2>Resources</h2>
+            <dl class="kv" id="resources"></dl>
+            <p class="muted small-text" id="resources-note"></p>
+          </div>
+          <div class="card">
+            <h2>Services</h2>
+            <ul class="rows" id="services"></ul>
+            <p class="muted small-text" id="services-note"></p>
+          </div>
+          <div class="card">
+            <h2>Ports (this computer only)</h2>
+            <ul class="rows" id="ports"></ul>
+          </div>
+          <div class="card alert-card">
+            <h2>Blocked traffic</h2>
+            <div class="count" id="blocked-count"></div>
+            <ul class="rows" id="blocked-top"></ul>
+            <p class="muted small-text" id="blocked-note"></p>
+            <button class="small" id="btn-traffic">Show all</button>
+          </div>
+        </div>
+        <ul class="notes" id="status-notes"></ul>
+      </section>
+
+      <section class="panel hidden" data-panel="logs">
+        <div class="toolbar">
+          <label>Service
+            <select id="log-service"><option value="">All services</option></select>
+          </label>
+          <label class="check"><input type="checkbox" id="log-follow"> Follow</label>
+          <button class="small" id="log-read">Read</button>
+          <button class="small" id="log-stop" disabled>Stop following</button>
+        </div>
+        <p class="muted small-text">Logs are written inside the sandbox and could be faked by it. Terminal control codes are removed. Secret values are not masked.</p>
+        <pre class="logs" id="log-text"></pre>
+        <p class="note" id="log-note"></p>
+      </section>
+
+      <section class="panel hidden" data-panel="traffic">
+        <div class="toolbar">
+          <button class="small" id="traffic-read">Read again</button>
+          <span class="muted" id="traffic-total"></span>
+        </div>
+        <ul class="notes" id="traffic-notes"></ul>
+        <table class="table">
+          <thead><tr><th>Time (UTC)</th><th class="num">Count</th><th>Hostname</th></tr></thead>
+          <tbody id="traffic-rows"></tbody>
+        </table>
+      </section>
+
+      <section class="panel hidden" data-panel="secrets">
+        <div class="card wide">
+          <h2>Secrets</h2>
+          <p>Secrets are stored, and assigned ones are delivered on each start.</p>
+          <p>Use the secrets command to add and assign them. A service can read what it is given. A secret held by the proxy also needs the gateway to terminate TLS, which is not settled, so a plan with one is refused.</p>
+          <p class="muted">Managing secrets from this window is not built yet. Values are never shown here.</p>
+          <pre class="cmd" id="secrets-cmd"></pre>
+        </div>
+      </section>
+
+      <section class="panel hidden" data-panel="review">
+        <div class="card wide">
+          <h2>Git review</h2>
+          <p>Reviewing changes out of a sandbox is not built.</p>
+          <p>The broker that quarantines a bundle, flags risky paths and pushes one approved commit exists, but no command reaches it yet.</p>
+        </div>
+      </section>
+
+      <section class="panel hidden" data-panel="about">
+        <div class="card wide">
+          <h2>Using the terminal</h2>
+          <p>The command line tool and this window are two clients of the same daemon, with the same powers. Use either.</p>
+          <div id="cli-install"></div>
+        </div>
+        <div class="card wide">
+          <h2>About</h2>
+          <dl class="kv" id="about"></dl>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="dialog">
+    <div class="dialog">
+      <h2 id="dialog-title"></h2>
+      <div id="dialog-body"></div>
+      <div class="dialog-actions">
+        <button type="button" id="dialog-cancel">Cancel</button>
+        <button type="button" id="dialog-ok" class="primary">OK</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-down"
+description = "Enables the down command without any pre-configured scope."
+commands.allow = ["down"]
+
+[[permission]]
+identifier = "deny-down"
+description = "Denies the down command without any pre-configured scope."
+commands.deny = ["down"]

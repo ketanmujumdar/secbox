@@ -12,6 +12,9 @@ members = [
     "crates/daemon",
     "crates/cli",
 ]
+# The desktop app is its own workspace, because it needs WebKit to build and
+# the rest must still build and test without it.
+exclude = ["apps"]
 
 [workspace.package]
 version = "0.1.0"

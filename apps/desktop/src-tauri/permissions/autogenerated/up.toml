@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-up"
+description = "Enables the up command without any pre-configured scope."
+commands.allow = ["up"]
+
+[[permission]]
+identifier = "deny-up"
+description = "Denies the up command without any pre-configured scope."
+commands.deny = ["up"]

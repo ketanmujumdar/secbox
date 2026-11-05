@@ -32,6 +32,7 @@ any of it can be called working.
 | `logs [SERVICE] [-f] [--tail N] [--project PATH]` | Works on a running sandbox, through the daemon. Removes terminal control codes. Does not mask secret values |
 | `shell [SERVICE]`, `exec [--service S] -- CMD...` | Work on a running sandbox, on your real terminal. Control codes can't be filtered there |
 | `diff`, `export` | Not built |
+| Desktop app (`apps/desktop`) | Early first cut. A menu bar icon that keeps the daemon running, and a window for status, start with plan approval, stop, destroy, logs and blocked hostnames. Same daemon, same powers as the CLI. Run on Linux under Xvfb only; macOS untested. See [its README](apps/desktop/README.md) |
 
 `up`, `down`, `status`, `logs`, `net blocked`, `shell` and `exec` send requests to a daemon,
 `secboxd`, which holds the secrets, the policy and the approvals. With no daemon
@@ -125,6 +126,7 @@ The script rewrites project text files and renames files that carry the name, su
 
 - It does not rename the project folder.
 - It does not change images in `docs/images`, which show the old name.
+- It rewrites the desktop app's `tauri.conf.json`, but no other JSON, HTML or JavaScript. The app's page asks the app for the name at run time, and the app takes it from the brand crate, so the page has none to change.
 - It leaves lines about the unrelated openSUSE package alone. Review the "Final name" row in `docs/ARCHITECTURE.md` by hand.
 - It does not move existing data. The old `~/.secbox` and old keychain entries stay under the old name, so remove them first with the old binary.
 
