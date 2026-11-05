@@ -10,7 +10,7 @@ The core decision is one small VM per project, with its own kernel and Docker da
 
 The design assumes everything inside the VM is compromised. Secrets, policy, approvals and Git pushes stay on the host, and the VM can only make narrow requests for them.
 
-**Status:** RAM figures are estimates, and the engine's ability to run Compose is unproven until the spike in `docs/spikes/` says otherwise.
+**Status:** microsandbox ran `demo_shop` under Compose, and its allowlist held for nested traffic in testing. TLS interception breaks HTTPS in nested containers by default, so method rules and proxy-injected secrets aren't solved yet. See `docs/spikes/0001-engine-compose.md`.
 
 ## Why now
 
@@ -308,16 +308,17 @@ resources:
 
 ### Minimum RAM
 
-These are unmeasured estimates for `demo_shop`. `secbox doctor` would replace them with each project's recorded peak.
+Measured for `demo_shop` on macOS with microsandbox 0.7.13, as recorded in `docs/spikes/0001-engine-compose.md`:
 
-| Usage | Estimated RAM |
+| Usage | Measured |
 | --- | --- |
-| VM, Docker and gateway | 0.5 to 1 GB |
-| `demo_shop` running | 1 to 2 GB |
-| `demo_shop` building, total | 4 to 6 GB |
-| Suggested host | 8 GB minimum, 16 GB recommended |
+| Fresh VM with Docker | 159 MiB in the guest, 314 MiB on the host |
+| `demo_shop` running | 0.6 to 0.7 GiB in the guest |
+| `demo_shop` building, peak | 2.4 to 2.8 GiB in the guest |
+| Smallest VM that built it | 3G succeeded; 2G failed every time |
+| Host memory after a build | Stays near the full VM size, 4092 MiB on a 4G VM |
 
-For scale, microsandbox's [Docker guide](https://docs.microsandbox.dev/how-to/docker/docker-in-sandbox) uses `--memory 2G` in its example and says to increase it for larger builds.
+Budget the full VM size on the host, because memory isn't handed back after a build. The host guidance of 8 GB minimum and 16 GB recommended is still a judgment rather than a measurement.
 
 ## Open decisions
 
