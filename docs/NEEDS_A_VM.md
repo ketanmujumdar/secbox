@@ -58,6 +58,17 @@ than guessing, and the plan carries the reason.
 | The daemon's socket on macOS | The peer check uses a different system call there (`LocalPeerCred`). That branch has never been compiled, let alone run |
 | Editor checks | Verified against planted files. The real settings paths on macOS, and actually launching an editor, are unexercised |
 | Leak probes | Self-test passes, 167 checks. **No probe has run in a guest.** See below |
+| Secret delivery, environment and file routes | Built and tested against a fake engine. Never run in a guest. The three things to confirm are below |
+
+### Secret delivery, specifically
+
+Three assumptions hold the design up, and none has been seen working:
+
+- **`msb exec` accepts standard input.** The adapter stops passing `--no-stdin` and writes the value to the child. If the engine does not read it, no secret arrives. This is the whole delivery channel.
+- **A `tmpfs` can be mounted inside the guest.** Delivery refuses rather than falling back to the sandbox's own disk, so if the mount fails on a real guest, every project with a secret stops starting. That is the right failure, but it has to be seen.
+- **Compose merges the generated override as expected.** Verified here against Compose v5.6.1 by parsing only: a relative base file plus an absolute override keeps the project directory, resolves build contexts correctly, puts the value on the named service alone, and leaves `${VAR}` in another service empty. Never run against the guest's own Compose v5.7.0 with a daemon behind it.
+
+Also unverified: that a value written over standard input does not transit the engine's guest-state share on the host. The argument-list route was avoided for exactly this reason, but `copy_in` was never measured either.
 
 ### Leak probes, specifically
 
@@ -82,7 +93,7 @@ longer exactly reproducible.
 Nothing below exists, so there is nothing to test yet.
 
 - The network gateway and the proxy. **The rule engine in `crates/egress` decides nothing today, because nothing calls it on real traffic.** `status` says outbound requests are not recorded, rather than reporting none.
-- Secret delivery into a sandbox, by any route.
+- Secret delivery by the proxy route. Held back on purpose: it needs the gateway to terminate TLS, and a plan carrying one is refused with that reason.
 - A snapshot that includes uncommitted changes. The flag exists and refuses.
 - `logs`, `shell`, `exec`, `sync`.
 - `net blocked`, `net log`, `net allow`, and a clear error inside the app for a blocked request.

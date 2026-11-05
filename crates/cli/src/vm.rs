@@ -129,6 +129,22 @@ pub fn up(args: &UpArgsCli, deps: &mut Deps) -> i32 {
 
     say!(deps);
     field(deps, "Started", &format!("in {}s", report.seconds));
+    for delivered in &report.secrets {
+        field(
+            deps,
+            "Secrets",
+            &format!(
+                "{} -> {}",
+                delivered
+                    .names
+                    .iter()
+                    .map(|n| esc(n))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                esc(&delivered.service)
+            ),
+        );
+    }
     show_services(&report.services, deps);
     for port in &report.ports {
         field(deps, "Ready", &format!("http://127.0.0.1:{port}"));
@@ -143,6 +159,17 @@ pub fn up(args: &UpArgsCli, deps: &mut Deps) -> i32 {
             "What runs inside the sandbox is untrusted. Its own reports can be wrong."
         )
     );
+    if !report.secrets.is_empty() {
+        say!(
+            deps,
+            "{}",
+            paint(
+                deps.color,
+                Tone::Warn,
+                "A service can read every secret it was given, and so can anything sharing its container."
+            )
+        );
+    }
     exit::OK
 }
 
@@ -270,7 +297,8 @@ fn show_plan(plan: &PlanReport, deps: &mut Deps) {
         for secret in &plan.secrets {
             let route = match secret.route {
                 proto::SecretRoute::Proxy => "held by the proxy",
-                proto::SecretRoute::Injected => "injected at start",
+                proto::SecretRoute::Injected => "in the environment",
+                proto::SecretRoute::InjectedFile => "a file at /run/secrets",
                 proto::SecretRoute::BuildSecret => "a build secret",
             };
             field(

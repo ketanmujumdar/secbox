@@ -42,7 +42,7 @@ Most cloud environments are Linux and may have no KVM, so they can't run the VM 
 | `engine` | Done on macOS | Secrets need TLS interception; Linux untested |
 | `proto` | Done | The API covers `plan`, `up`, `down` and `status` only |
 | `hoststate` | Done | Project identity still hashes the full path, so moving a project loses its secrets |
-| `daemon` | Core done, against `FakeEngine` | Never run against a real VM; no secret delivery; no gateway log |
+| `daemon` | Core done, against `FakeEngine` | Never run against a real VM; no gateway log; the proxy secret route waits on milestone 0 |
 | `cli` | `up`, `down`, `status`, `open` and `checks` done | `diff` and `export` refuse; no `logs`, `shell`, `exec`, `sync`, `net` or `rebuild` |
 
 `docs/NEEDS_A_VM.md` is the standing list of what has not run on real hardware.

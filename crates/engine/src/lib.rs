@@ -38,6 +38,17 @@ pub trait Engine: Send + Sync {
     fn status(&self, name: &SandboxName) -> Result<SandboxStatus>;
     /// Runs a command in a running sandbox, without a shell on the host side.
     fn exec(&self, name: &SandboxName, request: &ExecRequest) -> Result<ExecOutput>;
+    /// Runs a command, writing `input` to its standard input.
+    ///
+    /// This is how a secret reaches the guest. The value is not in the
+    /// argument list, so it cannot be read from the host's process list, and
+    /// it is not written to a file on the host on the way.
+    fn exec_with_input(
+        &self,
+        name: &SandboxName,
+        request: &ExecRequest,
+        input: &[u8],
+    ) -> Result<ExecOutput>;
     /// Starts a command that keeps running, and returns its job ID.
     fn exec_detached(&self, name: &SandboxName, request: &ExecRequest) -> Result<String>;
     /// Copies a host file or directory into a running sandbox.

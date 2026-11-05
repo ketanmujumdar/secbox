@@ -70,6 +70,10 @@ struct SetArgs {
     /// Deliver it only as a build secret
     #[arg(long)]
     build: bool,
+    /// Deliver it as a file at /run/secrets/NAME instead of in the environment.
+    /// Narrower, but the program has to read a file
+    #[arg(long, conflicts_with_all = ["build", "proxy_host"])]
+    as_file: bool,
     #[command(flatten)]
     project: ProjectArg,
     #[arg(hide = true, trailing_var_arg = true, allow_hyphen_values = true)]
@@ -170,6 +174,8 @@ fn requested_assignment(name: &SecretName, args: &SetArgs) -> Result<Option<Assi
         }
     } else if args.build {
         Delivery::BuildSecret
+    } else if args.as_file {
+        Delivery::InjectedFile
     } else {
         Delivery::Injected
     };
@@ -318,7 +324,8 @@ fn route(meta: &ProjectMeta, name: &SecretName) -> String {
             let services: Vec<&str> = assignment.services().iter().map(|s| s.as_str()).collect();
             let how = match assignment.delivery() {
                 Delivery::Proxy { bound_host } => format!("proxy for {bound_host}"),
-                Delivery::Injected => "injected".to_string(),
+                Delivery::Injected => "injected into the environment".to_string(),
+                Delivery::InjectedFile => "injected as a file".to_string(),
                 Delivery::BuildSecret => "build secret".to_string(),
             };
             format!("{}: {how}", services.join(", "))
