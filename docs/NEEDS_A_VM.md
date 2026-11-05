@@ -25,6 +25,19 @@ On Nov 5, 2026, on a Mac, against a running `demo_shop` sandbox, using a second 
 - [ ] Hostile output from inside a VM. Hostile bytes ran only from a stub engine through the real binaries and socket, and in tests.
 - [ ] Commands typed into `shell SERVICE`. Only opening it and leaving with Ctrl-D ran, so as not to write a history file in the container.
 
+## AI agents through MCP
+
+Built on Nov 5, 2026 (`docs/MCP.md`). Tested against the real daemon logic with `FakeEngine` and a stub engine binary. The real binary was run on pipes against a real daemon that had no engine, and Claude Code 2.1.318 reported the server as connected. **Nothing ran in a VM.**
+
+- [ ] `exec`, `read_file` and `write_file` through a real `msb exec --stream --no-tty`, in the sandbox and in a service with `docker compose exec -T`.
+- [ ] **Standard input reaching the command** through `msb exec --stream --no-tty`, then ending. `write_file` depends on it entirely: if the engine does not pass stdin on, every write produces an empty file. Check the size and content of a written file.
+- [ ] A timed-out `exec`: stopping the engine's process on the host also stops the command inside the VM, and leaves no process behind. Check with `ps` in the sandbox.
+- [ ] Output over 256 KiB being cut without the engine or the command hanging.
+- [ ] `dirname`, `mkdir -p` and `cat` behaving as expected in the guest's shell, including paths with spaces.
+- [ ] A model in Claude Code using the tools on a real project, with `Bash` and `Read` denied, and never reaching the host's copy of the project.
+- [ ] Codex with `codex mcp add`, `--sandbox read-only` and `--ask-for-approval untrusted`. Codex was not installed where this was built.
+- [ ] The audit log holding one `TerminalOpened` entry per `exec`, `read_file` and `write_file` call.
+
 ## Must run on a real VM before any of this is described as working
 
 ### The start sequence
