@@ -25,6 +25,8 @@ struct TestDeps {
     /// Set when the snapshot seam is asked to refuse, so the test can check
     /// that nothing is copied into a sandbox when it does.
     snapshot_fails: bool,
+    /// A file the snapshot has that the working tree does not.
+    snapshot_adds: Option<(&'static str, &'static str)>,
 }
 
 impl TestDeps {
@@ -32,6 +34,7 @@ impl TestDeps {
         Self {
             engine: FakeEngine::new(),
             snapshot_fails: false,
+            snapshot_adds: None,
         }
     }
 }
@@ -72,8 +75,18 @@ impl Deps for TestDeps {
         }
         // The real snapshot creates its destination and refuses one that exists.
         std::fs::create_dir(dest).expect("snapshot destination must not exist yet");
-        std::fs::write(dest.join("compose.yaml"), std::fs::read(root.join("compose.yaml")).unwrap())
-            .unwrap();
+        // The project's top-level files, leaving out environment files.
+        for entry in std::fs::read_dir(root).unwrap().flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with(".env") || !entry.file_type().unwrap().is_file() {
+                continue;
+            }
+            std::fs::copy(entry.path(), dest.join(&name)).unwrap();
+        }
+        if let Some((name, body)) = self.snapshot_adds {
+            // As a commit snapshot could, when the working tree differs.
+            std::fs::write(dest.join(name), body).unwrap();
+        }
         Ok(SnapshotPlan {
             revision: match source {
                 Source::Commit { revision } => Some(revision.clone()),
@@ -114,7 +127,6 @@ services:
 ";
 
 fn fixture_with(compose: &str, config: Option<&str>) -> Fixture {
-    let state = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("compose.yaml"), compose).unwrap();
     std::fs::create_dir_all(project.path().join("web")).unwrap();
@@ -122,7 +134,12 @@ fn fixture_with(compose: &str, config: Option<&str>) -> Fixture {
     if let Some(config) = config {
         std::fs::write(project.path().join(brand::CONFIG_FILE), config).unwrap();
     }
-    let deps = Arc::new(TestDeps::new());
+    fixture_from(project, TestDeps::new())
+}
+
+fn fixture_from(project: tempfile::TempDir, deps: TestDeps) -> Fixture {
+    let state = tempfile::tempdir().unwrap();
+    let deps = Arc::new(deps);
     let paths = StatePaths {
         state: state.path().join(brand::STATE_DIR),
         overridden: true,
@@ -665,6 +682,7 @@ fn a_snapshot_that_cannot_be_taken_stops_the_start() {
     let deps = Arc::new(TestDeps {
         engine: FakeEngine::new(),
         snapshot_fails: true,
+        snapshot_adds: None,
     });
     let service = Service::new(
         StatePaths {
@@ -1491,4 +1509,233 @@ fn a_plan_names_a_secret_and_its_route_but_never_its_value() {
     assert_eq!(plan.secrets[0].route, proto::SecretRoute::Injected);
     assert_eq!(plan.secrets[0].services, vec!["api"]);
     assert!(!format!("{plan:?}").contains(FAKE_VALUE));
+}
+
+// A project with only a Dockerfile.
+
+/// A copy of `tests/fixtures/dockerfile-only`, so a test can change it.
+fn dockerfile_project() -> tempfile::TempDir {
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dockerfile-only");
+    let project = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(source).unwrap().flatten() {
+        std::fs::copy(entry.path(), project.path().join(entry.file_name())).unwrap();
+    }
+    project
+}
+
+fn dockerfile_fixture() -> Fixture {
+    fixture_from(dockerfile_project(), TestDeps::new())
+}
+
+fn create_spec(f: &Fixture) -> engine::CreateSpec {
+    f.deps
+        .engine
+        .calls()
+        .into_iter()
+        .find_map(|call| match call {
+            FakeCall::Create(spec) => Some(spec),
+            _ => None,
+        })
+        .expect("a sandbox was created")
+}
+
+#[test]
+fn a_dockerfile_project_plans_as_one_generated_service() {
+    let plan = dockerfile_fixture().plan();
+    assert_eq!(plan.blockers, Vec::<String>::new());
+    assert_eq!(plan.kind, "dockerfile");
+    assert_eq!(plan.services, vec!["app"]);
+    assert_eq!(plan.compose_files, vec!["compose.yaml"]);
+    // Only the last stage's TCP ports, and only plain numbers.
+    let ports: Vec<(u16, u16)> = plan
+        .ports
+        .iter()
+        .map(|p| (p.host_port, p.container_port))
+        .collect();
+    assert_eq!(ports, vec![(3000, 3000), (8080, 8080)]);
+    assert!(plan
+        .ports
+        .iter()
+        .all(|p| p.service == "app" && !p.was_all_interfaces));
+    // It builds, so it gets the build memory floor like any other build.
+    assert!(plan.resources.build_memory_bytes >= daemon::plan::MIN_BUILD_MEMORY_BYTES);
+
+    // Each odd EXPOSE entry is reported.
+    assert_eq!(plan.findings.len(), 6, "{:#?}", plan.findings);
+    assert!(plan.findings.iter().all(|f| f.severity == "Info"));
+    let all = format!("{:?}", plan.findings);
+    for word in ["UDP", "variable", "range", "not a port number"] {
+        assert!(all.contains(word), "{word} in {all}");
+    }
+
+    let generated = plan.generated_compose.as_deref().unwrap();
+    assert!(generated.contains("dockerfile: Dockerfile"), "{generated}");
+    for absent in [
+        "9229", "2222", "5353", "9230", "4444", "touch", "rm", "volumes", "privileged",
+    ] {
+        assert!(!generated.contains(absent), "{absent} in {generated}");
+    }
+}
+
+#[test]
+fn a_dockerfile_project_starts_and_its_ports_need_approval() {
+    let f = dockerfile_fixture();
+    let report = f.up(vec![]).unwrap();
+    assert_eq!(report.sandbox, SandboxState::Running);
+    assert!(report.ports.is_empty());
+    // Offered is not forwarded.
+    assert!(create_spec(&f).ports.is_empty());
+
+    let f = dockerfile_fixture();
+    let report = f.up(vec![8080]).unwrap();
+    assert_eq!(report.ports, vec![8080]);
+    assert_eq!(create_spec(&f).ports, vec![engine::HostPort(8080)]);
+}
+
+#[test]
+fn a_port_from_an_earlier_stage_or_a_hostile_line_cannot_be_approved() {
+    for port in [9229, 2222, 5353, 4444, 80] {
+        let f = dockerfile_fixture();
+        let error = f.up(vec![port]).unwrap_err();
+        assert_eq!(error.code, ErrorCode::BadRequest, "{port}");
+        assert!(!f
+            .deps
+            .engine
+            .calls()
+            .iter()
+            .any(|c| matches!(c, FakeCall::Create(_))));
+    }
+}
+
+#[test]
+fn the_generated_compose_file_reaches_the_engine_and_is_what_runs() {
+    let f = dockerfile_fixture();
+    let plan = f.plan();
+    f.up(vec![3000]).unwrap();
+    let sandbox = sandbox_of(&f);
+
+    let copied = f
+        .deps
+        .engine
+        .copied_file(&sandbox, "/work/compose.yaml")
+        .expect("the generated file was copied in");
+    assert_eq!(
+        String::from_utf8(copied).unwrap(),
+        plan.generated_compose.unwrap()
+    );
+    // The project's own files went with it, as the build context.
+    assert!(f
+        .deps
+        .engine
+        .copied_file(&sandbox, "/work/Dockerfile")
+        .is_some());
+
+    let up = f
+        .deps
+        .engine
+        .calls()
+        .into_iter()
+        .find_map(|call| match call {
+            FakeCall::Exec(_, request) if request.command.contains(&"up".to_owned()) => {
+                Some(request)
+            }
+            _ => None,
+        })
+        .expect("compose up ran");
+    assert_eq!(&up.command[..4], ["docker", "compose", "-f", "compose.yaml"]);
+    assert_eq!(up.workdir.unwrap().as_str(), "/work");
+}
+
+#[test]
+fn a_changed_expose_line_changes_the_digest() {
+    let f = dockerfile_fixture();
+    let before = f.plan();
+    let dockerfile = f.project.path().join("Dockerfile");
+    let text = std::fs::read_to_string(&dockerfile).unwrap();
+    std::fs::write(&dockerfile, text.replace("EXPOSE 3000", "EXPOSE 3001")).unwrap();
+    let after = f.plan();
+    assert_ne!(before.digest, after.digest);
+    assert_ne!(before.generated_compose, after.generated_compose);
+
+    // The earlier approval no longer starts anything.
+    let error = f
+        .call(Request::Up(UpArgs {
+            project: f.path(),
+            source: Source::default(),
+            plan_digest: before.digest,
+            approve_ports: vec![],
+        }))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Refused);
+}
+
+#[test]
+fn a_compose_file_wins_over_a_dockerfile() {
+    let project = dockerfile_project();
+    std::fs::write(
+        project.path().join("compose.yaml"),
+        "services:\n  web:\n    image: web:1\n",
+    )
+    .unwrap();
+    let plan = fixture_from(project, TestDeps::new()).plan();
+    assert_eq!(plan.kind, "compose");
+    assert_eq!(plan.services, vec!["web"]);
+    assert_eq!(plan.generated_compose, None);
+}
+
+#[test]
+fn an_override_file_with_no_compose_file_blocks_a_dockerfile_project() {
+    let project = dockerfile_project();
+    std::fs::write(
+        project.path().join("compose.override.yaml"),
+        "services:\n  app:\n    privileged: true\n",
+    )
+    .unwrap();
+    let plan = fixture_from(project, TestDeps::new()).plan();
+    assert_eq!(plan.kind, "dockerfile");
+    assert!(
+        plan.blockers
+            .iter()
+            .any(|b| b.contains("compose.override.yaml")),
+        "{:?}",
+        plan.blockers
+    );
+}
+
+#[test]
+fn a_snapshot_that_has_its_own_compose_file_is_not_overwritten() {
+    let deps = TestDeps {
+        snapshot_adds: Some(("compose.yaml", "services:\n  app:\n    privileged: true\n")),
+        ..TestDeps::new()
+    };
+    let f = fixture_from(dockerfile_project(), deps);
+    let error = f.up(vec![]).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Refused);
+    assert!(error.message.contains("compose.yaml"), "{}", error.message);
+    // Nothing was copied in, and the empty sandbox was removed.
+    let calls = f.deps.engine.calls();
+    assert!(!calls.iter().any(|c| matches!(c, FakeCall::CopyIn(..))));
+    assert!(calls.iter().any(|c| matches!(c, FakeCall::Destroy(..))));
+}
+
+#[test]
+fn other_kinds_of_project_are_still_refused() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("package.json"), "{}").unwrap();
+    let f = fixture_from(project, TestDeps::new());
+    let error = f
+        .call(Request::Plan(PlanArgs {
+            project: f.path(),
+            source: Source::default(),
+        }))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    assert!(
+        error
+            .message
+            .contains("only Compose projects and projects with a Dockerfile can be started"),
+        "{}",
+        error.message
+    );
 }

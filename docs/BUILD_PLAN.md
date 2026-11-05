@@ -35,14 +35,14 @@ Most cloud environments are Linux and may have no KVM, so they can't run the VM 
 | Crate | State | Main gaps |
 | --- | --- | --- |
 | `brand` | Done | |
-| `projectcheck` | Done | `include` and `extends` files aren't followed; override files aren't in the model |
+| `projectcheck` | Done | `include` and `extends` files aren't followed; override files aren't in the model. Of a Dockerfile, only `EXPOSE` is read |
 | `secrets` | Done | Real keychain never run |
 | `egress` | Rule engine done | No proxy; no CONNECT pre-check; method-override headers and keys in query strings not handled. **Nothing calls it on real traffic** |
 | `gitbroker` | Done | No real HTTPS push; no SSH remotes; no Touch ID approver; no working-tree snapshot |
 | `engine` | Done on macOS | Secrets need TLS interception; Linux untested |
 | `proto` | Done | The API covers `plan`, `up`, `down`, `status`, `logs`, blocked hostnames and terminal access only |
 | `hoststate` | Done | Project identity still hashes the full path, so moving a project loses its secrets |
-| `daemon` | Core done, against `FakeEngine` | Only partly run on a real VM; blocked hostnames come from the engine's log, with no record of raw IP, metadata or UDP attempts and no gateway log; the proxy secret route waits on milestone 0 |
+| `daemon` | Core done, against `FakeEngine`. Starts Compose projects and Dockerfile-only projects | Only partly run on a real VM; a Dockerfile-only project never has; blocked hostnames come from the engine's log, with no record of raw IP, metadata or UDP attempts and no gateway log; the proxy secret route waits on milestone 0 |
 | `cli` | `up`, `down`, `status`, `open`, `checks`, `logs`, `shell`, `exec` and `net blocked` done | `diff` and `export` refuse; no `sync`, `net log`, `net allow` or `rebuild` |
 
 `docs/NEEDS_A_VM.md` is the standing list of what has not run on real hardware.
@@ -65,7 +65,7 @@ Done when: the choice is recorded in `docs/ARCHITECTURE.md`.
 - Daemon: owner-only Unix socket, peer UID check, one narrow JSON API shared by all clients, and an audit log with names only.
 - `secbox up [path]`, `down` and `status`, built on the engine crate. Follow the working command sequence in the spike doc, and start `dockerd` by hand, clearing a stale `/var/run/docker.pid`.
 - Snapshot from a Git commit with `.env` left out. Widen the exclusions to common secret file names, warn on likely secrets in other files, and require an explicit flag to include uncommitted changes.
-- Compose first. Other project kinds wait until after v1.
+- Compose, and projects with only a Dockerfile, which run as a one-service Compose file the daemon generates. Other project kinds wait until after v1.
 - Forward only approved ports, on `127.0.0.1`, keeping the same port numbers.
 - Apply resources from `projectcheck::resources`, with a user-level maximum. Memory minimum is 3G for `demo_shop`, since 2G failed every time. Budget the full VM size on the host.
 - Network: deny by default, using hostname allowlists. Provide a build profile; the `demo_shop` build needed 12 allowed hosts, listed in the spike doc.

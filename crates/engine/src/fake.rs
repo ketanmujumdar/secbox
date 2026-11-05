@@ -36,6 +36,9 @@ struct Box_ {
     running: bool,
     spec: CreateSpec,
     copied: Vec<(PathBuf, GuestPath)>,
+    /// The contents of the regular files copied in, by guest path, as they
+    /// were when they were copied. A real copy reads them then too.
+    files: BTreeMap<String, Vec<u8>>,
     log: Vec<String>,
 }
 
@@ -196,6 +199,14 @@ impl FakeEngine {
             .unwrap_or_default()
     }
 
+    /// A file's contents as they were copied in, by its path in the guest.
+    pub fn copied_file(&self, name: &SandboxName, guest: &str) -> Option<Vec<u8>> {
+        self.lock()
+            .boxes
+            .get(name)
+            .and_then(|b| b.files.get(guest).cloned())
+    }
+
     /// Records the call and consumes any error queued by [`Self::fail_next`].
     fn begin(&self, call: FakeCall) -> Result<MutexGuard<'_, State>> {
         let mut state = self.lock();
@@ -259,6 +270,7 @@ impl Engine for FakeEngine {
                 running: true,
                 spec: spec.clone(),
                 copied: Vec::new(),
+                files: BTreeMap::new(),
                 log: Vec::new(),
             },
         );
@@ -385,9 +397,9 @@ impl Engine for FakeEngine {
             guest.clone(),
         ))?;
         crate::argv::copy_in(name, host, guest)?;
-        running_box(&mut state, name)?
-            .copied
-            .push((host.to_owned(), guest.clone()));
+        let entry = running_box(&mut state, name)?;
+        entry.copied.push((host.to_owned(), guest.clone()));
+        read_tree(host, guest.as_str(), &mut entry.files);
         Ok(())
     }
 
@@ -402,6 +414,34 @@ impl Engine for FakeEngine {
 
     fn location(&self) -> Option<EngineLocation> {
         self.lock().location.clone()
+    }
+}
+
+/// Reads regular files under `host` into `files`, keyed by where they land in
+/// the guest. Links are not followed. Only for tests, so it is bounded loosely.
+fn read_tree(host: &Path, guest: &str, files: &mut BTreeMap<String, Vec<u8>>) {
+    const MAX_FILES: usize = 10_000;
+    let Ok(meta) = std::fs::symlink_metadata(host) else {
+        return;
+    };
+    if meta.is_file() {
+        if files.len() < MAX_FILES {
+            if let Ok(bytes) = std::fs::read(host) {
+                files.insert(guest.to_owned(), bytes);
+            }
+        }
+    } else if meta.is_dir() {
+        let Ok(entries) = std::fs::read_dir(host) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let below = format!("{}/{name}", guest.trim_end_matches('/'));
+            read_tree(&entry.path(), &below, files);
+        }
     }
 }
 

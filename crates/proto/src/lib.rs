@@ -398,6 +398,12 @@ pub struct PlanReport {
     pub findings: Vec<Finding>,
     /// Reasons this plan cannot be started as it is.
     pub blockers: Vec<String>,
+    /// The Compose file the host wrote for a project that has only a
+    /// Dockerfile, exactly as it will be used. It is part of the plan so that
+    /// the digest, and so the approval, covers it. `None` for a Compose
+    /// project, which runs its own files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_compose: Option<String>,
 }
 
 /// A port the project asks to publish. Every one is forwarded to `127.0.0.1`

@@ -94,7 +94,7 @@ fn describe(root: &Path, detection: &Detection, deps: &mut Deps) -> Result<bool,
         }
         ProjectKind::Dockerfile { file } => {
             field(deps, "Kind", &format!("Dockerfile, {}", esc_path(file)));
-            field(deps, "Checks", "none yet: Dockerfile contents are not read");
+            field(deps, "Checks", "only its EXPOSE lines are read, for the ports `up` offers");
             Ok(false)
         }
         ProjectKind::DevContainer { file } => {

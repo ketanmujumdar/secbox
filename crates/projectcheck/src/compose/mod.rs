@@ -77,6 +77,8 @@ pub enum FindingKind {
     Weakening,
     /// A shape or field this check does not understand.
     Unrecognized,
+    /// An `EXPOSE` entry in a Dockerfile that is not offered as a port.
+    DockerfileExpose,
 }
 
 /// One thing the Compose file asks for. All text is safe to print.
