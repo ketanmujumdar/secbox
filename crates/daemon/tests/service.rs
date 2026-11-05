@@ -243,6 +243,7 @@ fn starting_follows_the_sequence_the_engine_spike_found_works() {
             FakeCall::Status(_) => "status",
             FakeCall::Exec(..) => "exec",
             FakeCall::ExecStream(..) => "exec-stream",
+            FakeCall::ExecWithInput(..) => "exec-with-input",
             FakeCall::ExecDetached(..) => "exec-detached",
             FakeCall::CopyIn(..) => "copy-in",
             FakeCall::Logs(..) => "logs",
@@ -591,7 +592,7 @@ fn every_step_of_a_start_is_reported_to_whoever_is_watching() {
         .unwrap();
     assert_eq!(
         steps.0,
-        vec!["planning", "sandbox", "snapshot", "docker", "build"]
+        vec!["planning", "sandbox", "snapshot", "docker", "secrets", "build"]
     );
 }
 
@@ -999,4 +1000,350 @@ fn a_followed_log_stops_when_the_client_disconnects_and_the_sandbox_keeps_runnin
         .calls()
         .iter()
         .any(|call| matches!(call, FakeCall::Stop(_) | FakeCall::Destroy(_))));
+}
+
+// --- Secrets -----------------------------------------------------------
+//
+// The value used throughout is fake. What these check is where it goes and,
+// more importantly, where it does not.
+
+const FAKE_VALUE: &str = "sk-fake-do-not-use-9f2c";
+
+/// A store that keeps what is put in it, so a secret survives from the test
+/// into the daemon. `TestDeps::store` hands out a fresh one each call, which
+/// is right for the tests that want nothing stored.
+#[derive(Default)]
+struct Shared(std::sync::Arc<MemoryStore>);
+
+impl Clone for Shared {
+    fn clone(&self) -> Self {
+        Self(std::sync::Arc::clone(&self.0))
+    }
+}
+
+impl SecretStore for Shared {
+    fn put(
+        &self,
+        name: &secrets::SecretName,
+        value: &secrets::SecretValue,
+    ) -> Result<(), secrets::StoreError> {
+        self.0.put(name, value)
+    }
+    fn get(
+        &self,
+        name: &secrets::SecretName,
+    ) -> Result<Option<secrets::SecretValue>, secrets::StoreError> {
+        self.0.get(name)
+    }
+    fn delete(&self, name: &secrets::SecretName) -> Result<bool, secrets::StoreError> {
+        self.0.delete(name)
+    }
+}
+
+struct SecretDeps {
+    inner: TestDeps,
+    store: Shared,
+}
+
+impl Deps for SecretDeps {
+    fn engine(&self) -> &dyn Engine {
+        self.inner.engine()
+    }
+    fn now_unix(&self) -> u64 {
+        self.inner.now_unix()
+    }
+    fn host_info(&self, disk_path: &Path) -> HostInfo {
+        self.inner.host_info(disk_path)
+    }
+    fn store(&self, _project: &ProjectId) -> Box<dyn SecretStore> {
+        Box::new(self.store.clone())
+    }
+    fn snapshot(&self, root: &Path, source: &Source, dest: &Path) -> Result<SnapshotPlan, String> {
+        self.inner.snapshot(root, source, dest)
+    }
+}
+
+struct SecretFixture {
+    _state: tempfile::TempDir,
+    project: tempfile::TempDir,
+    service: Service,
+    deps: Arc<SecretDeps>,
+}
+
+impl SecretFixture {
+    fn path(&self) -> String {
+        self.project.path().to_string_lossy().into_owned()
+    }
+
+    fn up(&self) -> Result<proto::UpReport, proto::ApiError> {
+        let Reply::Plan(plan) = self
+            .service
+            .handle(
+                &Request::Plan(PlanArgs {
+                    project: self.path(),
+                    source: Source::default(),
+                }),
+                &mut Quiet,
+            )?
+        else {
+            panic!("expected a plan")
+        };
+        match self.service.handle(
+            &Request::Up(UpArgs {
+                project: self.path(),
+                source: Source::default(),
+                plan_digest: plan.digest,
+                approve_ports: vec![],
+            }),
+            &mut Quiet,
+        )? {
+            Reply::Up(report) => Ok(report),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// Everything the engine was asked to do, as text. The fake deliberately
+    /// leaves standard input out of this.
+    fn calls_as_text(&self) -> String {
+        format!("{:?}", self.deps.inner.engine.calls())
+    }
+}
+
+fn with_secret(delivery: secrets::Delivery, services: &[&str]) -> SecretFixture {
+    with_secret_valued(delivery, services, FAKE_VALUE)
+}
+
+fn with_secret_valued(
+    delivery: secrets::Delivery,
+    services: &[&str],
+    value: &str,
+) -> SecretFixture {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("compose.yaml"), COMPOSE).unwrap();
+    std::fs::create_dir_all(project.path().join("web")).unwrap();
+    std::fs::write(project.path().join("web/Dockerfile"), "FROM scratch\n").unwrap();
+    std::fs::write(
+        project.path().join(brand::CONFIG_FILE),
+        "resources:\n  memory: 4G\n  cpus: 2\n  disk: 30G\n",
+    )
+    .unwrap();
+
+    let store = Shared::default();
+    let name = secrets::SecretName::new("ENCRYPTION_KEY").unwrap();
+    store
+        .put(&name, &secrets::SecretValue::new(value))
+        .unwrap();
+
+    let paths = StatePaths {
+        state: state.path().join(brand::STATE_DIR),
+        overridden: true,
+    };
+    let canonical = std::fs::canonicalize(project.path()).unwrap();
+    let id = hoststate::project_id(&canonical).unwrap();
+    let dir = hoststate::prepare_project(&paths, &id).unwrap();
+    let mut meta = hoststate::ProjectMeta::new(&canonical);
+    meta.assignments = secrets::AssignmentSet::new(vec![secrets::Assignment::new(
+        name,
+        delivery,
+        services
+            .iter()
+            .map(|s| secrets::ServiceName::new(*s).unwrap())
+            .collect(),
+    )
+    .unwrap()])
+    .unwrap();
+    hoststate::write_meta(&dir, &meta).unwrap();
+
+    let deps = Arc::new(SecretDeps {
+        inner: TestDeps::new(),
+        store,
+    });
+    let service = Service::new(paths, Arc::clone(&deps) as Arc<dyn Deps>).unwrap();
+    SecretFixture {
+        _state: state,
+        project,
+        service,
+        deps,
+    }
+}
+
+/// The one that matters: a value handed to the engine as an argument is
+/// readable by anyone on the host, from the process list.
+#[test]
+fn a_secret_reaches_the_sandbox_over_standard_input_and_never_in_an_argument() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    let report = f.up().unwrap();
+
+    let written: Vec<(Vec<String>, String)> = f.deps.inner.engine.inputs();
+    assert!(
+        written.iter().any(|(_, body)| body.contains(FAKE_VALUE)),
+        "the value never reached the sandbox"
+    );
+    assert!(
+        !f.calls_as_text().contains(FAKE_VALUE),
+        "the value appeared in an argument list"
+    );
+    assert_eq!(report.secrets.len(), 1);
+    assert_eq!(report.secrets[0].service, "api");
+    assert_eq!(report.secrets[0].names, vec!["ENCRYPTION_KEY"]);
+}
+
+#[test]
+fn an_environment_secret_is_written_as_one_line_for_the_named_service_only() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.up().unwrap();
+    let written = f.deps.inner.engine.inputs();
+    let env = written
+        .iter()
+        .find(|(_, body)| body.contains("ENCRYPTION_KEY="))
+        .expect("no environment file was written");
+    assert_eq!(env.1, format!("ENCRYPTION_KEY={FAKE_VALUE}\n"));
+
+    let yaml = &written
+        .iter()
+        .find(|(_, body)| body.contains("services:"))
+        .expect("no override was written")
+        .1;
+    assert!(yaml.contains("\"api\""), "{yaml}");
+    assert!(!yaml.contains("\"web\""), "{yaml}");
+    // The override carries paths, never a value.
+    assert!(!yaml.contains(FAKE_VALUE), "{yaml}");
+}
+
+#[test]
+fn a_file_secret_is_declared_rather_than_put_in_the_environment() {
+    let f = with_secret(secrets::Delivery::InjectedFile, &["api"]);
+    f.up().unwrap();
+    let written = f.deps.inner.engine.inputs();
+    assert!(
+        written
+            .iter()
+            .any(|(_, body)| body.as_str() == FAKE_VALUE),
+        "the value was not written as a file"
+    );
+    assert!(
+        !written.iter().any(|(_, b)| b.contains("ENCRYPTION_KEY=")),
+        "a file secret must not also go in the environment"
+    );
+    let yaml = &written
+        .iter()
+        .find(|(_, body)| body.contains("services:"))
+        .unwrap()
+        .1;
+    assert!(yaml.contains("secrets:"), "{yaml}");
+    assert!(!yaml.contains("env_file"), "{yaml}");
+}
+
+#[test]
+fn nothing_is_written_under_the_project_directory() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.up().unwrap();
+    for (command, _) in f.deps.inner.engine.inputs() {
+        let target = command.last().expect("a path argument");
+        assert!(target.starts_with("/run/"), "{target}");
+        assert!(!target.contains("/work"), "{target}");
+    }
+}
+
+#[test]
+fn the_compose_command_names_the_override_only_when_there_is_one() {
+    let with = with_secret(secrets::Delivery::Injected, &["api"]);
+    with.up().unwrap();
+    assert!(
+        with.calls_as_text().contains("override.yaml"),
+        "the override was not passed to compose"
+    );
+
+    let without = fixture();
+    without.up(vec![]).unwrap();
+    let text = format!("{:?}", without.deps.engine.calls());
+    assert!(!text.contains("override.yaml"), "{text}");
+}
+
+#[test]
+fn a_secret_with_a_line_break_is_refused_rather_than_escaped_by_guesswork() {
+    let f = with_secret_valued(
+        secrets::Delivery::Injected,
+        &["api"],
+        "real\nINJECTED_BY_THE_VALUE=1",
+    );
+    let error = f.up().unwrap_err();
+    assert_eq!(error.code, ErrorCode::Refused);
+    assert!(error.message.contains("--as-file"), "{}", error.message);
+    assert!(!error.message.contains("INJECTED_BY_THE_VALUE"));
+}
+
+#[test]
+fn a_proxy_secret_is_refused_while_the_question_is_open() {
+    let f = with_secret(
+        secrets::Delivery::Proxy {
+            bound_host: secrets::BoundHost::new("api.example.com").unwrap(),
+        },
+        &["api"],
+    );
+    let error = f.up().unwrap_err();
+    assert_eq!(error.code, ErrorCode::Refused);
+}
+
+/// Carrying on without the temporary filesystem would put the value on the
+/// sandbox's own disk, which is the quiet failure this must not have.
+#[test]
+fn delivery_stops_when_there_is_nowhere_safe_to_put_a_secret() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    // The first exec of the start is the Docker readiness check; the mount
+    // attempt is the one that matters, so fail every exec after readiness.
+    f.deps.inner.engine.push_exec_result(engine::ExecOutput {
+        code: 0,
+        ..Default::default()
+    });
+    f.deps.inner.engine.push_exec_result(engine::ExecOutput {
+        code: 1,
+        stderr: "mount: permission denied".to_owned(),
+        ..Default::default()
+    });
+    let error = f.up().unwrap_err();
+    assert_eq!(error.code, ErrorCode::Refused);
+    assert!(
+        error.message.contains("nowhere safe"),
+        "{}",
+        error.message
+    );
+    assert!(
+        f.deps.inner.engine.inputs().is_empty(),
+        "a value was written even though there was nowhere safe for it"
+    );
+}
+
+#[test]
+fn the_host_records_which_secret_went_where_by_name_only() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.up().unwrap();
+    let text = std::fs::read_to_string(f.service.audit().path()).unwrap();
+    assert!(text.contains("secret_delivered"), "{text}");
+    assert!(text.contains("ENCRYPTION_KEY"), "{text}");
+    assert!(!text.contains(FAKE_VALUE), "a value reached the audit log");
+}
+
+#[test]
+fn a_plan_names_a_secret_and_its_route_but_never_its_value() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    let Reply::Plan(plan) = f
+        .service
+        .handle(
+            &Request::Plan(PlanArgs {
+                project: f.path(),
+                source: Source::default(),
+            }),
+            &mut Quiet,
+        )
+        .unwrap()
+    else {
+        panic!("expected a plan")
+    };
+    assert_eq!(plan.secrets.len(), 1);
+    assert_eq!(plan.secrets[0].name, "ENCRYPTION_KEY");
+    assert_eq!(plan.secrets[0].route, proto::SecretRoute::Injected);
+    assert_eq!(plan.secrets[0].services, vec!["api"]);
+    assert!(!format!("{plan:?}").contains(FAKE_VALUE));
 }

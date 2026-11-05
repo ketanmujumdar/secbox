@@ -293,6 +293,10 @@ pub struct PlanReport {
     /// Covers everything below. [`UpArgs::plan_digest`] must equal this.
     pub digest: String,
     pub kind: String,
+    /// The Compose files, in the order they are merged, as paths inside the
+    /// project. Any override the project carries is in here, so starting it
+    /// reads exactly what the project would read on its own.
+    pub compose_files: Vec<String>,
     pub services: Vec<String>,
     pub ports: Vec<PortPlan>,
     pub resources: ResourcePlan,
@@ -378,8 +382,13 @@ pub struct SecretPlan {
 pub enum SecretRoute {
     /// The sandbox holds a placeholder and the host swaps in the real value.
     Proxy,
-    /// The real value is injected at start, into named services only.
+    /// The real value is put into the environment of named services only.
+    /// Every program already reads its environment, so a project works
+    /// unchanged, but everything in that container can read it too.
     Injected,
+    /// The real value is written where named services can read it, at
+    /// `/run/secrets/<name>`. Narrower, but the program must read a file.
+    InjectedFile,
     /// The real value is passed to one build step, opt-in.
     BuildSecret,
 }
@@ -429,6 +438,15 @@ pub struct UpReport {
     /// Ports actually forwarded, on `127.0.0.1`.
     pub ports: Vec<u16>,
     pub seconds: u64,
+    /// Which services were given which secrets. Names only.
+    pub secrets: Vec<SecretsDelivered>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretsDelivered {
+    pub service: String,
+    pub names: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

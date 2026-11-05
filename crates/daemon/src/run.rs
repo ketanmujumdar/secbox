@@ -23,6 +23,7 @@ use proto::{
     UpArgs, UpReport,
 };
 
+use crate::secret::{self, Delivered};
 use crate::settings::{Approvals, SandboxRecord};
 use crate::{
     audit, bad, engine_error, internal, plan, refused, wrong_state, Progress, Project, Service,
@@ -115,8 +116,13 @@ pub fn up(
     progress.step("docker", None);
     start_docker(service, project)?;
 
+    // Secrets live on a temporary filesystem inside the guest, so a sandbox
+    // that was stopped and started again has none. They go in on every start.
+    progress.step("secrets", None);
+    let delivered = secret::deliver(service, project)?;
+
     progress.step("build", None);
-    compose_up(service, project)?;
+    compose_up(service, project, &plan, &delivered)?;
 
     let services = compose_services(service, project)?;
     service.record(
@@ -130,6 +136,14 @@ pub fn up(
         services,
         ports,
         seconds: started.elapsed().as_secs(),
+        secrets: delivered
+            .by_service
+            .iter()
+            .map(|(service, names)| proto::SecretsDelivered {
+                service: service.clone(),
+                names: names.clone(),
+            })
+            .collect(),
     })
 }
 
@@ -346,21 +360,48 @@ fn docker_ready(service: &Service, project: &Project) -> bool {
         .is_ok_and(|out| out.code == 0)
 }
 
-fn compose_up(service: &Service, project: &Project) -> Result<(), ApiError> {
+/// The start of every Compose command: the project's own files in the order
+/// Compose would merge them, then the host's override when there is one.
+///
+/// Naming the files explicitly is what makes room for the override. The
+/// project's own override files are listed too, so this reads exactly what
+/// the project would read on its own.
+pub(crate) fn compose_command(plan: &PlanReport, delivered: &Delivered) -> Vec<String> {
+    let mut args = vec!["docker".to_owned(), "compose".to_owned()];
+    for file in &plan.compose_files {
+        args.push("-f".to_owned());
+        args.push(file.clone());
+    }
+    if let Some(override_file) = &delivered.override_file {
+        args.push("-f".to_owned());
+        args.push(override_file.clone());
+    }
+    args
+}
+
+fn compose_up(
+    service: &Service,
+    project: &Project,
+    plan: &PlanReport,
+    delivered: &Delivered,
+) -> Result<(), ApiError> {
     service.record(
         audit::entry(service.deps().now_unix(), audit::Action::BuildStarted)
             .project(project.id.as_str()),
     );
-    let mut request = ExecRequest::new([
-        "docker",
-        "compose",
-        "up",
-        "--build",
-        "-d",
-        "--wait",
-        "--wait-timeout",
-        &COMPOSE_WAIT_SECONDS.to_string(),
-    ]);
+    let mut command = compose_command(plan, delivered);
+    command.extend(
+        [
+            "up",
+            "--build",
+            "-d",
+            "--wait",
+            "--wait-timeout",
+            &COMPOSE_WAIT_SECONDS.to_string(),
+        ]
+        .map(str::to_owned),
+    );
+    let mut request = ExecRequest::new(command);
     request.timeout = Some(BUILD_LIMIT);
     request.workdir = Some(GuestPath::new(WORK_DIR).map_err(|e| internal(e.to_string()))?);
     let out = service

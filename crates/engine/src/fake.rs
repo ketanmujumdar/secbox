@@ -23,6 +23,9 @@ pub enum FakeCall {
     Status(SandboxName),
     Exec(SandboxName, ExecRequest),
     ExecStream(SandboxName, ExecRequest),
+    /// The input is deliberately not recorded here, so that a secret cannot
+    /// be printed by a failing test. Read it with [`FakeEngine::inputs`].
+    ExecWithInput(SandboxName, ExecRequest),
     ExecDetached(SandboxName, ExecRequest),
     CopyIn(SandboxName, PathBuf, GuestPath),
     Logs(SandboxName, LogOptions),
@@ -47,6 +50,7 @@ struct State {
     stream_stays_open: bool,
     streams_stopped: usize,
     location: Option<EngineLocation>,
+    inputs: Vec<(Vec<String>, String)>,
 }
 
 /// In-memory [`Engine`]. `create` leaves a sandbox running, matching the CLI's
@@ -110,6 +114,12 @@ impl FakeEngine {
         let entry = state.boxes.get_mut(name).ok_or_else(|| not_found(name))?;
         entry.log.push(line.into());
         Ok(())
+    }
+
+    /// What was written to the standard input of each command, in order, as
+    /// pairs of command and input.
+    pub fn inputs(&self) -> Vec<(Vec<String>, String)> {
+        self.lock().inputs.clone()
     }
 
     /// All calls so far, in order.
@@ -269,6 +279,22 @@ impl Engine for FakeEngine {
             });
         }
         Ok(StreamEnd::Exited(code))
+    }
+
+    fn exec_with_input(
+        &self,
+        name: &SandboxName,
+        request: &ExecRequest,
+        input: &[u8],
+    ) -> Result<ExecOutput> {
+        let mut state = self.begin(FakeCall::ExecWithInput(name.clone(), request.clone()))?;
+        crate::argv::exec_with_input(name, request)?;
+        running_box(&mut state, name)?;
+        state.inputs.push((
+            request.command.clone(),
+            String::from_utf8_lossy(input).into_owned(),
+        ));
+        Ok(state.exec_results.pop_front().unwrap_or_default())
     }
 
     fn exec_detached(&self, name: &SandboxName, request: &ExecRequest) -> Result<String> {

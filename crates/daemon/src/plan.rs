@@ -51,8 +51,8 @@ pub fn build(
     let detection = detect(&project.root)
         .map_err(|e| bad(format!("cannot read the project: {}", text::escape(&e.to_string()))))?;
 
-    let compose_file = match &detection.kind {
-        ProjectKind::Compose { file, .. } => file.clone(),
+    let (compose_file, compose_overrides) = match &detection.kind {
+        ProjectKind::Compose { file, overrides } => (file.clone(), overrides.clone()),
         ProjectKind::Unsupported { reason, .. } => {
             return Err(unsupported(format!(
                 "this project needs macOS, so a Linux sandbox cannot protect it: {}",
@@ -74,6 +74,19 @@ pub fn build(
     })?;
 
     let mut blockers: Vec<String> = Vec::new();
+
+    // Every file Compose would merge on its own, in the same order, so that
+    // naming them explicitly does not change what the project asks for.
+    let mut compose_files = Vec::new();
+    for file in std::iter::once(&compose_file).chain(compose_overrides.iter()) {
+        match relative_name(file) {
+            Some(name) => compose_files.push(name),
+            None => blockers.push(format!(
+                "a Compose file is not inside the project: {}",
+                text::escape_path(file)
+            )),
+        }
+    }
     let default_services: Vec<&ComposeService> = report.model.default_services().collect();
     let services: Vec<String> = default_services
         .iter()
@@ -110,6 +123,7 @@ pub fn build(
         project_path: text::escape_path(&project.root),
         digest: String::new(),
         kind: "compose".to_owned(),
+        compose_files,
         services,
         ports,
         resources,
@@ -121,6 +135,19 @@ pub fn build(
     };
     plan.digest = digest(&plan)?;
     Ok(plan)
+}
+
+/// A Compose file's path as it will be named inside the sandbox. Anything
+/// absolute or climbing out of the project is refused rather than repaired.
+fn relative_name(path: &std::path::Path) -> Option<String> {
+    if path.is_absolute() {
+        return None;
+    }
+    let name = path.to_str()?;
+    if name.is_empty() || name.split('/').any(|part| part == ".." || part.is_empty()) {
+        return None;
+    }
+    Some(name.to_owned())
 }
 
 /// A stable hash of everything in the plan but the hash itself. An approval
@@ -258,6 +285,7 @@ fn plan_secrets(project: &Project, blockers: &mut Vec<String>) -> Result<Vec<Sec
                 (SecretRoute::Proxy, Some(bound_host.as_str().to_owned()))
             }
             Delivery::Injected => (SecretRoute::Injected, None),
+            Delivery::InjectedFile => (SecretRoute::InjectedFile, None),
             Delivery::BuildSecret => (SecretRoute::BuildSecret, None),
         };
         plans.push(SecretPlan {

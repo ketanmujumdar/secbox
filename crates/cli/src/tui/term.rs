@@ -82,9 +82,13 @@ impl Drop for SavedSettings {
 /// The portable way to ask is to ask the terminal: put the cursor far past
 /// the bottom right, where it stops at the real corner, then ask where it is.
 /// A terminal that does not answer gets the fallback.
-pub fn size(input: &mut dyn BufRead, out: &mut dyn Write) -> (u16, u16) {
+pub fn size(
+    env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+) -> (u16, u16) {
     const FALLBACK: (u16, u16) = (80, 24);
-    if let (Ok(columns), Ok(rows)) = (var("COLUMNS"), var("LINES")) {
+    if let (Some(columns), Some(rows)) = (number(env, "COLUMNS"), number(env, "LINES")) {
         if columns >= 40 && rows >= 10 {
             return (columns, rows);
         }
@@ -95,11 +99,11 @@ pub fn size(input: &mut dyn BufRead, out: &mut dyn Write) -> (u16, u16) {
     }
 }
 
-fn var(name: &str) -> Result<u16, ()> {
-    std::env::var(name)
-        .map_err(|_| ())?
-        .parse::<u16>()
-        .map_err(|_| ())
+/// The environment is read through the caller's own lookup, never the
+/// process's. A test that set a real variable here would race every other
+/// test in the binary, because the environment is shared by all of them.
+fn number(env: &dyn Fn(&str) -> Option<std::ffi::OsString>, name: &str) -> Option<u16> {
+    env(name)?.to_str()?.parse().ok()
 }
 
 fn ask(input: &mut dyn BufRead, out: &mut dyn Write) -> Option<(u16, u16)> {
@@ -132,32 +136,34 @@ fn ask(input: &mut dyn BufRead, out: &mut dyn Write) -> Option<(u16, u16)> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::io::Cursor;
 
-    fn size_with(reply: &str) -> (u16, u16) {
-        let mut input = Cursor::new(reply.as_bytes().to_vec());
+    fn size_with(columns: Option<&str>, rows: Option<&str>) -> (u16, u16) {
+        let columns = columns.map(OsString::from);
+        let rows = rows.map(OsString::from);
+        let env = |name: &str| match name {
+            "COLUMNS" => columns.clone(),
+            "LINES" => rows.clone(),
+            _ => None,
+        };
+        let mut input = Cursor::new(Vec::new());
         let mut out: Vec<u8> = Vec::new();
-        super::size(&mut input, &mut out)
+        super::size(&env, &mut input, &mut out)
     }
 
     #[test]
     fn the_environment_is_used_when_it_gives_a_usable_size() {
-        std::env::set_var("COLUMNS", "120");
-        std::env::set_var("LINES", "40");
-        assert_eq!(size_with(""), (120, 40));
-        std::env::remove_var("COLUMNS");
-        std::env::remove_var("LINES");
+        assert_eq!(size_with(Some("120"), Some("40")), (120, 40));
     }
 
-    /// A size too small to draw in, and a terminal that says nothing, both
-    /// have to end in the fallback rather than a wait.
+    /// Anything unusable, and anything the terminal will not answer, has to
+    /// end in the fallback rather than a wait.
     #[test]
     fn an_unusable_size_falls_back_without_waiting() {
-        std::env::set_var("COLUMNS", "10");
-        std::env::set_var("LINES", "4");
-        assert_eq!(size_with(""), (80, 24));
-        std::env::remove_var("COLUMNS");
-        std::env::remove_var("LINES");
-        assert_eq!(size_with(""), (80, 24));
+        assert_eq!(size_with(Some("10"), Some("4")), (80, 24));
+        assert_eq!(size_with(None, None), (80, 24));
+        assert_eq!(size_with(Some("nonsense"), Some("40")), (80, 24));
+        assert_eq!(size_with(Some("120"), None), (80, 24));
     }
 }

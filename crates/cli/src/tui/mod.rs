@@ -167,7 +167,7 @@ pub fn run(deps: &mut Deps) -> i32 {
 }
 
 fn draw(deps: &mut Deps, model: &Model) {
-    let (width, height) = term::size(deps.input, deps.out);
+    let (width, height) = term::size(deps.env, deps.input, deps.out);
     let rows = view::render(model, width as usize, height as usize);
     let fixed = has_fixed_colours(deps);
     let mut out = String::from("\x1b[H");

@@ -396,6 +396,44 @@ impl Engine for MsbEngine {
         Ok(end)
     }
 
+    fn exec_with_input(
+        &self,
+        name: &SandboxName,
+        request: &ExecRequest,
+        input: &[u8],
+    ) -> Result<ExecOutput> {
+        let args = argv::exec_with_input(name, request)?;
+        self.require_running(name)?;
+        let limit = request.timeout.unwrap_or(self.timeout) + EXEC_MARGIN;
+        let done = process::run_with_input(
+            &self.binary,
+            &args,
+            &self.env(),
+            limit,
+            "msb exec",
+            &Chain(self.redactor.as_ref(), &self.secret_redactor),
+            Some(zeroize::Zeroizing::new(input.to_vec())),
+        )?;
+        if done.stderr.contains(EXEC_TIMEOUT_MARKER) {
+            return Err(EngineError::Timeout {
+                operation: "msb exec".to_owned(),
+                seconds: limit.as_secs().saturating_sub(EXEC_MARGIN.as_secs()),
+            });
+        }
+        let Some(code) = done.status.code() else {
+            return Err(EngineError::CommandFailed {
+                operation: "msb exec".to_owned(),
+                code: None,
+                stderr: done.stderr.trim().to_owned(),
+            });
+        };
+        Ok(ExecOutput {
+            code,
+            stdout: done.stdout,
+            stderr: done.stderr,
+        })
+    }
+
     fn exec_detached(&self, name: &SandboxName, request: &ExecRequest) -> Result<String> {
         let args = argv::exec_detached(name, request)?;
         self.require_running(name)?;
@@ -973,6 +1011,44 @@ touch "$(dirname "$0")/ran""#,
         let location = stub.engine().location().unwrap();
         assert_eq!(location.binary, stub.binary);
         assert_eq!(location.home, PathBuf::from("/nonexistent/h"));
+    }
+
+    #[test]
+    fn input_reaches_the_command_without_appearing_in_its_arguments() {
+        let stub = running_stub(
+            r#"cat > "$(dirname "$0")/stdin"; printf '%s\n' "$@" > "$(dirname "$0")/args""#,
+        );
+        let out = stub
+            .engine()
+            .exec_with_input(
+                &name(),
+                &ExecRequest::new(["sh", "-c", "cat > /run/x"]),
+                b"sk-fake-value",
+            )
+            .unwrap();
+        assert_eq!(out.code, 0);
+        assert_eq!(
+            fs::read_to_string(stub.dir.join("stdin")).unwrap(),
+            "sk-fake-value"
+        );
+        let args = fs::read_to_string(stub.dir.join("args")).unwrap();
+        assert!(!args.contains("sk-fake-value"), "{args}");
+        // The flag that closes standard input must not be there.
+        assert!(!args.contains("--no-stdin"), "{args}");
+    }
+
+    #[test]
+    fn input_is_refused_for_a_sandbox_that_is_not_running() {
+        let stub = Stub::new(
+            r#"if [ "$1" = status ]; then echo '{"status":"Stopped"}'; exit 0; fi
+touch "$(dirname "$0")/ran""#,
+        );
+        assert!(matches!(
+            stub.engine()
+                .exec_with_input(&name(), &ExecRequest::new(["x"]), b"secret"),
+            Err(EngineError::InvalidState { .. })
+        ));
+        assert!(!stub.dir.join("ran").exists());
     }
 
     #[test]

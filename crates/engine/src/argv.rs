@@ -192,6 +192,22 @@ fn exec_options(args: &mut Vec<String>, request: &ExecRequest) -> Result<()> {
     Ok(())
 }
 
+/// Like [`exec`], but leaves standard input open so the caller can write to
+/// it. Used to hand a secret to the guest without it appearing in any
+/// argument list.
+pub fn exec_with_input(name: &SandboxName, request: &ExecRequest) -> Result<Vec<String>> {
+    let mut args = strings(["exec", "--no-tty"]);
+    exec_options(&mut args, request)?;
+    if let Some(timeout) = request.timeout {
+        args.push("--timeout".to_owned());
+        args.push(format!("{}s", timeout.as_secs().max(1)));
+    }
+    args.push(name.as_str().to_owned());
+    args.push("--".to_owned());
+    args.extend(request.command.iter().cloned());
+    Ok(args)
+}
+
 pub fn exec(name: &SandboxName, request: &ExecRequest) -> Result<Vec<String>> {
     let mut args = strings(["exec", "--no-stdin", "--no-tty"]);
     exec_options(&mut args, request)?;
