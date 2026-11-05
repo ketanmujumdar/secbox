@@ -48,6 +48,41 @@ fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
+/// The only variables the daemon is started with.
+///
+/// The app may have been launched with anything in its environment: cloud
+/// keys, tokens, or a variable naming some other program as the engine. The
+/// daemon holds the secrets and runs the engine, so it gets only what it
+/// reads, and a fixed search path. It clears its children's environments
+/// again on its own, so nothing here reaches a sandbox either way.
+///
+/// - `HOME`, and the variable that moves the state folder, to find its state.
+/// - The variable naming the engine binary, so a person who set it by hand
+///   gets the same engine as when they start the daemon themselves.
+/// - `USER`, `LOGNAME`, `TMPDIR`, and on Linux the session bus and runtime
+///   folder, which the system keychain needs.
+pub fn daemon_env(env: &dyn Fn(&str) -> Option<OsString>) -> Vec<(String, OsString)> {
+    let mut keep: Vec<String> = [
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "TMPDIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_RUNTIME_DIR",
+    ]
+    .iter()
+    .map(|k| (*k).to_owned())
+    .collect();
+    keep.push(hoststate::home_override_var());
+    keep.push(hoststate::engine_bin_var());
+    let mut vars: Vec<(String, OsString)> = keep
+        .into_iter()
+        .filter_map(|key| env(&key).map(|value| (key, value)))
+        .collect();
+    vars.push(("PATH".to_owned(), OsString::from("/usr/bin:/bin")));
+    vars
+}
+
 /// Starts the daemon in the background and waits briefly for it to answer.
 /// Its output goes to `log`, which is created owner-only.
 pub fn spawn_daemon(binary: &Path, log: &Path, client: &Client) -> Result<(), String> {
@@ -64,6 +99,8 @@ pub fn spawn_daemon(binary: &Path, log: &Path, client: &Client) -> Result<(), St
         .try_clone()
         .map_err(|e| format!("cannot open the daemon log: {}", e.kind()))?;
     let mut child = Command::new(binary)
+        .env_clear()
+        .envs(daemon_env(&|key| std::env::var_os(key)))
         .stdin(Stdio::null())
         .stdout(file)
         .stderr(err)
@@ -156,6 +193,30 @@ pub fn restart_daemon(binary: &Path, log: &Path, client: &Client) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_daemon_gets_only_the_variables_it_reads() {
+        let host = |key: &str| -> Option<OsString> {
+            match key {
+                "HOME" => Some("/home/me".into()),
+                "AWS_SECRET_ACCESS_KEY" => Some("leak-me".into()),
+                "GITHUB_TOKEN" => Some("leak-me".into()),
+                "PATH" => Some("/tmp/evil:/usr/bin".into()),
+                k if k == hoststate::engine_bin_var() => Some("/opt/engine/msb".into()),
+                _ => None,
+            }
+        };
+        let vars = daemon_env(&host);
+        let keys: Vec<&str> = vars.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"HOME"));
+        assert!(keys.contains(&hoststate::engine_bin_var().as_str()));
+        assert!(!keys.contains(&"AWS_SECRET_ACCESS_KEY"));
+        assert!(!keys.contains(&"GITHUB_TOKEN"));
+        assert!(vars.iter().all(|(_, v)| v != "leak-me"));
+        // The app's own search path is never passed on.
+        let path: Vec<&OsString> = vars.iter().filter(|(k, _)| k == "PATH").map(|(_, v)| v).collect();
+        assert_eq!(path, vec![&OsString::from("/usr/bin:/bin")]);
+    }
 
     #[test]
     fn the_copy_beside_the_app_comes_before_the_path() {
