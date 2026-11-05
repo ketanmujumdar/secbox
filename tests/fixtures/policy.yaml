@@ -1,0 +1,12 @@
+# A sample egress policy: npm reads, and one AI provider endpoint.
+version: 1
+rules:
+  - name: npm-read-only
+    host: registry.npmjs.org
+    ports: [443]
+    methods: [GET, HEAD]
+  - name: anthropic-messages
+    host: api.anthropic.com
+    ports: [443]
+    methods: [POST]
+    path_prefix: /v1/messages

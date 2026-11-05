@@ -1,0 +1,7 @@
+# A repo asking for far more than any laptop has. Repo values are requests only.
+resources:
+  memory: 999T
+  cpus: 4000
+  disk: 999T
+  build:
+    memory: 999T

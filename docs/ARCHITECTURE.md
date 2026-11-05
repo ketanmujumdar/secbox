@@ -1,0 +1,343 @@
+# secbox: Architecture and Security Design
+
+As of Nov 5, 2026. Exported from the [hosted design doc](https://claude.ai/artifact/R7gQPbn5mzGaNnKknPt34Z). `secbox` is a working name, see "Changing the name" in the README.
+
+## Summary
+
+secbox runs a project and its AI agent inside a disposable microVM, so a compromised dependency or tricked agent stays away from the host.
+
+The core decision is one small VM per project, with its own kernel and Docker daemon. Build steps, runtime traffic and Compose then sit behind one boundary, and most projects run unmodified.
+
+The design assumes everything inside the VM is compromised. Secrets, policy, approvals and Git pushes stay on the host, and the VM can only make narrow requests for them.
+
+**Status:** RAM figures are estimates, and the engine's ability to run Compose is unproven until the spike in `docs/spikes/` says otherwise.
+
+## Why now
+
+Recent npm attacks run at install time, steal developer credentials and use them to spread. A locked inbound port does nothing against that, so secbox has to control outbound traffic and what the code can reach.
+
+| Date (2026) | Incident | What it means for secbox |
+| --- | --- | --- |
+| Aug 4 | [ChainDrop](https://www.microsoft.com/en-us/security/blog/2026/08/04/chaindrop-supply-chain-compromise-anatomy-self-propagating-worm/): more than 400 packages, spread by a preinstall hook and stolen publishing tokens | Provenance alone is not proof of safety, as packages can carry valid provenance |
+| Aug 4 | Same report: stolen GitHub credentials inject `.claude/settings.json` and `.vscode/tasks.json` into repos | Files coming out of the sandbox need review |
+| Jul 30 | [CVE-2026-58043](https://cvefeed.io/vuln/detail/CVE-2026-58043): Node.js Permission Model over-grants file access, CVSS 8.4, on 22.x, 24.x and 26.x | In-process permission flags are not a sufficient boundary |
+| May 20 | [Mini Shai-Hulud](https://www.microsoft.com/en-us/security/blog/2026/05/20/mini-shai-hulud-compromised-antv-npm-packages-enable-ci-cd-credential-theft/): an @antv maintainer account compromised, targeting GitHub, AWS, Vault, npm, Kubernetes and 1Password credentials | Host credentials must never be reachable from project code |
+
+Docker Desktop's own boundary has had gaps too. [Releases 4.68.0 and 4.71.0](https://docs.docker.com/desktop/release-notes/) addressed CVE-2026-5817 and CVE-2026-5843, both container-to-host code execution in Docker Model Runner.
+
+## Existing tools
+
+Of the tools checked, none combines an open-source laptop workflow with Compose, a secrets UI, reviewed rebuilds and bring-your-own AI. This was not an exhaustive market scan.
+
+| Tool | License | Isolation | Compose | Main gap for this goal |
+| --- | --- | --- | --- | --- |
+| [Docker Sandboxes](https://www.docker.com/blog/why-microvms-the-architecture-be) | [Proprietary runtime](https://microsandbox.dev/compare/docker) | MicroVM per agent session, private Docker daemon | Yes, per Docker | Closed source and built around coding agents |
+| [microsandbox](https://github.com/superradcompany/microsandbox) | Apache 2.0, beta | MicroVM with its own kernel, allowed-host network rules, secrets kept out of the VM | [Runs `dockerd` inside the VM](https://docs.microsandbox.dev/how-to/docker/docker-in-sandbox), Compose not documented | A runtime, not a full project workflow |
+| [AerolVM](https://github.com/aerol-ai/microvm/) | MIT | Containers by default, Firecracker optional, per-sandbox egress control | Not confirmed | A sandbox platform aimed at Linux servers |
+
+microsandbox is the first engine to test, because it may save building the VM and proxy layers. Docker Sandboxes is the benchmark to match on developer experience.
+
+## Architecture
+
+Each project gets a microVM with its own kernel and Docker daemon, while the host daemon keeps secrets, policy and Git credentials.
+
+![secbox architecture: host, one project VM, and outside services](images/architecture.png)
+
+The VM can only send narrow requests to the daemon, and its network traffic must pass the gateway. A person approves anything that loosens policy or leaves through Git.
+
+### What it runs on
+
+A microVM uses the machine's own CPU through a hypervisor built into the OS, with a minimal Linux guest instead of a full desktop OS. Docker takes [the same general approach](https://www.docker.com/blog/why-microvms-the-architecture-be), using Apple's Hypervisor.framework and Linux KVM.
+
+| Host | OS hypervisor | Requirement |
+| --- | --- | --- |
+| macOS | Hypervisor or Virtualization framework | Apple Silicon for microsandbox |
+| Linux | KVM | `/dev/kvm`; cloud VMs need nested virtualization |
+
+On Apple Silicon the guest runs arm64 Linux, so x86-only images need emulation, which is slower and can be unreliable.
+
+### Stack
+
+The daemon, CLI and desktop backend use Rust, which gives memory safety and a small binary with no runtime to install. Speed is a minor benefit, since VM boot and Docker builds dominate the wait.
+
+Crates are a supply chain risk too, because `build.rs` runs at compile time. The project keeps dependencies few, commits `Cargo.lock`, and checks them in CI with `cargo-deny` and `cargo-vet`. The desktop front end stays small and pinned for the same reason.
+
+## Security model
+
+The host is trusted and everything in the VM is treated as compromised. Each control below limits what that compromise can reach, and none of them removes the risk completely.
+
+| Threat | Control | What remains |
+| --- | --- | --- |
+| Malicious package at install or build | Runs inside the VM, with no host files or credentials | It can read anything placed in the VM |
+| Data sent out | Deny-by-default egress, with allowlists by host and HTTP method | Leaks through an allowed host |
+| Worm publishing to npm | npm allowed read-only, so publish requests are blocked | Other allowlisted write paths |
+| Stolen API key | Proxy adds the key on the host, so the VM holds a placeholder | Misuse through the proxy while running |
+| Files planted for the host | No shared folder; exports need review, with risky paths flagged | Malicious code you approve |
+| Tricked AI agent | Agent runs in the VM and cannot change policy, read vault secrets or push | It can still damage the sandbox and propose bad code |
+| VM or hypervisor escape | One VM per project, patched engine, small host interface | A zero-day could still reach the host |
+| Attack on the secbox UI | No local web port, plain-text rendering, system approval prompts | Bugs in the desktop app or daemon |
+
+The tool can't judge whether code is safe. It keeps a compromise contained until a person approves something leaving the sandbox.
+
+**Browser path:** a sandboxed web app opened on the host runs its JavaScript in the host browser, outside the VM's network rules. It can make requests from there and send out what the user types into the page. A separate browser profile limits what it can reach.
+
+### Seeing what happens
+
+The gateway reports every network decision to the host daemon, so a compromised VM can't hide or edit that record. Query strings are dropped, and secret values never appear.
+
+- **Blocked requests:** `secbox net blocked -f` follows them live, with service, host, method and the rule responsible. `secbox up` and `status` show a count.
+- **All requests:** `secbox net log` also shows allowed requests, which is how misuse of an allowed host is spotted.
+- **Inside the app:** blocked HTTP requests get a clear error naming the blocked host and the command to review it, so a failure doesn't look like a random network bug.
+- **Notifications:** an optional desktop notification reports new blocked hosts, grouped so it can't flood the user.
+- **Allowing a host:** `secbox net allow` shows the exact rule and asks for system approval. An AI agent can only file a request, with `request_network`.
+
+A blocked encrypted request shows only its host and port unless it passes through the intercepting proxy.
+
+## Compose and non-Docker projects
+
+Each project gets one VM, and its whole Compose stack runs on that VM's private daemon. Services still reach each other by name, but not other projects or the host.
+
+**Compose files are untrusted.** The daemon inside the VM cannot see host paths, so a host mount, the host socket or `privileged` affects only the VM. secbox still flags these requests before starting. Published ports are forwarded to `127.0.0.1` on the host, and only when approved.
+
+**Within a project, compromise can spread.** If `app` is compromised, it can attack `db` on the same network. Separate networks and narrowly assigned secrets reduce this.
+
+### Test case: demo_shop
+
+`demo_shop` is a useful first test: 7 default services, with `worker` running 2 replicas, plus Documenso as an optional profile. The API is Go and the web app is Next.js.
+
+| Finding | Why it matters | secbox behavior |
+| --- | --- | --- |
+| `npm ci` runs in `web/Dockerfile`, with 638 locked npm packages | The dependency install happens during a build | Build inside the VM, with registry access only |
+| Only 1 locked package has an install script (`unrs-resolver`) | Install-script risk is small today | Flag any new install script on rebuild |
+| 7 ports published on all interfaces, including Postgres with `crm:crm` | Other devices on the network may reach them today | Forward only to `127.0.0.1` |
+| `.env` at the repo root | Compose would load it automatically | Leave out of the snapshot |
+| `seed`, `api` and `worker` share one environment block | One compromised service could see all of those secrets | Assign secrets per service |
+| Fakes run when Airwallex and Documenso keys are absent | The stack should start with no real secrets | Default to no secrets |
+| Three repo files bind-mounted read-only, one only with Documenso | These need to exist in the VM | Resolve them from the snapshot |
+| Documenso and WebAuthn expect specific `localhost` addresses | Remapping ports could break sign-in and signing | Keep the same port numbers |
+
+### Projects without Docker
+
+secbox uses the first match in this order, and the user approves anything generated:
+
+1. `docker-compose.yml` or `compose.yaml`
+2. `Dockerfile`
+3. `devcontainer.json`
+4. Manifests such as `package.json`, `go.mod` or `pyproject.toml`, mapped to a base image
+5. An AI-drafted setup, if the project is still unclear
+
+Work that needs macOS, such as Xcode builds, can't run in a Linux VM. secbox should refuse clearly rather than imply it is protected.
+
+## Secrets and AI sign-in
+
+Secret values live in macOS Keychain or Linux Secret Service, never in the repo or a plaintext secbox file. The daemon parses `.env` imports as data and never runs them through a shell. Values stay masked, and the audit log records names only.
+
+Each secret is assigned to specific services and uses one delivery route:
+
+| Type | Example | How it arrives | Remaining risk |
+| --- | --- | --- | --- |
+| API key | `ANTHROPIC_API_KEY` | VM holds a placeholder, proxy adds the real key for one bound host | Misuse through the proxy while running |
+| App-read secret | `ENCRYPTION_KEY` | Injected at start into named services only | That service can steal it |
+| Build secret | Private registry token | BuildKit secret, opt-in per build | The receiving build step can steal it |
+
+Proxy injection means HTTPS interception, using a per-sandbox CA that only that VM trusts.
+
+### AI sign-in
+
+Login happens in the normal browser on the host, and the VM never needs one. The choice decides where the credential ends up:
+
+| Method | Sign-in | Real credential lives | If the VM is compromised | v1 |
+| --- | --- | --- | --- | --- |
+| API key | `secbox ai login` | Host keychain | Key can't be read, but can be misused while running | Yes |
+| Local model | None | Nowhere | No AI credential to steal | Yes |
+| Subscription, in VM | `/login` or [`codex login --device-auth`](https://developers.openai.com/codex/auth) | Inside the VM | Token can be stolen until revoked | Yes, with a warning |
+| Subscription, through proxy | Sign in through secbox on the host | Host, placeholder tokens in the VM | Same as API key | Later, after a terms check |
+
+Docker's [`sbx/claude-kit` listing](https://hub.docker.com/r/sbx/claude-kit) describes the proxy pattern with sentinel tokens, though it also says the kit "does not load yet". Provider terms for this pattern have not been checked.
+
+Codex device login is in beta and must be enabled in ChatGPT security settings first. OpenAI documents copying `~/.codex/auth.json` as a fallback but says to treat it like a password, so secbox should not automate that copy.
+
+## MCP and prompt injection
+
+No tool can guarantee an AI won't be influenced, because anything it reads can contain instructions. secbox assumes the agent can be tricked and limits what a tricked agent can do.
+
+**Agents run inside the VM in v1.** A tricked agent then has only sandbox powers. An agent on the host may also have the user's shell and files, which secbox can't fully restrict, so host-side use would be a later, clearly labeled weaker mode.
+
+| Capability | MCP tool | Who can do it |
+| --- | --- | --- |
+| Run commands, edit files, read logs | `exec`, `read_file`, `write_file`, `logs` | Agent, inside the VM |
+| Rebuild the stack | `rebuild` | Agent, under the rebuild rules |
+| Propose code for export | `propose_change` | Agent proposes, person approves |
+| Ask for a new host | `request_network` | Agent asks, person approves |
+| Read vault secrets | None | Daemon only, for delivery by the rules above |
+| Change policy | None | Person, with a system prompt |
+| Push to a remote | None | Git broker, after approval |
+
+The VM reaches the host daemon over vsock, with no host port and a fixed set of narrow requests. Approval prompts come from the host OS, so nothing in the VM can click them.
+
+**External MCP servers** are treated as outside services:
+
+- Each server needs an allowlisted host and tool list, with credentials held by the proxy.
+- Tool descriptions are pinned by hash, and a change needs new approval.
+- `npx`-launched servers run sandboxed, since they are npm code too.
+- Tool output is untrusted input to the agent. Labeling it helps, but the permission limits are what actually protect the host.
+
+## Git
+
+The VM holds no Git credentials, SSH agent or push remote, so the agent can commit but can't publish.
+
+![Git flow across the remote, the host broker and the VM](images/git-flow.png)
+
+The host never mounts or runs Git inside a `.git` written by the sandbox. Hooks, `core.fsmonitor` and `core.sshCommand` could otherwise execute on the host.
+
+**Flagged for extra review:** `.github/workflows`, `.vscode`, `.claude`, `CLAUDE.md`, `AGENTS.md`, `.gitmodules`, `.gitattributes`, package scripts, lockfiles, Dockerfiles, symlinks, binaries and likely secrets. [ChainDrop](https://www.microsoft.com/en-us/security/blog/2026/08/04/chaindrop-supply-chain-compromise-anatomy-self-propagating-worm/) injected files under the `.claude` and `.vscode` paths.
+
+**Rules enforced outside secbox:** branch protection blocks direct pushes to `main`, and the token excludes workflow permissions. A broker bug then still can't bypass review.
+
+**Commit identity:** commits are attributed to the agent, and the user's signing key stays out of the VM.
+
+**Remaining risks:**
+
+- Subtly malicious code that gets approved can still run later on the host or in CI.
+- Importing Git data on the host is attack surface. Validating bundles in a throwaway VM first would reduce it.
+
+## Rebuild
+
+Every rebuild runs untrusted code again, so it follows the same steps each time:
+
+1. Take a fresh snapshot from a chosen git commit, or explicitly include uncommitted changes.
+2. Flag changes to the lockfile, Dockerfile, Compose file, install scripts and requested hosts.
+3. Build with no runtime secrets and registry-only network access.
+4. Re-check policy, start the new version, and keep the previous image for rollback.
+
+| Action | Keeps build cache | Keeps data | Use it when |
+| --- | --- | --- | --- |
+| Restart | Yes | Yes | The code has not changed |
+| Rebuild | Yes | Yes | Normal code or dependency changes |
+| Clean rebuild | No | Yes | The cache may be stale or suspect |
+| Reset data | Yes | No | The database or uploads need a fresh start |
+| Destroy | No | No | A compromise is suspected, or the work is finished |
+
+After a suspected compromise, use Destroy and rotate every secret that sandbox received. Build caches and data volumes can both carry a compromise.
+
+## Mock designs
+
+The CLI and desktop app are two clients of the same daemon, so neither has extra powers. All values below are samples, and the mockups are not final visual design.
+
+### CLI
+
+```text
+$ secbox doctor
+Hypervisor   ok
+Free memory  ok
+Suggested    6 GB memory, 4 CPUs, 30 GB disk
+
+$ secbox up --memory 6G --cpus 4
+Creating VM for demo_shop
+Snapshot     commit 8f3c2a1, .env left out
+Building     registry-only network, no runtime secrets
+Ready        http://127.0.0.1:3000
+
+$ secbox net blocked
+api  203.0.113.7:443         host not on the allowlist
+web  PUT registry.npmjs.org  npm is read-only
+
+$ secbox diff
+FLAG  .claude/settings.json  new hook runs on the host
+FLAG  web/package.json       new postinstall script
+
+$ secbox export --commit 8f3c2a1
+Waiting for Touch ID...
+```
+
+Secrets are entered with `secbox secrets set NAME`, using a hidden prompt so values stay out of shell history. Scripts and agents can't approve their own requests. On a headless Linux server, approval uses a passphrase instead of Touch ID.
+
+### Retro terminal UI (v2 idea)
+
+Running the CLI with no arguments could open a full-screen, 1990s-style terminal UI, with menus and panels for projects, logs, secrets, blocked traffic and Git review. It would be one more client of the same daemon, so it gains no extra powers. It needs no web view or front-end toolchain, so it should be weighed against the Tauri app. All sandbox text it shows must be escaped.
+
+### Desktop UI
+
+The app talks to the daemon over an owner-only Unix socket and has no local web port. Browsers don't isolate cookies by port, so a compromised app on `localhost:3000` could otherwise target a UI on another local port. Logs, filenames and AI reports display as plain text.
+
+![Desktop UI mockup: project overview with sample values](images/ui-overview.png)
+
+The overview shows the RAM, CPU and disk limits next to the services using them. Blocked traffic has its own panel, so a failed request can be traced directly to the rule that stopped it.
+
+![Desktop UI mockup: secrets and Git review with sample values](images/ui-secrets-git.png)
+
+The secrets screen shows where each secret goes, but not its value. The review screen puts files that could affect the host first, and the approve button names the exact commit.
+
+## Debugging and editors
+
+v1 has no SSH server and no editor connection into the VM. Debugging uses `secbox shell`, `secbox exec`, and `secbox logs` through the daemon, so the VM needs no open port or login keys.
+
+Editors stay on the host and work on the user's normal checkout. Host changes reach the VM one way, through a new snapshot or sync, and VM changes return only through `diff` and `export`. Commands such as `npm install` go through `secbox exec`, because the VS Code terminal runs on the host.
+
+secbox does not build or ship an editor or an editor plug-in. VS Code Remote-SSH is not offered, because a compromised remote has been reported to reach a local terminal on the host.
+
+`secbox check` verifies editor settings and project files, and `secbox open` runs that check before launching the editor:
+
+- **Checks:** a list of named checks covers `task.allowAutomaticTasks`, Workspace Trust, `runOn: folderOpen` tasks, workspace settings that change these, and hooks such as those in `.claude/settings.json`.
+- **Control:** the user turns each check on or off in a user-level file in the state folder. A repo can't change these choices, so a hostile `secbox.yaml` can't disable a check.
+- **Overrides:** opening despite a failed check needs an explicit flag and is recorded in the audit log.
+- **Fixes:** `secbox check --fix` changes user settings only with consent and keeps a backup. It does not change project files.
+- **Limit:** opening a folder another way skips the gate, so this makes the safe path easier but is not a security boundary.
+
+App, Docker and VM logs are written inside the VM and could be faked by a compromised VM. Blocked-traffic and audit logs are recorded by the host daemon. `logs` strips terminal control codes and masks known secret values, though an encoded secret can still slip through. An interactive shell must pass control codes through, so it can't have the same protection.
+
+## RAM and CPU
+
+Users set RAM, CPU and disk per project, and those limits are enforced on the VM. They protect the laptop as well, since a runaway build or crypto miner can only use its own allocation.
+
+```yaml
+# secbox.yaml (committed to the repo, no secret values)
+resources:
+  memory: 6G
+  cpus: 4
+  disk: 30G
+  build:
+    memory: 8G    # optional higher limit during builds
+```
+
+- **Defaults:** `secbox doctor` suggests a size from the project and the host's free memory. A local user setting can lower or raise it without editing the repo.
+- **Repo values are requests:** a repo can't grant itself more than the user's maximum, so a hostile `secbox.yaml` can't take over the machine.
+- **Host reserve:** secbox refuses to start if the total would leave too little for the host.
+- **Per service:** Compose memory and CPU limits still apply inside the VM.
+- **Changing a limit:** the UI and CLI apply it on restart. Live resizing depends on the engine and needs testing.
+
+### Minimum RAM
+
+These are unmeasured estimates for `demo_shop`. `secbox doctor` would replace them with each project's recorded peak.
+
+| Usage | Estimated RAM |
+| --- | --- |
+| VM, Docker and gateway | 0.5 to 1 GB |
+| `demo_shop` running | 1 to 2 GB |
+| `demo_shop` building, total | 4 to 6 GB |
+| Suggested host | 8 GB minimum, 16 GB recommended |
+
+For scale, microsandbox's [Docker guide](https://docs.microsandbox.dev/how-to/docker/docker-in-sandbox) uses `--memory 2G` in its example and says to increase it for larger builds.
+
+## Open decisions
+
+| Decision | Recommendation | Why |
+| --- | --- | --- |
+| One VM per project? | Yes | Builds and runtime share one boundary, at an estimated 1 GB overhead |
+| Agents only inside the VM in v1? | Yes | A tricked agent gets only sandbox powers |
+| API key plus in-VM subscription login in v1? | Yes, with a warning | Most developers expect to use a subscription |
+| CLI first, desktop app next? | Yes | Proves the security core first, on the same daemon API |
+| Tauri for the desktop app? | Yes | Needs no local port, and shares Rust with the daemon |
+| Final name | Keep `secbox` for now | [An openSUSE package named `secbox`](https://build.opensuse.org/package/meta/security/secbox) already exists, so check before release |
+
+## Sources
+
+- [Microsoft: ChainDrop](https://www.microsoft.com/en-us/security/blog/2026/08/04/chaindrop-supply-chain-compromise-anatomy-self-propagating-worm/)
+- [Microsoft: Mini Shai-Hulud](https://www.microsoft.com/en-us/security/blog/2026/05/20/mini-shai-hulud-compromised-antv-npm-packages-enable-ci-cd-credential-theft/)
+- [CVE-2026-58043 on cvefeed](https://cvefeed.io/vuln/detail/CVE-2026-58043)
+- [Docker Desktop release notes](https://docs.docker.com/desktop/release-notes/)
+- [Docker: Why MicroVMs](https://www.docker.com/blog/why-microvms-the-architecture-be)
+- [Docker Hub: `sbx/claude-kit`](https://hub.docker.com/r/sbx/claude-kit)
+- [microsandbox repository](https://github.com/superradcompany/microsandbox), [comparison with Docker](https://microsandbox.dev/compare/docker) and [Docker guide](https://docs.microsandbox.dev/how-to/docker/docker-in-sandbox)
+- [AerolVM](https://github.com/aerol-ai/microvm/)
+- [OpenAI Codex authentication](https://developers.openai.com/codex/auth)

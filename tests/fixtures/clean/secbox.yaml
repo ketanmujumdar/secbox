@@ -1,0 +1,4 @@
+resources:
+  memory: 2G
+  cpus: 1
+  disk: 5G

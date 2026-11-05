@@ -1,0 +1,5 @@
+target/
+.tools/
+.spike/
+.DS_Store
+.env

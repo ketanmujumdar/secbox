@@ -1,0 +1,32 @@
+# A deliberately risky Compose file for testing `check`. Do not run it.
+# It is only ever read as data, and every value in it is fake.
+services:
+  web:
+    image: nginx:latest
+    privileged: true
+    ports:
+      - "8080:80"
+    volumes:
+      - /:/host
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.env:/app/.env
+    environment:
+      SHARED_TOKEN: not-a-real-token
+  api:
+    build:
+      context: ..
+    network_mode: host
+    pid: host
+    cap_add:
+      - SYS_ADMIN
+    env_file: .env
+    ports:
+      - "5432:5432"
+    environment:
+      SHARED_TOKEN: not-a-real-token
+  # The escapes below decode to a terminal escape, a bell and a bidi override.
+  "evil\e[2J\a\u202Ename":
+    image: "busybox\e[31m:latest"
+    privileged: true
+    volumes:
+      - "/etc/\e]0;owned\a:/x"
