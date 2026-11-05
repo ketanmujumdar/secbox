@@ -95,6 +95,8 @@ pub fn build(
     let secrets = plan_secrets(project, &mut blockers)?;
     let network = plan_network(project, &secrets, &mut blockers)?;
 
+    block_escapes_when_secrets_are_held(&secrets, &files.findings, &mut blockers);
+
     let findings: Vec<Finding> = files
         .findings
         .iter()
@@ -229,6 +231,62 @@ fn dockerfile_project(
         findings: report.findings,
         generated_compose: Some(generated),
     })
+}
+
+/// Settings that let a container reach past its own walls inside the VM.
+///
+/// Every service runs in the same VM, and the secrets assigned to any of them
+/// sit there on a `tmpfs`. A container that can mount the VM's folders, talk
+/// to its Docker daemon, or share its process, network or device namespaces
+/// can read another service's secrets, from the files or from that service's
+/// environment. Without secrets these only reach the VM, which is disposable,
+/// so they stay findings. With secrets they are how one hostile service takes
+/// another's keys, so a start is refused outright, with no way to approve it.
+fn is_escape(finding: &projectcheck::compose::Finding) -> bool {
+    use projectcheck::compose::{FindingKind as K, Severity};
+    match finding.kind {
+        K::Privileged
+        | K::NetworkMode
+        | K::PidMode
+        | K::IpcMode
+        | K::UsernsMode
+        | K::CgroupMode
+        | K::CapAdd
+        | K::SecurityOpt
+        | K::Device
+        | K::DockerSocket
+        | K::HostMount
+        | K::SymlinkEscape
+        | K::Weakening
+        // A shape the check cannot read could be hiding any of the above.
+        | K::Unrecognized => true,
+        // A network driver or include that may reach outside the stack.
+        K::TopLevelResource | K::Include | K::Extends => {
+            matches!(finding.severity, Severity::Critical | Severity::High)
+        }
+        // Something that could not be checked at all.
+        _ => matches!(finding.severity, Severity::Critical),
+    }
+}
+
+fn block_escapes_when_secrets_are_held(
+    secrets: &[SecretPlan],
+    findings: &[projectcheck::compose::Finding],
+    blockers: &mut Vec<String>,
+) {
+    if secrets.is_empty() {
+        return;
+    }
+    for finding in findings.iter().filter(|f| is_escape(f)) {
+        blockers.push(format!(
+            "this project has secrets, and {} could reach past its container to them: {}. Remove that setting, or remove the secrets from this project.",
+            finding
+                .service
+                .as_deref()
+                .map_or_else(|| "the Compose file".to_owned(), |s| format!("service {}", text::escape(s))),
+            text::escape(&finding.message)
+        ));
+    }
 }
 
 /// A Compose file's path as it will be named inside the sandbox. Anything

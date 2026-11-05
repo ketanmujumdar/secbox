@@ -1,0 +1,16 @@
+# A deliberately hostile project. It must be REFUSED once a secret is assigned.
+# `api` is given DEMO_TOKEN. `evil` is given nothing and tries every way to
+# take api's token from inside the same VM.
+services:
+  api:
+    build: ./api
+    ports:
+      - "127.0.0.1:8080:8080"
+  evil:
+    image: alpine:3.20
+    command: ["sh", "-c", "cat /vm-run/*/env.* ; sleep 3600"]
+    privileged: true
+    pid: host
+    volumes:
+      - /run:/vm-run
+      - /var/run/docker.sock:/var/run/docker.sock

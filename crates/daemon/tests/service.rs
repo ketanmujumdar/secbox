@@ -1238,6 +1238,23 @@ impl SecretFixture {
         self.project.path().to_string_lossy().into_owned()
     }
 
+    fn plan(&self) -> proto::PlanReport {
+        match self
+            .service
+            .handle(
+                &Request::Plan(PlanArgs {
+                    project: self.path(),
+                    source: Source::default(),
+                }),
+                &mut Quiet,
+            )
+            .unwrap()
+        {
+            Reply::Plan(plan) => *plan,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
     fn up(&self) -> Result<proto::UpReport, proto::ApiError> {
         let Reply::Plan(plan) = self
             .service
@@ -1281,7 +1298,6 @@ fn with_secret_valued(
     services: &[&str],
     value: &str,
 ) -> SecretFixture {
-    let state = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("compose.yaml"), COMPOSE).unwrap();
     std::fs::create_dir_all(project.path().join("web")).unwrap();
@@ -1291,7 +1307,17 @@ fn with_secret_valued(
         "resources:\n  memory: 4G\n  cpus: 2\n  disk: 30G\n",
     )
     .unwrap();
+    with_secret_in(project, delivery, services, value)
+}
 
+/// Any project, with `ENCRYPTION_KEY` assigned to the named services.
+fn with_secret_in(
+    project: tempfile::TempDir,
+    delivery: secrets::Delivery,
+    services: &[&str],
+    value: &str,
+) -> SecretFixture {
+    let state = tempfile::tempdir().unwrap();
     let store = Shared::default();
     let name = secrets::SecretName::new("ENCRYPTION_KEY").unwrap();
     store
@@ -1738,4 +1764,116 @@ fn other_kinds_of_project_are_still_refused() {
         "{}",
         error.message
     );
+}
+
+// The hostile demo: one service holds a secret, another tries to take it.
+
+/// A copy of a folder under `tests/fixtures`, subfolders included.
+fn copy_fixture(name: &str) -> tempfile::TempDir {
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap().flatten() {
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    let project = tempfile::tempdir().unwrap();
+    copy(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures").join(name),
+        project.path(),
+    );
+    project
+}
+
+#[test]
+fn a_service_that_could_reach_another_services_secret_stops_the_start() {
+    let f = with_secret_in(
+        copy_fixture("hostile-demo"),
+        secrets::Delivery::Injected,
+        &["api"],
+        FAKE_VALUE,
+    );
+    let plan = f.plan();
+    let blockers = plan.blockers.join("\n");
+    for expected in ["privileged", "pid", "/run", "docker.sock"] {
+        assert!(
+            plan.blockers
+                .iter()
+                .any(|b| b.contains("service evil") && b.contains(expected)),
+            "no blocker mentions {expected}:\n{blockers}"
+        );
+    }
+    // The service that holds the secret is not the one blamed.
+    assert!(!blockers.contains("service api"), "{blockers}");
+
+    let refused = f.up().expect_err("a blocked plan must not start");
+    assert!(!format!("{refused:?}").contains(FAKE_VALUE));
+    assert!(
+        f.deps.inner.engine.inputs().is_empty(),
+        "nothing may be delivered for a plan that was refused"
+    );
+}
+
+#[test]
+fn the_same_settings_without_secrets_are_findings_and_not_blockers() {
+    let f = fixture_from(copy_fixture("hostile-demo"), TestDeps::new());
+    let plan = f.plan();
+    assert!(
+        !plan.blockers.iter().any(|b| b.contains("could reach past")),
+        "{:?}",
+        plan.blockers
+    );
+    assert!(plan.findings.iter().any(|x| x.service.as_deref() == Some("evil")));
+}
+
+#[test]
+fn the_runnable_demo_starts_and_its_secret_goes_only_to_api_over_standard_input() {
+    let f = with_secret_in(
+        copy_fixture("hostile-demo-run"),
+        secrets::Delivery::Injected,
+        &["api"],
+        FAKE_VALUE,
+    );
+    assert_eq!(f.plan().blockers, Vec::<String>::new());
+    let report = f.up().unwrap();
+    assert_eq!(report.secrets.len(), 1);
+    assert_eq!(report.secrets[0].service, "api");
+    assert!(!f.calls_as_text().contains(FAKE_VALUE));
+    // Nothing allowed while it runs unless a person approved it on the host.
+    let plan = f.plan();
+    assert!(plan.network.run_hosts.is_empty(), "{:?}", plan.network.run_hosts);
+}
+
+#[test]
+fn a_dockerfile_projects_secret_reaches_its_one_service() {
+    let f = with_secret_in(
+        dockerfile_project(),
+        secrets::Delivery::Injected,
+        &["app"],
+        FAKE_VALUE,
+    );
+    assert_eq!(f.plan().blockers, Vec::<String>::new());
+    f.up().unwrap();
+    let written = f.deps.inner.engine.inputs();
+    let env = written
+        .iter()
+        .find(|(_, body)| body.contains("ENCRYPTION_KEY="))
+        .expect("no environment file was written");
+    assert_eq!(env.1, format!("ENCRYPTION_KEY={FAKE_VALUE}\n"));
+    let yaml = &written
+        .iter()
+        .find(|(_, body)| body.contains("services:") && body.contains("env_file"))
+        .expect("no override was written")
+        .1;
+    assert!(yaml.contains("\"app\""), "{yaml}");
+    // The override is merged with the generated file, which Compose finds
+    // in the work folder.
+    let calls = f.calls_as_text();
+    assert!(calls.contains("compose.yaml"), "{calls}");
+    assert!(calls.contains("override.yaml"), "{calls}");
+    assert!(!calls.contains(FAKE_VALUE));
 }
