@@ -100,6 +100,8 @@ mkdir -p ~/secbox-agent && cd ~/secbox-agent
 codex --sandbox read-only --ask-for-approval untrusted
 ```
 
+![secbox mcp setup codex printing the commands to add the server to Codex](../images/cli/mcp-setup-codex.png)
+
 **This is weaker than the Claude Code setup.** Codex has no setting that turns its shell off. `--sandbox read-only` stops its commands from writing on the host, but they can still read any file your user can, including the project on the host and your home folder. `--ask-for-approval untrusted` asks you before each command that is not a known-safe read. Read what it asks before saying yes.
 
 ## Any other MCP client

@@ -8,6 +8,10 @@ secbox
 
 The terminal must be at least 60 columns by 14 rows. The red tag at the right of the menu bar, saying this is an early build, never goes away.
 
+![The full-screen interface on the Projects panel](../images/cli/tui-projects.png)
+
+These screenshots come from a real daemon with no VM engine, so the project's state is unknown (`?`) and the status error is real.
+
 ## Panels
 
 | Key | Panel | Shows |
@@ -39,6 +43,10 @@ The terminal must be at least 60 columns by 14 rows. The red tag at the right of
 
 Starting, stopping and destroying work only on Projects.
 
+## Traffic
+
+![The full-screen interface on the Traffic panel](../images/cli/tui-traffic.png)
+
 ## Logs
 
 The Logs panel follows new lines by itself and says `Following` at the top right. Scrolling up pauses it: the tag changes to `Paused` and counts lines that arrive. `f`, End, or scrolling back to the newest line follows again.
@@ -52,5 +60,7 @@ Pressing `e` steps the interface aside and opens the same shell as `secbox shell
 Pressing `2` on a stopped project shows a summary of the plan, including the ports that would be forwarded to `127.0.0.1`. `y` starts it with those ports, and `n` or Esc cancels. To pick ports one by one, use `secbox up --port` instead. While it starts, a box lists each step as the daemon reports it, the same steps `secbox up` prints. Keys do nothing until it ends.
 
 ## Secrets panel
+
+![The full-screen interface on the Secrets panel](../images/cli/tui-secrets.png)
 
 Reads the same metadata as `secbox secrets list`. It never opens the keychain and changes nothing. Use the `secrets` commands to change secrets.

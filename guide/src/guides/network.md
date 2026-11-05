@@ -31,6 +31,8 @@ This only explains the policy. Nothing was sent, and no name was looked up.
 A real proxy would also check the address a name resolves to.
 ```
 
+![secbox net check allowing a GET from the npm registry](../images/cli/net-check-allow.png)
+
 Usernames, passwords and query strings in the URL are never printed.
 
 ### Policy file format

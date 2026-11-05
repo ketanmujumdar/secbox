@@ -30,6 +30,8 @@ secbox up ~/code/myapp     # another folder
 
 If anything blocks the start, `up` lists it under **This cannot be started yet** and stops with exit code 1. Common blockers are too little memory or disk on the host, or a privileged service in a project that has secrets.
 
+![secbox up --plan-only: the plan for a Compose project](../images/cli/up-plan.png)
+
 To see the plan and stop there:
 
 ```sh
@@ -113,6 +115,8 @@ If the project has a `Dockerfile` at its root and no Compose file, the daemon wr
 - ports from the `EXPOSE` lines in the **last** build stage, TCP only
 
 Variables, ranges, UDP and anything unusual in `EXPOSE` are listed in the plan and left out. Each port is still forwarded only if you approve it.
+
+![secbox up --plan-only for a project with only a Dockerfile](../images/cli/up-plan-dockerfile.png)
 
 The generated file is shown in the plan and covered by its approval. It is placed at `/work/compose.yaml` in the sandbox.
 

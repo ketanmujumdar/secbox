@@ -184,7 +184,7 @@ pub fn run(args: &BlockedArgsCli, deps: &mut Deps) -> i32 {
     let report = match ask(client, &project, None, REQUEST_LIMIT) {
         Ok(report) => report,
         Err(error) => {
-            tell!(deps, "net blocked: {}", esc(&error.message()));
+            tell!(deps, "net blocked: {}", error.for_terminal());
             return exit::FAILED;
         }
     };
@@ -235,7 +235,7 @@ fn follow(
                 continue;
             }
             Err(error) => {
-                tell!(deps, "net blocked: {}", esc(&error.message()));
+                tell!(deps, "net blocked: {}", error.for_terminal());
                 return exit::FAILED;
             }
         };

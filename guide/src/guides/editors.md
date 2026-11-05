@@ -37,6 +37,8 @@ Editor checks
   on   project-agent-hooks              No agent hooks are set in the project
 ```
 
+![secbox checks list](../images/cli/checks-list.png)
+
 | Check | What it looks at |
 | --- | --- |
 | `*-automatic-tasks` | Your user setting `task.allowAutomaticTasks` |

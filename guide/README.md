@@ -40,6 +40,24 @@ fails there.
 `guide/`, and publishes on every push to `main`. One-time setup: in the
 repository's **Settings > Pages**, set **Source** to **GitHub Actions**.
 
+## Screenshots
+
+Every terminal screenshot in `src/images/cli/` is real output, captured by
+`screenshots/capture.py` from the programs built from this repository. Nothing
+is drawn by hand. When a command is added or its output changes, add or keep a
+`[[shot]]` in `screenshots/shots.toml` and run:
+
+```sh
+pip install pyte                        # once
+guide/screenshots/capture.py            # rebuilds secbox, captures every shot
+guide/screenshots/capture.py doctor     # or just one
+```
+
+It also rewrites `src/reference/screenshots.md`, the gallery page, from
+`shots.toml`. It needs Node with Playwright and Chromium to save the PNGs. It
+uses a fresh state folder at `/tmp/secbox-demo` and a real daemon with no VM
+engine, so commands that need a running sandbox cannot be captured yet.
+
 ## Made for people and for AI
 
 Every page is also served as Markdown at the same address with `.md` in place

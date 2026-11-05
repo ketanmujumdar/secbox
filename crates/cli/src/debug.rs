@@ -145,7 +145,7 @@ pub fn logs(args: &LogsArgsCli, deps: &mut Deps) -> i32 {
         // Whoever was reading has gone, as with a pipe into `head`.
         Err(CallError::Stopped) => exit::OK,
         Err(error) => {
-            tell!(deps, "logs: {}", esc(&error.message()));
+            tell!(deps, "logs: {}", error.for_terminal());
             exit::FAILED
         }
     }
@@ -348,7 +348,7 @@ pub(crate) fn prepare_terminal(
     let report = match answer {
         Ok(Reply::Terminal(report)) => report,
         Ok(_) => return Err(Refusal::failed("the daemon answered something else.")),
-        Err(error) => return Err(Refusal::failed(esc(&error.message()))),
+        Err(error) => return Err(Refusal::failed(error.for_terminal())),
     };
     let term = (deps.env)("TERM").map(|term| term.to_string_lossy().into_owned());
     engine_command(&report, command, tty, term.as_deref()).map_err(Refusal::failed)

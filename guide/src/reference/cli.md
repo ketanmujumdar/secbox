@@ -6,6 +6,8 @@ Every `secbox` command, its arguments and options. `secbox COMMAND --help` print
 secbox [COMMAND]
 ```
 
+![secbox --help listing every command](../images/cli/help.png)
+
 With no command, `secbox` opens the [full-screen interface](../guides/terminal-ui.md).
 
 Where a command takes `[PATH]` or `--project PATH`, the default is the current folder. Relative paths are resolved from the current folder.

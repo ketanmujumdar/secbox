@@ -550,7 +550,7 @@ fn request(deps: &mut Deps, request: Request, command: &str) -> Result<Reply, i3
         say!(deps, "{}  {}", paint(color, Tone::Dim, "..."), esc(&line));
     });
     result.map_err(|error| {
-        tell!(deps, "{command}: {}", esc(&error.message()));
+        tell!(deps, "{command}: {}", error.for_terminal());
         exit::FAILED
     })
 }

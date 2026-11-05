@@ -39,6 +39,8 @@ Disk         5G         -          85G        5G
 Build memory -          -          10G        6G
 ```
 
+![secbox resources lowering a 999T request to what the host can spare](../images/cli/resources-risky.png)
+
 - **Repo asks**: what `secbox.yaml` requests.
 - **Override**: what you passed with `--memory` or `--cpus`.
 - **Maximum**: what this machine can spare right now, after keeping memory and disk back for the host.

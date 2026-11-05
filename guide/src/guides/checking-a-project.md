@@ -19,6 +19,8 @@ It also reads `secbox.yaml` if there is one, and runs the [editor safety checks]
 
 ## Sample output
 
+![secbox check on a clean project](../images/cli/check-clean.png)
+
 ```text
 Project    /home/you/code/clean
 Kind       Compose, compose.yaml
@@ -67,6 +69,10 @@ secbox check --strict . || exit 1
 ```
 
 Exit code 0 means no Critical or High findings. Exit code 3 means there were some.
+
+## A risky project
+
+![secbox check on a risky project, with Critical, High, Medium and Info findings](../images/cli/check-risky.png)
 
 ## Hostile names
 

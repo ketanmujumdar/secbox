@@ -56,6 +56,8 @@ Would import 4 names:
   FAKE_EMPTY  (empty, would be skipped)
 ```
 
+![secbox secrets import --dry-run listing names only](../images/cli/secrets-import-dry-run.png)
+
 Imported secrets go to no service until you assign them. Run `secbox secrets set NAME --service S` for each, typing the value again.
 
 ## Listing

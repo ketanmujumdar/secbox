@@ -1,0 +1,144 @@
+# Every screenshot in the documentation, made by capture.py from the real
+# programs. To add one, add a [[shot]] here and run:
+#
+#   guide/screenshots/capture.py            # all of them
+#   guide/screenshots/capture.py check-risky
+#
+# Fields:
+#   name     file name: guide/src/images/cli/<name>.png
+#   args     arguments to `secbox`, run from the repository root
+#   title    the caption shown in the gallery
+#   group    which gallery section it goes under
+#   cols     terminal width (default 130, or 100 for the full-screen interface)
+#   rows     terminal height, for the full-screen interface only
+#   daemon   true if it needs secboxd running (started for you, with no engine)
+#   input    text typed into the command after it starts, such as an answer
+#   keys     for the full-screen interface: keys to press, in order, before
+#            the screen is captured
+#
+# Each run uses a fresh state folder at /tmp/secbox-demo, so nothing touches
+# your real ~/.secbox or keychain.
+
+[[shot]]
+name = "help"
+args = ["--help"]
+cols = 140
+title = "secbox --help: every command"
+group = "Getting started"
+
+[[shot]]
+name = "doctor"
+args = ["doctor"]
+title = "secbox doctor, on a Linux machine without KVM"
+group = "Getting started"
+
+[[shot]]
+name = "check-risky"
+args = ["check", "tests/fixtures/risky"]
+title = "secbox check on a risky Compose project"
+group = "Checking a project"
+rows = 70
+
+[[shot]]
+name = "check-clean"
+args = ["check", "tests/fixtures/clean"]
+title = "secbox check on a clean project"
+group = "Checking a project"
+
+[[shot]]
+name = "resources-risky"
+args = ["resources", "tests/fixtures/risky"]
+title = "secbox resources: a request for 999T is lowered"
+group = "Checking a project"
+
+[[shot]]
+name = "up-plan"
+args = ["up", "--plan-only", "tests/fixtures/clean"]
+title = "secbox up --plan-only: the plan, before anything starts"
+group = "Running a project"
+daemon = true
+
+[[shot]]
+name = "up-plan-dockerfile"
+args = ["up", "--plan-only", "tests/fixtures/dockerfile-only"]
+title = "secbox up --plan-only on a project with only a Dockerfile"
+group = "Running a project"
+daemon = true
+
+[[shot]]
+name = "secrets-import-dry-run"
+args = ["secrets", "import", "--dry-run", "tests/fixtures/fake.env", "--project", "tests/fixtures/clean"]
+title = "secbox secrets import --dry-run: names only, never values"
+group = "Secrets"
+
+[[shot]]
+name = "secrets-list"
+args = ["secrets", "list", "--project", "tests/fixtures/clean"]
+title = "secbox secrets list"
+group = "Secrets"
+
+[[shot]]
+name = "net-check-allow"
+args = ["net", "check", "tests/fixtures/policy.yaml", "GET", "https://registry.npmjs.org/left-pad"]
+title = "secbox net check: an allowed request"
+group = "Network"
+
+[[shot]]
+name = "net-check-deny"
+args = ["net", "check", "tests/fixtures/policy.yaml", "PUT", "https://registry.npmjs.org/left-pad"]
+title = "secbox net check: publishing to npm is denied"
+group = "Network"
+
+[[shot]]
+name = "checks-list"
+args = ["checks", "list"]
+title = "secbox checks list: the editor safety checks"
+group = "Editors"
+
+[[shot]]
+name = "mcp-setup-codex"
+args = ["mcp", "setup", "codex", "--project", "tests/fixtures/clean"]
+title = "secbox mcp setup codex"
+group = "AI agents"
+
+[[shot]]
+name = "uninstall"
+args = ["uninstall"]
+title = "secbox uninstall, without --purge: nothing is removed"
+group = "Other"
+
+[[shot]]
+name = "not-built"
+args = ["diff"]
+title = "A command that is not built yet"
+group = "Other"
+
+[[shot]]
+name = "tui-projects"
+args = []
+title = "The full-screen interface: Projects"
+group = "Full-screen interface"
+daemon = true
+cols = 100
+rows = 30
+keys = ["p"]
+
+[[shot]]
+name = "tui-secrets"
+args = []
+title = "The full-screen interface: Secrets"
+group = "Full-screen interface"
+daemon = true
+cols = 100
+rows = 30
+keys = ["s"]
+
+[[shot]]
+name = "tui-traffic"
+args = []
+title = "The full-screen interface: Traffic"
+group = "Full-screen interface"
+daemon = true
+cols = 100
+rows = 30
+keys = ["t"]

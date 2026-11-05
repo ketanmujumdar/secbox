@@ -12,6 +12,10 @@ Run these from the secbox repository folder, which ships with test projects in `
 secbox doctor
 ```
 
+![secbox doctor output: each check with ok, warn or fail, and a next step under each problem](../images/cli/doctor.png)
+
+This was captured on a Linux machine without KVM, so the hypervisor line fails. On a Mac with Apple Silicon it says `ok`.
+
 ### Check a risky project
 
 ```sh
@@ -19,6 +23,8 @@ secbox check tests/fixtures/risky
 ```
 
 `check` reads the project's Compose file as data and runs nothing. It lists what the project asks for: services, published ports, host folders, privileges and editor settings. It groups problems as Critical, High, Medium and Info. The risky fixture has a service with a hostile name full of terminal control codes. secbox shows those codes as visible text, such as `\u{1b}[2J`, so they cannot clear or change your terminal.
+
+![secbox check on a risky project: findings grouped as Critical, High, Medium and Info, with a hostile service name shown escaped](../images/cli/check-risky.png)
 
 Compare a clean one:
 
@@ -41,6 +47,8 @@ secbox net check tests/fixtures/policy.yaml GET https://registry.npmjs.org/left-
 secbox net check tests/fixtures/policy.yaml PUT https://registry.npmjs.org/left-pad
 ```
 
+![secbox net check denying a PUT to the npm registry](../images/cli/net-check-deny.png)
+
 The first is allowed. The second is denied with `rule npm-read-only does not allow this method`: this policy lets a project download npm packages but not publish them. `net check` only explains the decision. It sends nothing.
 
 ## Part 2: start a project
@@ -61,6 +69,8 @@ secbox up
 ```
 
 `up` asks the daemon for a **plan** and prints it: which commit will be copied in, the services, the ports it wants, the hosts it may reach, which secrets go to which service, the resource limits and any findings. If something blocks the start, it says what and stops.
+
+![The plan secbox up shows before anything starts: project, snapshot, resources, network, secrets and ports](../images/cli/up-plan.png)
 
 It then asks:
 

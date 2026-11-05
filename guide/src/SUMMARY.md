@@ -32,6 +32,7 @@
 - [Configuration and files](reference/configuration.md)
 - [MCP tools](reference/mcp-tools.md)
 - [Exit codes](reference/exit-codes.md)
+- [Screenshots](reference/screenshots.md)
 
 # Help
 
