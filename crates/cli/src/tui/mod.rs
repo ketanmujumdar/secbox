@@ -10,6 +10,7 @@
 //! keystroke that did not see what it was agreeing to.
 
 mod logs;
+mod overview;
 mod screen;
 mod style;
 mod term;
@@ -336,57 +337,21 @@ fn refresh_logs(deps: &mut Deps, model: &mut Model) -> Option<logs::Follow> {
     model.busy = None;
     follow
 }
+
 fn show_selected(deps: &mut Deps, model: &mut Model) {
     model.detail.clear();
+    model.overview = None;
     let Some(row) = model.selected_row().cloned() else {
         return;
     };
-    model.detail.push(Line::dim(row.path.clone()));
-    let Some(report) = status_of(deps, &row.path) else {
-        model
-            .detail
-            .push(Line::styled("the daemon did not answer", Style::WindowAlert));
-        return;
-    };
-    if let Some(resources) = &report.resources {
-        model.detail.push(Line::plain(format!(
-            "{} memory, {} CPUs",
-            crate::ui::human_bytes(resources.memory_bytes),
-            f64::from(resources.millicpus) / 1000.0
-        )));
-    }
-    if !report.ports.is_empty() {
-        model.detail.push(Line::styled(
-            format!(
-                "forwarded  {}",
-                report
-                    .ports
-                    .iter()
-                    .map(|p| format!("127.0.0.1:{p}"))
-                    .collect::<Vec<_>>()
-                    .join("  ")
-            ),
-            Style::WindowGood,
-        ));
-    }
-    for service in report.services.iter().take(10) {
-        model.detail.push(Line::plain(format!(
-            "  {:<12}{}{}",
-            screen::cut(&service.name, 12),
-            service.state,
-            service
-                .health
-                .as_deref()
-                .map(|h| format!(" ({h})"))
-                .unwrap_or_default()
-        )));
-    }
-    if !report.services.is_empty() {
-        model.detail.push(Line::styled(
-            "these came from inside the sandbox, so they can be wrong",
-            Style::WindowWarn,
-        ));
-    }
+    model.overview = Some(match logs::status(deps.daemon, &row.path) {
+        Ok(report) => overview::build(&report),
+        Err(error) => view::Overview {
+            path: crate::ui::esc(&row.path),
+            problem: Some(logs::failure(&error).text),
+            ..view::Overview::default()
+        },
+    });
 }
 
 /// How long to wait for the daemon's say-so before a shell. The sandbox has

@@ -293,6 +293,8 @@ Keep it open with `secbox net blocked -f --project "$P"` and run another lookup 
 
 In the full-screen interface, press `t` for Traffic. Up, down, PgUp and PgDn scroll, `5` reads the newest, and the warning stays on screen while you scroll.
 
+Press `p` for Projects. The Blocked box on the right has a red frame, gives the same totals as `status` with "t to see them", and never says "0". Beside it are Services with each one's health or state, Ports as `127.0.0.1:PORT`, and Resources, with the warning that the services came from inside the sandbox underneath. Shrink the terminal to 60 by 14: the boxes stack and drop, Blocked last, and nothing breaks the frame.
+
 A crafted name stays on one line, with its odd characters shown as `\040` and the like. To try it, send your own DNS packet with `nc -u` to port 53 of the nameserver in the sandbox's `/etc/resolv.conf`.
 
 ### Attacking a running sandbox

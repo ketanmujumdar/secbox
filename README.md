@@ -64,7 +64,7 @@ secbox net blocked -f           # keep checking; Ctrl-C stops
 secbox status                   # includes a count
 ```
 
-The Traffic panel in the full-screen interface shows the same list. Press `t` to open it, `5` to read again, and up, down, PgUp and PgDn to scroll.
+The Traffic panel in the full-screen interface shows the same list. Press `t` to open it, `5` to read again, and up, down, PgUp and PgDn to scroll. The Projects panel shows the count in a Blocked box beside the selected project's services, ports and resources, in red when anything was refused.
 
 Read this before relying on the list:
 

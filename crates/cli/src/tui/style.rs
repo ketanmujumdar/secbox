@@ -24,6 +24,9 @@ pub enum Style {
     WindowWarn,
     WindowAlert,
     Frame,
+    /// The frame of a box that needs to be noticed, such as one counting
+    /// refused lookups.
+    FrameAlert,
     Title,
     /// The highlighted row of a list.
     Selected,
@@ -58,6 +61,7 @@ impl Style {
             Style::WindowWarn => "93;44",
             Style::WindowAlert => "97;41",
             Style::Frame => "37;44",
+            Style::FrameAlert => "91;44",
             Style::Title => "93;44",
             Style::Selected => "30;46",
             Style::Shadow => "30;40",
@@ -142,6 +146,7 @@ mod tests {
             Style::WindowWarn,
             Style::WindowAlert,
             Style::Frame,
+            Style::FrameAlert,
             Style::Title,
             Style::Selected,
             Style::Shadow,

@@ -69,6 +69,17 @@ impl RowState {
         }
     }
 
+    /// A mark for the list, where a word would take the room a name needs. A
+    /// tape deck's play and stop, which needs no legend.
+    fn mark(self) -> char {
+        match self {
+            RowState::Running => '►',
+            RowState::Stopped => '■',
+            RowState::None => '·',
+            RowState::Unknown => '?',
+        }
+    }
+
     fn style(self) -> Style {
         match self {
             RowState::Running => Style::WindowGood,
@@ -114,6 +125,41 @@ impl Line {
             style,
         }
     }
+}
+
+/// One line in a box on the Projects panel: a name on the left and, if there
+/// is one, a value set to the right in `style`. With no value the whole line
+/// takes `style`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub left: String,
+    pub right: String,
+    pub style: Style,
+}
+
+impl Entry {
+    pub fn new(left: impl Into<String>, right: impl Into<String>, style: Style) -> Self {
+        Self {
+            left: left.into(),
+            right: right.into(),
+            style,
+        }
+    }
+}
+
+/// What the Projects panel shows about the selected project, from its status
+/// report. Every string is already escaped.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Overview {
+    pub path: String,
+    /// Why there is nothing else to show, such as a daemon that did not answer.
+    pub problem: Option<String>,
+    pub services: Vec<Entry>,
+    pub ports: Vec<Entry>,
+    pub resources: Vec<Entry>,
+    pub blocked: Vec<Entry>,
+    /// Whether the Blocked box is drawn in alert colour.
+    pub blocked_alert: bool,
 }
 
 /// A question waiting for an answer, drawn over everything else.
@@ -263,7 +309,9 @@ impl TrafficPanel {
 pub struct Model {
     pub projects: Vec<Row>,
     pub selected: usize,
+    /// What stops the selected project starting, shown in place of its boxes.
     pub detail: Vec<Line>,
+    pub overview: Option<Overview>,
     pub message: Option<String>,
     pub busy: Option<String>,
     pub pane: PaneState,
@@ -440,14 +488,14 @@ fn menu_bar(screen: &mut Screen, active: Pane) {
             .map(|pane| pane.label().chars().count() + gap)
             .sum::<usize>()
     };
-    let shortest = WARNINGS[WARNINGS.len() - 1].chars().count() + 3;
-    // The entries close up rather than the warning going.
-    let gap = if menu(3) + shortest <= screen.width() { 3 } else { 2 };
-    let room = screen.width().saturating_sub(menu(gap) + 1);
-    let warning = WARNINGS
+    // The entries close up before the warning is shortened, and the
+    // shortest warning always has room, even on the narrowest screen.
+    let fits = |text: &str, gap: usize| menu(gap) + text.chars().count() + 3 <= screen.width();
+    let (warning, gap) = WARNINGS
         .iter()
-        .find(|text| text.chars().count() + 2 <= room)
-        .unwrap_or(&WARNINGS[WARNINGS.len() - 1]);
+        .flat_map(|text| [(*text, 3), (*text, 2)])
+        .find(|(text, gap)| fits(text, *gap))
+        .unwrap_or((WARNINGS[WARNINGS.len() - 1], 2));
     let tag = format!(" {warning} ");
     let tag_x = screen.width().saturating_sub(tag.chars().count() + 1);
     screen.text(tag_x, 0, &tag, Style::MenuAlert);
@@ -540,50 +588,245 @@ fn body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, h: usi
         return;
     }
 
-    // At least three rows, so the list always has a scrollbar to sit beside
-    // and does not jump about as projects come and go.
-    let list_h = (room / 2).clamp(3, room.max(1));
+    // A narrow list down the left, and the selected project on the right.
+    let list_w = (w / 4).clamp(20, 30);
+    project_list(model, screen, Rect::new(x, y, list_w, room));
+    for row in y..y + room {
+        screen.put(x + list_w, row, '│', Style::Frame);
+    }
+    let right = Rect::new(x + list_w + 2, y, w - list_w - 3, room);
+    project_detail(model, screen, right);
+}
+
+/// One row per project: a mark for its state and its name. The mark is in the
+/// state's colour, and the selected row is highlighted rather than marked.
+fn project_list(model: &Model, screen: &mut Screen, at: Rect) {
+    // At least three rows, so the list always has a scrollbar to sit beside.
+    let list_h = at.h.max(3);
     let first = model.selected.saturating_sub(list_h.saturating_sub(1));
-    let bar_x = x + w - 1;
-    for offset in 0..list_h {
+    let line_w = at.w - 1;
+    for offset in 0..list_h.min(at.h) {
         let Some(row) = model.projects.get(first + offset) else {
             break;
         };
         let selected = first + offset == model.selected;
-        let line_y = y + offset;
-        let line_w = w - 1;
+        let line_y = at.y + offset;
         if selected {
-            screen.fill(x, line_y, line_w, 1, ' ', Style::Selected);
+            screen.fill(at.x, line_y, line_w, 1, ' ', Style::Selected);
         }
-        let name_style = if selected { Style::Selected } else { Style::Window };
-        let state_style = if selected {
-            Style::Selected
+        let (name_style, mark_style) = if selected {
+            (Style::Selected, Style::Selected)
         } else {
-            row.state.style()
+            (Style::Window, row.state.style())
         };
-        let word = row.state.word();
-        let name_room = line_w.saturating_sub(word.chars().count() + 4);
-        screen.text(x + 1, line_y, &cut(&row.name, name_room), name_style);
-        screen.text(
-            x + line_w - word.chars().count() - 1,
-            line_y,
-            word,
-            state_style,
-        );
+        screen.put(at.x + 1, line_y, row.state.mark(), mark_style);
+        screen.text_cut(at.x + 3, line_y, &row.name, line_w.saturating_sub(4), name_style);
     }
-    screen.scrollbar(bar_x, y, list_h, first, list_h, model.projects.len());
+    screen.scrollbar(at.x + at.w - 1, at.y, at.h, first, at.h, model.projects.len());
+}
 
-    let mut at = y + list_h;
-    if at < y + room {
-        screen.rule(x - 1, at, w + 2, Style::Frame);
-        at += 1;
-    }
-    for line in &model.detail {
-        if at >= y + room {
-            break;
+/// The selected project's name and state, then its services, ports,
+/// resources and blocked lookups in boxes. On a small screen the boxes stack,
+/// and the ones that matter least go first.
+fn project_detail(model: &Model, screen: &mut Screen, at: Rect) {
+    let Some(row) = model.selected_row() else {
+        return;
+    };
+    let bottom = at.y + at.h;
+    let word = row.state.word();
+    let name_room = at.w.saturating_sub(word.chars().count() + 2);
+    let name = cut(&row.name, name_room);
+    screen.text(at.x, at.y, &name, Style::Title);
+    screen.text(at.x + name.chars().count() + 2, at.y, word, row.state.style());
+    let mut y = at.y + 1;
+
+    // A plan that cannot start says why, in place of everything else.
+    if !model.detail.is_empty() {
+        for line in &model.detail {
+            for piece in wrap(&line.text, at.w) {
+                if y < bottom {
+                    screen.text_cut(at.x, y, &piece, at.w, line.style);
+                    y += 1;
+                }
+            }
         }
-        screen.text_cut(x + 1, at, &line.text, w - 2, line.style);
-        at += 1;
+        return;
+    }
+    let Some(overview) = &model.overview else {
+        return;
+    };
+    if let Some(problem) = &overview.problem {
+        for piece in wrap(problem, at.w) {
+            if y < bottom {
+                screen.text_cut(at.x, y, &piece, at.w, Style::WindowAlert);
+                y += 1;
+            }
+        }
+        return;
+    }
+
+    // What the sandbox said about itself is marked as such, just under its
+    // boxes, and broken across rows rather than cut.
+    let caveat = if overview.services.is_empty() {
+        Vec::new()
+    } else {
+        wrap("these came from inside the sandbox, so they can be wrong", at.w)
+    };
+    let boxes_bottom = bottom.saturating_sub(caveat.len());
+    // The path is the first thing to go when room is short.
+    if boxes_bottom.saturating_sub(y) >= 8 {
+        screen.text_cut(at.x, y, &overview.path, at.w, Style::WindowDim);
+        y += 1;
+    }
+    let area = Rect::new(at.x, y, at.w, boxes_bottom.saturating_sub(y));
+    if let Some(under) = draw_groups(screen, area, overview) {
+        for (offset, piece) in caveat.iter().enumerate() {
+            screen.text_cut(at.x, under + offset, piece, at.w, Style::WindowWarn);
+        }
+    }
+}
+
+/// One framed box's worth of the overview.
+struct Group<'a> {
+    title: &'static str,
+    entries: &'a [Entry],
+    empty: &'static str,
+    alert: bool,
+}
+
+impl Group<'_> {
+    /// Rows it would like: its entries, or the line saying there are none,
+    /// inside a frame.
+    fn wanted(&self) -> usize {
+        self.entries.len().max(1) + 2
+    }
+}
+
+/// The smallest a box can be: a frame round one line.
+const GROUP_MIN: usize = 3;
+
+/// Lays the boxes out and draws them. Two columns when there is width for
+/// them, one otherwise. Returns the row under the boxes if the services box
+/// was among them, since what it says needs a caveat there.
+fn draw_groups(screen: &mut Screen, area: Rect, overview: &Overview) -> Option<usize> {
+    let services = Group {
+        title: "Services",
+        entries: &overview.services,
+        empty: "None reported",
+        alert: false,
+    };
+    let ports = Group {
+        title: "Ports",
+        entries: &overview.ports,
+        empty: "None forwarded",
+        alert: false,
+    };
+    let resources = Group {
+        title: "Resources",
+        entries: &overview.resources,
+        empty: "Not reported",
+        alert: false,
+    };
+    let blocked = Group {
+        title: "Blocked",
+        entries: &overview.blocked,
+        empty: "Unknown",
+        alert: overview.blocked_alert,
+    };
+
+    if area.w >= 50 && area.h >= 2 * GROUP_MIN {
+        let half = (area.w - 1) / 2;
+        let left_x = area.x;
+        let right_x = area.x + half + 1;
+        let right_w = area.w - half - 1;
+        let top_want = services.wanted().max(resources.wanted());
+        let bottom_want = ports.wanted().max(blocked.wanted());
+        let bottom_h = bottom_want.min(area.h - GROUP_MIN).max(GROUP_MIN);
+        let top_h = top_want.min(area.h - bottom_h).max(GROUP_MIN);
+        let bottom_y = area.y + top_h;
+        draw_group(screen, Rect::new(left_x, area.y, half, top_h), &services);
+        draw_group(screen, Rect::new(right_x, area.y, right_w, top_h), &resources);
+        draw_group(screen, Rect::new(left_x, bottom_y, half, bottom_h), &ports);
+        draw_group(screen, Rect::new(right_x, bottom_y, right_w, bottom_h), &blocked);
+        return Some(bottom_y + bottom_h);
+    }
+
+    // One column. Room goes to the boxes that matter most, the frame and one
+    // line each first, then what more each would like, in the same order.
+    let order = [&blocked, &services, &ports, &resources];
+    let mut heights = [0usize; 4];
+    let mut left = area.h;
+    for (index, _) in order.iter().enumerate() {
+        if left >= GROUP_MIN {
+            heights[index] = GROUP_MIN;
+            left -= GROUP_MIN;
+        }
+    }
+    for (index, group) in order.iter().enumerate() {
+        if heights[index] > 0 {
+            let more = (group.wanted() - GROUP_MIN).min(left);
+            heights[index] += more;
+            left -= more;
+        }
+    }
+    // Drawn top to bottom in the order a person reads them.
+    let mut y = area.y;
+    for index in [1, 0, 2, 3] {
+        if heights[index] > 0 {
+            draw_group(screen, Rect::new(area.x, y, area.w, heights[index]), order[index]);
+            y += heights[index];
+        }
+    }
+    (heights[1] > 0).then_some(y)
+}
+
+/// A single-ruled box with its title in the top rule, the way the period
+/// grouped things inside a window. Each entry is a line, its second part set
+/// to the right. When they do not all fit, the last line says how many more.
+fn draw_group(screen: &mut Screen, at: Rect, group: &Group) {
+    if at.w < 6 || at.h < GROUP_MIN {
+        return;
+    }
+    let frame = if group.alert {
+        Style::FrameAlert
+    } else {
+        Style::Frame
+    };
+    screen.group_box(at, frame, group.title, Style::Title);
+    let inner_w = at.w - 4;
+    let rows = at.h - 2;
+    if group.entries.is_empty() {
+        screen.text_cut(at.x + 2, at.y + 1, group.empty, inner_w, Style::WindowDim);
+        return;
+    }
+    let shown = if group.entries.len() > rows {
+        rows - 1
+    } else {
+        rows
+    };
+    for (offset, entry) in group.entries.iter().take(shown).enumerate() {
+        let y = at.y + 1 + offset;
+        let right = cut(&entry.right, inner_w / 2);
+        let right_w = right.chars().count();
+        let left_room = if right_w == 0 {
+            inner_w
+        } else {
+            inner_w.saturating_sub(right_w + 1)
+        };
+        // With two parts only the value is coloured; with one, the whole line,
+        // so a count in alert colour is set on red and cannot be missed.
+        let left_style = if entry.right.is_empty() { entry.style } else { Style::Window };
+        screen.text_cut(at.x + 2, y, &entry.left, left_room, left_style);
+        screen.text(at.x + 2 + inner_w - right_w, y, &right, entry.style);
+    }
+    if shown < group.entries.len() {
+        screen.text_cut(
+            at.x + 2,
+            at.y + 1 + shown,
+            &format!("and {} more", group.entries.len() - shown),
+            inner_w,
+            Style::WindowDim,
+        );
     }
 }
 
@@ -1210,6 +1453,170 @@ mod tests {
         assert_eq!(key(b"x"), Key::Destroy);
         assert_eq!(key(b"l"), Key::Open(Pane::Logs));
         assert_eq!(key(b"5"), Key::Refresh);
+    }
+
+    fn overview_model() -> Model {
+        let mut m = model();
+        m.overview = Some(Overview {
+            path: "/p/demo_shop".to_owned(),
+            problem: None,
+            services: ["postgres", "api", "worker", "web"]
+                .iter()
+                .map(|name| Entry::new(*name, "healthy", Style::WindowGood))
+                .collect(),
+            ports: vec![
+                Entry::new("127.0.0.1:3000", "", Style::WindowGood),
+                Entry::new("127.0.0.1:8080", "", Style::WindowGood),
+            ],
+            resources: vec![
+                Entry::new("Memory", "6.0 GB", Style::Window),
+                Entry::new("CPUs", "4", Style::Window),
+            ],
+            blocked: vec![
+                Entry::new("6 refused lookups", "", Style::WindowAlert),
+                Entry::new("of 3 hostnames", "", Style::Window),
+                Entry::new("t to see them", "", Style::Window),
+            ],
+            blocked_alert: true,
+        });
+        m
+    }
+
+    #[test]
+    fn the_projects_panel_has_a_list_and_a_box_for_each_part() {
+        let m = overview_model();
+        let text = plain(&m, 100, 30);
+        for phrase in [
+            "─ Services ",
+            "─ Ports ",
+            "─ Resources ",
+            "─ Blocked ",
+            "127.0.0.1:3000",
+            "postgres",
+            "healthy",
+            "6.0 GB",
+            "6 refused lookups",
+            "of 3 hostnames",
+            "t to see them",
+            "/p/demo_shop",
+            "these came from inside the sandbox, so they can be wrong",
+        ] {
+            assert!(text.contains(phrase), "{phrase}: {text}");
+        }
+        // The list is narrow: both names sit to the left of the boxes.
+        let first_box = text.lines().find(|l| l.contains("─ Services")).unwrap();
+        let at = first_box.chars().position(|c| c == '┌').unwrap();
+        assert!(at < 40, "{first_box}");
+        assert!(text.contains("► demo-shop-ab12cd34"), "{text}");
+        assert!(text.contains("■ notes-ff00ff00"), "{text}");
+    }
+
+    #[test]
+    fn refused_lookups_are_drawn_in_alert_colour() {
+        let rows = render(&overview_model(), 100, 30);
+        let spans: Vec<&Span> = rows.iter().flatten().collect();
+        assert!(spans.iter().any(|s| s.style == Style::FrameAlert));
+        assert!(spans
+            .iter()
+            .any(|s| s.style == Style::WindowAlert && s.text.contains("6 refused")));
+        let mut quiet = overview_model();
+        let overview = quiet.overview.as_mut().unwrap();
+        overview.blocked_alert = false;
+        overview.blocked = vec![Entry::new("No hostnames recorded so far", "", Style::Window)];
+        let rows = render(&quiet, 100, 30);
+        assert!(!rows.iter().flatten().any(|s| s.style == Style::FrameAlert));
+    }
+
+    /// On the smallest screen the boxes stack and the least needed go, but
+    /// what was blocked always stays, and the frame holds.
+    #[test]
+    fn the_projects_panel_degrades_on_a_small_screen() {
+        let m = overview_model();
+        let text = plain(&m, MIN_WIDTH, MIN_HEIGHT);
+        assert!(text.contains("Blocked"), "{text}");
+        assert!(text.contains("6 refused"), "{text}");
+        for line in text.lines() {
+            assert_eq!(line.chars().count(), MIN_WIDTH);
+        }
+        // Services, when they fit, always bring the caveat with them.
+        for height in MIN_HEIGHT..40 {
+            let text = plain(&m, MIN_WIDTH, height);
+            if text.contains("─ Services") {
+                assert!(text.contains("these came from inside"), "{height}: {text}");
+            }
+        }
+        assert!(plain(&m, MIN_WIDTH, 30).contains("─ Services"));
+    }
+
+    #[test]
+    fn a_box_with_more_than_fits_says_how_many_more() {
+        let mut m = overview_model();
+        m.overview.as_mut().unwrap().services = (0..40)
+            .map(|n| Entry::new(format!("svc-{n:02}"), "running", Style::WindowGood))
+            .collect();
+        let text = plain(&m, 100, 24);
+        assert!(text.contains("svc-00"), "{text}");
+        assert!(text.contains("more"), "{text}");
+        assert!(!text.contains("svc-39"), "{text}");
+    }
+
+    #[test]
+    fn a_hostile_service_name_cannot_break_a_box() {
+        let mut m = overview_model();
+        m.overview.as_mut().unwrap().services[0] =
+            Entry::new("s".repeat(500), "h".repeat(500), Style::WindowWarn);
+        for (width, height) in [(MIN_WIDTH, MIN_HEIGHT), (80, 24), (100, 30), (200, 60)] {
+            let text = plain(&m, width, height);
+            for line in text.lines() {
+                assert_eq!(line.chars().count(), width, "{width}x{height}");
+            }
+            assert!(text.contains('║'));
+        }
+    }
+
+    #[test]
+    fn what_stops_a_start_is_shown_in_place_of_the_boxes() {
+        let mut m = overview_model();
+        m.detail = vec![Line::styled("needs a Compose file", Style::WindowAlert)];
+        let text = plain(&m, 100, 30);
+        assert!(text.contains("needs a Compose file"), "{text}");
+        assert!(!text.contains("─ Services"), "{text}");
+    }
+
+    #[test]
+    fn a_daemon_that_did_not_answer_is_said_in_place_of_the_boxes() {
+        let mut m = model();
+        m.overview = Some(Overview {
+            problem: Some("The daemon did not answer in time.".to_owned()),
+            ..Overview::default()
+        });
+        let text = plain(&m, 100, 30);
+        assert!(text.contains("did not answer"), "{text}");
+        assert!(!text.contains("─ Blocked"), "{text}");
+    }
+
+    /// Every panel, full of data, at every size from the smallest up: nothing
+    /// panics and every row is exactly the width.
+    #[test]
+    fn every_panel_draws_at_every_size() {
+        let mut m = overview_model();
+        m.logs.lines = (0..300).map(|n| format!("line {n}")).collect();
+        m.logs.services = vec!["api".to_owned(), "web".to_owned()];
+        m.traffic.rows = (0..300).map(|n| format!("row {n}")).collect();
+        m.message = Some("something happened".to_owned());
+        for pane in Pane::ALL {
+            m.pane = PaneState(pane);
+            for width in (MIN_WIDTH - 5..=130).step_by(7) {
+                for height in (MIN_HEIGHT - 3..=45).step_by(3) {
+                    let rows = render(&m, width, height);
+                    assert_eq!(rows.len(), height.max(MIN_HEIGHT));
+                    for row in rows {
+                        let drawn: usize = row.iter().map(|s| s.text.chars().count()).sum();
+                        assert_eq!(drawn, width.max(MIN_WIDTH), "{}", pane.label());
+                    }
+                }
+            }
+        }
     }
 
     fn traffic_model() -> Model {

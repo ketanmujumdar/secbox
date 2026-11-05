@@ -293,6 +293,7 @@ fn read_once(client: &dyn DaemonClient, panel: &mut LogsPanel, path: &str) {
     );
     filters.finish(panel);
     panel.trim(KEPT_LINES);
+
     panel.note = match result {
         Ok(Reply::Logs(report)) => match report.code {
             Some(0) | None if panel.lines.is_empty() => {
