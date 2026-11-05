@@ -123,6 +123,18 @@ pub struct Dialog {
     pub lines: Vec<String>,
 }
 
+/// Whether new lines are arriving by themselves.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Live {
+    /// Read once, so nothing more will arrive until it is read again.
+    #[default]
+    Off,
+    /// New lines are added as the sandbox writes them.
+    Following,
+    /// Following stopped, for the reason in the note.
+    Ended,
+}
+
 /// What the Logs panel shows for the selected project.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LogsPanel {
@@ -136,8 +148,12 @@ pub struct LogsPanel {
     pub lines: Vec<String>,
     /// Why there are no lines, or something else worth saying about them.
     pub note: Option<Line>,
-    /// How many lines back from the newest the view has been scrolled.
+    /// How many lines back from the newest the view has been scrolled. Above
+    /// zero, following is paused: new lines are kept but the view stays put.
     pub scroll: usize,
+    pub live: Live,
+    /// Lines that arrived while paused, so the person knows there are some.
+    pub unseen: usize,
 }
 
 impl LogsPanel {
@@ -157,14 +173,48 @@ impl LogsPanel {
         let at = self.chosen_index();
         let next = at.saturating_add_signed(delta).min(self.services.len());
         self.chosen = next.checked_sub(1).map(|index| self.services[index].clone());
-        self.scroll = 0;
+        self.jump_to_newest();
     }
 
     /// Moves back through the lines, or forward towards the newest. It stops
     /// at the oldest line, so one key press back always moves something.
+    /// Reaching the newest line again resumes following.
     pub fn scroll_by(&mut self, delta: isize) {
         let furthest = self.lines.len().saturating_sub(1);
         self.scroll = self.scroll.saturating_add_signed(delta).min(furthest);
+        if self.scroll == 0 {
+            self.unseen = 0;
+        }
+    }
+
+    /// Jumps to the newest line, which resumes following.
+    pub fn jump_to_newest(&mut self) {
+        self.scroll = 0;
+        self.unseen = 0;
+    }
+
+    pub fn paused(&self) -> bool {
+        self.scroll > 0
+    }
+
+    /// Adds one line at the newest end. While paused the view is moved back by
+    /// one too, so what the person is reading does not slide away under them.
+    pub fn push_line(&mut self, line: String) {
+        self.lines.push(line);
+        if self.paused() {
+            self.scroll += 1;
+            self.unseen += 1;
+        }
+    }
+
+    /// Drops the oldest lines beyond `keep`. The view counts from the newest,
+    /// so it only moves if it was among the lines dropped.
+    pub fn trim(&mut self, keep: usize) {
+        let over = self.lines.len().saturating_sub(keep);
+        if over > 0 {
+            self.lines.drain(..over);
+            self.scroll = self.scroll.min(self.lines.len().saturating_sub(1));
+        }
     }
 
     /// Where the choice is along All and the services, with All first.
@@ -463,12 +513,23 @@ fn logs_body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, r
         );
         return;
     };
-    screen.text_cut(x + 1, y, &row.name, w - 2, Style::WindowDim);
+    // Whether lines are arriving is set at the right, where it stays in view
+    // however the lines are scrolled; the name gets what room is left.
+    let (tag, tag_style) = live_tag(panel);
+    let tag_w = tag.chars().count().min(w - 2);
+    screen.text_cut(
+        x + 1,
+        y,
+        &row.name,
+        (w - 2).saturating_sub(tag_w + 2),
+        Style::WindowDim,
+    );
+    screen.text_cut(x + w - 1 - tag_w, y, &tag, tag_w, tag_style);
     service_bar(panel, screen, x + 1, y + 1, w - 2);
     screen.text_cut(
         x + 1,
         y + 2,
-        "<- -> service  Up Down scroll  5 newest. Output can be wrong.",
+        "<- -> service  Up Down scroll  f follow. Output can be wrong.",
         w - 2,
         Style::WindowDim,
     );
@@ -488,6 +549,24 @@ fn logs_body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, r
     for line in &panel.lines[first..end] {
         screen.text_cut(x + 1, at, line, w - 2, Style::Window);
         at += 1;
+    }
+}
+
+/// Says whether the panel is following, and when it is paused, how to resume
+/// and how much is waiting, so that a still screen is never mistaken for a
+/// quiet sandbox.
+fn live_tag(panel: &LogsPanel) -> (String, Style) {
+    match panel.live {
+        Live::Following if panel.paused() => (
+            match panel.unseen {
+                0 => " Paused. f follows ".to_owned(),
+                n => format!(" Paused, {n} new. f follows "),
+            },
+            Style::Selected,
+        ),
+        Live::Following => ("Following".to_owned(), Style::WindowGood),
+        Live::Ended => ("Not following".to_owned(), Style::WindowWarn),
+        Live::Off => (String::new(), Style::WindowDim),
     }
 }
 
@@ -641,6 +720,8 @@ pub enum Key {
     NextService,
     PageUp,
     PageDown,
+    /// Back to the newest line, which resumes following a log.
+    Follow,
     Yes,
     No,
     Other,
@@ -654,6 +735,7 @@ pub fn key(bytes: &[u8]) -> Key {
         b"\x1b[B" | b"\x1bOB" | b"j" => Key::Down,
         b"\x1b[5~" => Key::PageUp,
         b"\x1b[6~" => Key::PageDown,
+        b"f" | b"F" | b"\x1b[F" | b"\x1bOF" | b"\x1b[4~" | b"\x1b[8~" => Key::Follow,
         b"\t" | b"6" | b"\x1bOU" | b"\x1b[17~" => Key::Tab,
         b"q" | b"0" | b"\x03" | b"\x1b[21~" => Key::Quit,
         // The red letter in the menu always opens that panel, so a key someone
@@ -877,6 +959,70 @@ mod tests {
         let text = plain(&m, 80, 24);
         assert!(text.contains("line-499"), "{text}");
         assert!(!text.contains("line-000"), "{text}");
+    }
+
+    #[test]
+    fn a_followed_log_says_so_and_a_paused_one_says_how_to_resume() {
+        let mut m = logs_model();
+        m.logs.lines = (0..100).map(|n| format!("line-{n:03}")).collect();
+        m.logs.live = Live::Following;
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("Following"), "{text}");
+        assert!(!text.contains("Paused"), "{text}");
+
+        m.logs.scroll_by(10);
+        m.logs.push_line("line-100".to_owned());
+        m.logs.push_line("line-101".to_owned());
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("Paused, 2 new. f follows"), "{text}");
+        assert!(!text.contains("line-101"), "the view moved: {text}");
+        assert!(text.contains("line-089"), "{text}");
+
+        m.logs.jump_to_newest();
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("line-101") && text.contains("Following"), "{text}");
+
+        m.logs.live = Live::Ended;
+        assert!(plain(&m, 80, 24).contains("Not following"));
+    }
+
+    /// The tag must survive the smallest screen and a project name that would
+    /// otherwise push it off.
+    #[test]
+    fn the_paused_tag_fits_beside_a_long_name_on_a_small_screen() {
+        let mut m = logs_model();
+        m.projects[0].name = "n".repeat(300);
+        m.logs.lines = (0..100).map(|n| format!("line-{n:03}")).collect();
+        m.logs.live = Live::Following;
+        m.logs.scroll_by(5);
+        let text = plain(&m, MIN_WIDTH, MIN_HEIGHT);
+        assert!(text.contains("Paused"), "{text}");
+        for line in text.lines() {
+            assert_eq!(line.chars().count(), MIN_WIDTH);
+        }
+    }
+
+    #[test]
+    fn trimming_old_lines_keeps_the_view_counted_from_the_newest() {
+        let mut panel = LogsPanel::default();
+        for n in 0..50 {
+            panel.push_line(format!("{n}"));
+        }
+        panel.scroll_by(5);
+        panel.trim(20);
+        assert_eq!(panel.lines.len(), 20);
+        assert_eq!(panel.lines[0], "30");
+        assert_eq!(panel.scroll, 5);
+        panel.scroll_by(100);
+        panel.trim(10);
+        assert_eq!(panel.scroll, 9);
+    }
+
+    #[test]
+    fn f_and_end_return_to_the_newest_line() {
+        for bytes in [&b"f"[..], b"\x1b[F", b"\x1bOF", b"\x1b[4~"] {
+            assert_eq!(key(bytes), Key::Follow, "{bytes:?}");
+        }
     }
 
     #[test]
