@@ -310,10 +310,12 @@ version = "0.1.0"
 dependencies = [
  "brand",
  "clap",
+ "daemon",
  "egress",
  "engine",
  "hoststate",
  "projectcheck",
+ "proto",
  "rpassword",
  "secrets",
  "serde",
@@ -394,6 +396,7 @@ version = "0.1.0"
 dependencies = [
  "brand",
  "engine",
+ "gitbroker",
  "hoststate",
  "nix",
  "projectcheck",
@@ -403,6 +406,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]

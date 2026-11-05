@@ -556,6 +556,9 @@ mod tests {
                 store: &store,
                 prompt: &prompt,
                 host: &host,
+                daemon: &crate::NoDaemon {
+                    reason: String::new(),
+                },
             };
             let code = body(&mut deps);
             Done {

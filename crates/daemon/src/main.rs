@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use daemon::settings::UserSettings;
-use daemon::{audit, server, Deps, Service};
+use daemon::{audit, gitref, server, Deps, Service};
 use engine::{Engine, MsbEngine, MsbLocation};
 use hoststate::host::HostInfo;
 use hoststate::StatePaths;
@@ -39,15 +39,89 @@ impl Deps for RealDeps {
 
     fn snapshot(
         &self,
-        _root: &Path,
-        _source: &proto::Source,
-        _dest: &Path,
+        root: &Path,
+        source: &proto::Source,
+        dest: &Path,
     ) -> Result<proto::SnapshotPlan, String> {
-        // Wired to the git broker in the milestone that widens its exclusion
-        // rules. Refusing is the only honest answer until then: a snapshot
-        // that quietly copied everything would carry secrets into the VM.
-        Err("taking a snapshot is not built yet".to_owned())
+        // The broker takes a full commit id and nothing else, so that a name
+        // can never resolve to something other than what the person meant.
+        let commit = match source {
+            proto::Source::Commit { revision } if gitref::is_commit_id(revision) => {
+                revision.clone()
+            }
+            proto::Source::Commit { revision } if revision == "HEAD" => {
+                gitref::head_commit(root).map_err(|e| e.to_string())?
+            }
+            proto::Source::Commit { .. } => {
+                return Err("name a commit by its full id, or use HEAD".to_owned())
+            }
+            proto::Source::WorkingTree => {
+                return Err(
+                    "including uncommitted changes is not built yet: commit first, or start from HEAD"
+                        .to_owned(),
+                )
+            }
+        };
+        let report = gitbroker::snapshot(root, &commit, dest).map_err(|e| e.to_string())?;
+        Ok(proto::SnapshotPlan {
+            revision: Some(commit),
+            counts: Some(proto::SnapshotCounts {
+                files: report.files_written + report.symlinks_written,
+                total_bytes: total_bytes(dest),
+            }),
+            excluded: report
+                .excluded
+                .iter()
+                .map(|entry| proto::ExcludedFile {
+                    path: entry.path.clone(),
+                    reason: format!("{:?}", entry.reason),
+                })
+                .collect(),
+            warnings: report
+                .warnings
+                .iter()
+                .map(|w| {
+                    format!(
+                        "{} line {} looks like it holds a {:?}",
+                        w.path, w.line, w.rule
+                    )
+                })
+                .chain(
+                    (!report.scan_complete)
+                        .then(|| {
+                            "the scan for secrets inside files stopped at its limit, so this list is not complete"
+                                .to_owned()
+                        }),
+                )
+                .collect(),
+        })
     }
+}
+
+/// Adds up what the snapshot holds, for the report. Bounded, because the
+/// answer is only ever shown to a person.
+fn total_bytes(dest: &Path) -> u64 {
+    fn walk(dir: &Path, total: &mut u64, seen: &mut u64) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if *seen > 200_000 {
+                return;
+            }
+            *seen += 1;
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                walk(&entry.path(), total, seen);
+            } else if meta.is_file() {
+                *total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    let mut total = 0;
+    let mut seen = 0;
+    walk(dest, &mut total, &mut seen);
+    total
 }
 
 fn main() -> std::process::ExitCode {

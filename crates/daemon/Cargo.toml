@@ -20,11 +20,13 @@ path = "src/main.rs"
 brand = { workspace = true }
 proto = { workspace = true }
 engine = { workspace = true }
+gitbroker = { workspace = true }
 hoststate = { workspace = true }
 projectcheck = { workspace = true }
 secrets = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 sha2 = "0.10"
 nix = { version = "0.29", default-features = false, features = ["socket", "user"] }
 tempfile = { workspace = true }

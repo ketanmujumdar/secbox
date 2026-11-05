@@ -46,7 +46,7 @@ fn help_and_usage_use_the_brand_name() {
 #[test]
 fn unbuilt_commands_refuse_with_a_distinct_code() {
     let dir = home();
-    for command in ["up", "down", "status", "diff", "export"] {
+    for command in ["diff", "export"] {
         let done = run_binary(dir.path(), &[command]);
         assert_eq!(done.code, NOT_BUILT, "{command}");
         assert!(done.err.contains("not built yet"), "{command}");
@@ -56,8 +56,28 @@ fn unbuilt_commands_refuse_with_a_distinct_code() {
     assert_ne!(NOT_BUILT, exit::OK);
     assert_ne!(NOT_BUILT, exit::FAILED);
     assert_ne!(NOT_BUILT, exit::USAGE);
-    let flags = run_binary(dir.path(), &["up", "--memory", "6G", "--cpus", "4"]);
-    assert_eq!(flags.code, NOT_BUILT);
+}
+
+/// The commands that run a sandbox are built, but they do nothing on their
+/// own: they ask the daemon. With no daemon they must say so plainly, and
+/// they must not fall back to doing the work themselves.
+#[test]
+fn the_sandbox_commands_report_a_daemon_that_is_not_running() {
+    let dir = home();
+    for command in ["up", "down", "status"] {
+        let done = run_binary(dir.path(), &[command]);
+        assert_eq!(done.code, exit::FAILED, "{command}: {}", done.all());
+        assert!(
+            done.err.contains(brand::DAEMON_BIN),
+            "{command} should name the daemon: {}",
+            done.all()
+        );
+        assert!(
+            done.err.contains("not running"),
+            "{command}: {}",
+            done.all()
+        );
+    }
 }
 
 #[test]

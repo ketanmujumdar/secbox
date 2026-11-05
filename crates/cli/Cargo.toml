@@ -28,6 +28,9 @@ serde_json.workspace = true
 rpassword = "7"
 sha2 = "0.10"
 hoststate = { workspace = true }
+proto = { workspace = true }
 
 [dev-dependencies]
 tempfile.workspace = true
+daemon = { workspace = true }
+engine = { workspace = true }

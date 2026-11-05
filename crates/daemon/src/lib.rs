@@ -14,6 +14,7 @@
 //! and never a reason to widen a rule.
 
 pub mod audit;
+pub mod gitref;
 pub mod plan;
 pub mod run;
 pub mod server;
