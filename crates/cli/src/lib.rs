@@ -233,8 +233,45 @@ pub(crate) fn with_test_deps<R>(
     })
 }
 
-/// Resolves a project path argument to a real directory.
+/// True when a project argument names an SSH remote rather than a folder:
+/// `ssh://...`, or `[user@]host:path` with no `/` before the colon, as git
+/// reads it. A folder that exists by that name is still a folder.
+pub(crate) fn names_remote(path: &Path, deps: &Deps) -> bool {
+    let Some(text) = path.to_str() else {
+        return false;
+    };
+    let shaped = text.starts_with("ssh://")
+        || text
+            .split_once(':')
+            .is_some_and(|(before, after)| !before.is_empty() && !before.contains('/') && !after.is_empty());
+    shaped && !deps.cwd.join(path).exists()
+}
+
+/// Asks the daemon where it keeps a remote project, without fetching.
+fn remote_dir(url: &str, deps: &Deps) -> Result<PathBuf, String> {
+    let request = proto::Request::Fetch(proto::FetchArgs {
+        url: url.to_owned(),
+        git_ref: None,
+        fetch: false,
+        ssh_auth_sock: None,
+    });
+    match deps.daemon.call(request, &mut |_, _| {}) {
+        Ok(proto::Reply::Fetch(report)) => Ok(PathBuf::from(report.project_path)),
+        Ok(_) => Err("the daemon answered something else".to_owned()),
+        Err(error) => Err(esc(&error.message())),
+    }
+}
+
+/// Resolves a project path argument to a real directory. An SSH remote names
+/// the folder the daemon fetched it into.
 pub(crate) fn project_dir(path: Option<&Path>, deps: &Deps) -> Result<PathBuf, String> {
+    if let Some(remote) = path.filter(|path| names_remote(path, deps)) {
+        let url = remote.to_string_lossy();
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return Err("only SSH remotes can be used as a project for now".to_owned());
+        }
+        return remote_dir(&url, deps);
+    }
     let raw = match path {
         Some(path) if path.is_absolute() => path.to_path_buf(),
         Some(path) => deps.cwd.join(path),

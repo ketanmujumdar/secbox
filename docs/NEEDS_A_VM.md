@@ -14,7 +14,7 @@ hand on a Mac. Nothing in `crates/daemon` or `crates/cli` was part of that run.
 | Gap | Effect |
 | --- | --- |
 | No `/dev/kvm`, no engine binary | Nothing can boot. Every VM path is unexercised |
-| git 2.43, and `gitbroker` requires 2.50 | 10 unit tests, all 54 tests in `tests/hostile.rs` and the one in `tests/env_scrub.rs` never ran. They compile |
+| git 2.43, and `gitbroker` requires 2.50 | 11 unit tests, all 54 tests in `tests/hostile.rs` and the one in `tests/env_scrub.rs` never ran. They compile. The 11th, the SSH fetch, passed once with the version check lowered to 2.43 for that run |
 
 ## Logs and terminals: what ran on a real VM
 
@@ -24,6 +24,19 @@ On Nov 5, 2026, on a Mac, against a running `demo_shop` sandbox, using a second 
 - [ ] Refusing a sandbox that is really stopped. This ran only with a stub engine that reports `Stopped`, because the real sandbox was in use.
 - [ ] Hostile output from inside a VM. Hostile bytes ran only from a stub engine through the real binaries and socket, and in tests.
 - [ ] Commands typed into `shell SERVICE`. Only opening it and leaving with Ctrl-D ran, so as not to write a history file in the container.
+
+## Fetching from an SSH remote
+
+Built on Nov 5, 2026 (`docs/GIT.md`). This needs a real Git server and a real SSH agent rather than a VM, but it has had neither. The fetch ran only through a stand-in `ssh` that runs `git-upload-pack` locally.
+
+- [ ] `secbox up git@github.com:ORG/REPO.git` against a private repository, with the key in `ssh-agent`. Then with the daemon started without `SSH_AUTH_SOCK`, so the client's socket is the one used.
+- [ ] A host missing from `known_hosts` failing with the hint, and nothing written to `known_hosts`.
+- [ ] A key with a passphrase and no agent failing quickly, rather than hanging until the 300-second limit.
+- [ ] macOS: Apple's `/usr/bin/ssh` with a Keychain key, 1Password's agent, and Secretive. Each should prompt as usual.
+- [ ] A remote behind `ProxyJump` in `~/.ssh/config`, and an `ssh://` remote on a non-standard port.
+- [ ] A large repository: the fetch inside the 300-second limit, and the export inside its limits.
+- [ ] `down --destroy`, then `up` fetching a newer commit and replacing the copy, with no `.next` or `.old` left behind.
+- [ ] Git LFS pointer files arriving as pointers, and a repository with submodules starting without them.
 
 ## AI agents through MCP
 

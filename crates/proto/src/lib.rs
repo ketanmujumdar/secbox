@@ -80,6 +80,44 @@ pub enum Request {
     Terminal(TerminalArgs),
     /// Read the blocked hostnames recorded for a project. Never starts anything.
     Blocked(BlockedArgs),
+    /// Find, and if asked fetch, a project that lives in a Git remote over SSH.
+    /// The daemon fetches with the user's SSH key on the host and keeps the
+    /// files in its own state folder; nothing about the key reaches a sandbox.
+    Fetch(FetchArgs),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FetchArgs {
+    /// An SSH remote: `git@host:org/repo.git` or `ssh://...`.
+    pub url: String,
+    /// A branch, tag or full commit id. `None` means the remote's default branch.
+    pub git_ref: Option<String>,
+    /// Fetch now. Without it, only an earlier fetch is looked up.
+    pub fetch: bool,
+    /// The client's SSH agent socket, which may be newer than the one the
+    /// daemon started with. The daemon checks it is a socket owned by its own
+    /// user, and passes it to `ssh` and nothing else.
+    #[serde(default)]
+    pub ssh_auth_sock: Option<String>,
+}
+
+/// Where a remote project's files are, and what they are.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FetchReport {
+    pub url: String,
+    /// The folder the daemon keeps the project in. Every other request names
+    /// the project by this path.
+    pub project_path: String,
+    /// The commit the files come from, if it could be read.
+    pub commit: Option<String>,
+    /// What was asked for, or `HEAD`.
+    pub git_ref: String,
+    /// True if this request fetched. False when a sandbox already holds an
+    /// earlier fetch, which is never replaced under it, or when only a lookup
+    /// was asked for.
+    pub fetched: bool,
 }
 
 /// The most log lines one request may ask for from each service.
@@ -239,6 +277,7 @@ pub enum Reply {
     Logs(LogsReport),
     Terminal(TerminalReport),
     Blocked(BlockedReport),
+    Fetch(FetchReport),
 }
 
 /// Whether a project's sandbox is writing down what it is refused.
@@ -636,6 +675,12 @@ mod tests {
         round_trip(Request::Blocked(BlockedArgs {
             project: "/p".to_owned(),
             after: Some(BlockedCursor { file: 7, offset: 9 }),
+        }));
+        round_trip(Request::Fetch(FetchArgs {
+            url: "git@example.invalid:o/r.git".to_owned(),
+            git_ref: Some("main".to_owned()),
+            fetch: true,
+            ssh_auth_sock: Some("/tmp/agent.sock".to_owned()),
         }));
     }
 

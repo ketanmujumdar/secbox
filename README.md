@@ -29,6 +29,7 @@ any of it can be called working.
 | `net blocked [--project PATH] [-f]` | Works, through the daemon, on a sandbox created since this was added. Blocked hostnames only. See [Blocked hostnames](#blocked-hostnames) |
 | `uninstall --purge` | Works. Removes the state folder only |
 | `up`, `down`, `status` | Built, for Compose projects and projects with only a Dockerfile. They need the daemon |
+| `up git@host:org/repo.git [--ref REF]` | Built, never run against a real server. The daemon fetches over SSH on this machine, with your agent, and the sandbox gets only the files. See [docs/GIT.md](docs/GIT.md) |
 | `logs [SERVICE] [-f] [--tail N] [--project PATH]` | Works on a running sandbox, through the daemon. Removes terminal control codes. Does not mask secret values |
 | `shell [SERVICE]`, `exec [--service S] -- CMD...` | Work on a running sandbox, on your real terminal. Control codes can't be filtered there |
 | `mcp serve --project PATH` | Built, never run on a real VM. An MCP server on stdin and stdout that lets an AI agent on this machine work in one project's sandbox. See [AI agents](#ai-agents-claude-code-codex) |
@@ -67,6 +68,17 @@ In the full-screen interface, the Logs panel follows new lines by itself. Scroll
 There is no SSH server and no open port in the VM. For `shell` and `exec` the daemon checks the sandbox is running and tells the CLI where the engine is, and the CLI runs the engine with a cleared environment. Anything you paste into that shell is inside the sandbox.
 
 `logs` masks nothing. A service given a secret can print it, and `logs` will then show it.
+
+## Starting from a Git remote
+
+```sh
+secbox up git@github.com:org/shop.git --ref main
+secbox status git@github.com:org/shop.git      # any command takes the remote in place of a folder
+```
+
+You don't need a clone on your machine. The daemon fetches over SSH on the host, using your `ssh`, your `~/.ssh/config` and your SSH agent. It keeps a mirror in `~/.secbox/remote`, and the sandbox gets one commit's files with likely secrets left out. **Your key never goes into the VM**: the command line passes only the path of your agent's socket to the daemon, and `ssh` runs with options that refuse prompts and unknown host keys and forward nothing. The host's key must already be in your `known_hosts`. A key with a passphrase works only through an agent.
+
+A fetch is never repeated under an existing sandbox, and there is no `pull` yet. To start from a newer commit, run `down --destroy`, then `up`. Nothing comes back out of a sandbox yet either: `diff` and `export` are not built. [docs/GIT.md](docs/GIT.md) explains all of it.
 
 ## AI agents (Claude Code, Codex)
 

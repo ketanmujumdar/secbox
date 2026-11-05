@@ -36,6 +36,8 @@ pub enum Action {
     /// A secret was not delivered, and why.
     SecretRefused,
     SnapshotTaken,
+    /// A project was fetched from a Git remote, over SSH, on the host.
+    RemoteFetched,
     /// A file was deliberately left out of a snapshot.
     SnapshotExcluded,
     BuildStarted,

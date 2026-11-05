@@ -90,6 +90,8 @@ Done when: a developer can run, debug and rebuild `demo_shop` using only secbox 
 - A real Touch ID approver, and a passphrase approver for headless Linux. Approval must prove a person acted.
 - Settle Git history: the snapshot has no `.git`, so VM commits must share ancestry with the remote, likely through `import_base` and prerequisite bundles.
 - Real HTTPS push with credentials, tested against a real server. Then decide on SSH remotes.
+  - Fetching over SSH is built early: `secbox up git@host:org/repo.git`, into a mirror the daemon owns, with the user's agent on the host (`docs/GIT.md`). Pushing over SSH would reuse its fixed `ssh` command. The mirror holds the base commit, which settles part of the history question for fetched projects.
+- `secbox pull` for a fetched project: fetch, show the new commit, and update `/work` without losing changes made in the sandbox.
 - Validate bundles in a throwaway VM before the host's Git parses them.
 
 Done when: a change made in the VM reaches a `secbox/<task>` branch on a real remote only after Touch ID, and a planted `.vscode/tasks.json` is flagged in `diff`.

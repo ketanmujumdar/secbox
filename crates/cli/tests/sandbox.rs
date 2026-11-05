@@ -27,7 +27,14 @@ const GIB: u64 = 1 << 30;
 
 struct Facts {
     engine: FakeEngine,
+    /// Every fetch asked for: URL, ref and agent socket.
+    fetches: std::sync::Mutex<Vec<(String, String, Option<PathBuf>)>>,
+    /// What a fetch fails with, if it should.
+    fetch_error: std::sync::Mutex<Option<String>>,
 }
+
+/// The commit a fake fetch reports.
+const FETCHED: &str = "0123456789abcdef0123456789abcdef01234567";
 
 impl daemon::Deps for Facts {
     fn engine(&self) -> &dyn Engine {
@@ -54,15 +61,42 @@ impl daemon::Deps for Facts {
         Box::new(MemoryStore::default())
     }
 
+    /// Stands in for git over ssh: makes the mirror's HEAD name a commit, as
+    /// the real fetch leaves it, and records what was asked.
+    fn fetch_remote(
+        &self,
+        mirror: &Path,
+        url: &str,
+        git_ref: &str,
+        agent_socket: Option<&Path>,
+    ) -> Result<String, String> {
+        self.fetches.lock().unwrap().push((
+            url.to_owned(),
+            git_ref.to_owned(),
+            agent_socket.map(Path::to_path_buf),
+        ));
+        if let Some(error) = self.fetch_error.lock().unwrap().clone() {
+            return Err(error);
+        }
+        std::fs::create_dir_all(mirror.join("objects")).unwrap();
+        std::fs::write(mirror.join("HEAD"), format!("{FETCHED}\n")).unwrap();
+        Ok(FETCHED.to_owned())
+    }
+
     fn snapshot(
         &self,
-        _root: &Path,
+        root: &Path,
         source: &Source,
         dest: &Path,
     ) -> Result<SnapshotPlan, String> {
         // The real snapshot creates its destination and refuses one that exists.
         std::fs::create_dir(dest).unwrap();
         std::fs::write(dest.join("compose.yaml"), b"services: {}\n").unwrap();
+        if root.ends_with("mirror.git") {
+            // Exporting a fetched remote's commit: give it a small project.
+            std::fs::write(dest.join("compose.yaml"), "services:\n  web:\n    image: web:1\n").unwrap();
+            std::fs::write(dest.join(brand::CONFIG_FILE), "resources:\n  memory: 4G\n  cpus: 2\n  disk: 30G\n").unwrap();
+        }
         Ok(SnapshotPlan {
             revision: match source {
                 Source::Commit { revision } => Some(revision.clone()),
@@ -165,6 +199,8 @@ fn harness_and_facts() -> (Harness, Arc<Facts>) {
     .unwrap();
     let facts = Arc::new(Facts {
         engine: FakeEngine::new(),
+        fetches: std::sync::Mutex::new(Vec::new()),
+        fetch_error: std::sync::Mutex::new(None),
     });
     let service = daemon::Service::new(
         StatePaths {
@@ -1322,4 +1358,158 @@ fn mcp_setup_codex_prints_the_commands_and_changes_nothing() {
     assert!(done.out.contains("Nothing was changed"), "{}", done.out);
     let after: Vec<_> = std::fs::read_dir(h.home.path()).unwrap().collect();
     assert_eq!(before.len(), after.len());
+}
+
+// ---- projects fetched from an SSH remote
+
+const REMOTE: &str = "git@example.invalid:org/shop.git";
+
+fn fetches(facts: &Facts) -> Vec<(String, String, Option<PathBuf>)> {
+    facts.fetches.lock().unwrap().clone()
+}
+
+#[test]
+fn up_with_an_ssh_remote_fetches_on_the_host_then_starts_from_that_commit() {
+    let (h, facts) = harness_and_facts();
+    let done = h.run(&["up", REMOTE, "--all-ports"], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert_eq!(fetches(&facts), [(REMOTE.to_owned(), "HEAD".to_owned(), None)]);
+    assert!(done.out.contains("Fetched"), "{}", done.out);
+    assert!(done.out.contains(FETCHED), "{}", done.out);
+    assert!(done.out.contains("key"), "says where the key stays: {}", done.out);
+
+    // The files live in the daemon's own folder, with a `.git` pointing at
+    // the mirror, and that commit is what the sandbox was given.
+    let remote = h.state().join("remote");
+    let folder = std::fs::read_dir(&remote).unwrap().next().unwrap().unwrap().path();
+    let name = folder.file_name().unwrap().to_str().unwrap().to_owned();
+    assert!(name.starts_with("example-invalid-shop-"), "{name}");
+    let root = folder.join("shop");
+    let pointer = std::fs::read_to_string(root.join(".git")).unwrap();
+    assert_eq!(pointer.trim(), format!("gitdir: {}", folder.join("mirror.git").display()));
+    assert_eq!(daemon::gitref::head_commit(&root).unwrap(), FETCHED);
+    assert!(facts.engine.calls().iter().any(|call| matches!(call, FakeCall::CopyIn(..))), "the snapshot was copied in");
+
+    // Other commands take the remote in place of a folder.
+    let status = h.run(&["status", REMOTE], "");
+    assert_eq!(status.code, 0, "{}", status.all());
+    assert!(status.out.contains("running"), "{}", status.out);
+    assert_eq!(fetches(&facts).len(), 1, "looking a remote up does not fetch");
+}
+
+#[test]
+fn up_passes_on_the_ref_asked_for() {
+    let (h, facts) = harness_and_facts();
+    let done = h.run(&["up", REMOTE, "--ref", "release/1.2", "--all-ports"], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert_eq!(fetches(&facts)[0].1, "release/1.2");
+}
+
+#[test]
+fn a_remote_is_never_fetched_again_under_an_existing_sandbox() {
+    let (h, facts) = harness_and_facts();
+    assert_eq!(h.run(&["up", REMOTE, "--all-ports"], "").code, 0);
+    assert_eq!(h.run(&["down", REMOTE], "").code, 0);
+    let again = h.run(&["up", REMOTE, "--ref", "other", "--all-ports"], "");
+    assert_eq!(again.code, 0, "{}", again.all());
+    assert_eq!(fetches(&facts).len(), 1, "fetched again under a sandbox");
+    assert!(again.out.contains("not fetched again"), "{}", again.out);
+    assert!(again.out.contains("--ref was not used"), "{}", again.out);
+    assert!(again.out.contains("down --destroy"), "{}", again.out);
+
+    // Once it is destroyed, the next up fetches afresh.
+    assert_eq!(h.run(&["down", REMOTE, "--destroy"], "").code, 0);
+    assert_eq!(h.run(&["up", REMOTE, "--all-ports"], "").code, 0);
+    assert_eq!(fetches(&facts).len(), 2);
+}
+
+#[test]
+fn a_failed_fetch_says_what_to_do_and_starts_nothing() {
+    let (h, facts) = harness_and_facts();
+    *facts.fetch_error.lock().unwrap() =
+        Some("git@example.invalid: Permission denied (publickey).".to_owned());
+    let done = h.run(&["up", REMOTE, "--all-ports"], "");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(done.err.contains("Permission denied"), "{}", done.err);
+    assert!(done.err.contains("ssh-add"), "{}", done.err);
+    assert!(facts.engine.calls().iter().all(|call| matches!(call, FakeCall::Status(_))), "{:?}", facts.engine.calls());
+}
+
+#[test]
+fn a_remote_that_could_carry_an_option_is_refused_before_anything_runs() {
+    let (h, facts) = harness_and_facts();
+    for url in [
+        "git@example.invalid:-oProxyCommand=x",
+        "ssh://-oProxyCommand=touch/x",
+        "ext::sh:x",
+        "git@example.invalid:org/../../x",
+    ] {
+        let done = h.run(&["up", url], "");
+        assert_eq!(done.code, cli::exit::FAILED, "{url}: {}", done.all());
+    }
+    assert!(fetches(&facts).is_empty());
+    assert!(!h.state().join("remote").exists() || std::fs::read_dir(h.state().join("remote")).unwrap().next().is_none());
+}
+
+#[test]
+fn https_remotes_and_misplaced_flags_are_refused() {
+    let (h, facts) = harness_and_facts();
+    let done = h.run(&["up", "https://example.invalid/org/shop.git"], "");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(done.err.contains("only SSH"), "{}", done.err);
+    let done = h.run(&["up", "--ref", "main"], "");
+    assert_eq!(done.code, cli::exit::USAGE, "{}", done.all());
+    let done = h.run(&["up", REMOTE, "--include-uncommitted"], "");
+    assert_eq!(done.code, cli::exit::USAGE, "{}", done.all());
+    assert!(fetches(&facts).is_empty());
+}
+
+#[test]
+fn a_remote_never_fetched_is_not_found_by_other_commands() {
+    let (h, facts) = harness_and_facts();
+    let done = h.run(&["status", REMOTE], "");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(done.err.contains("not been fetched"), "{}", done.err);
+    assert!(fetches(&facts).is_empty());
+}
+
+#[test]
+fn only_an_agent_socket_of_this_user_is_passed_to_ssh() {
+    let (h, facts) = harness_and_facts();
+    let daemon = h.daemon.as_ref().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("not-a-socket");
+    std::fs::write(&file, "").unwrap();
+    let ask = |sock: &Path| {
+        daemon.call(
+            Request::Fetch(proto::FetchArgs {
+                url: REMOTE.to_owned(),
+                git_ref: None,
+                fetch: true,
+                ssh_auth_sock: Some(sock.to_str().unwrap().to_owned()),
+            }),
+            &mut |_, _| {},
+        )
+    };
+    assert!(ask(&file).is_err());
+    assert!(fetches(&facts).is_empty());
+
+    let socket = dir.path().join("agent");
+    let _agent = UnixListener::bind(&socket).unwrap();
+    let report = match ask(&socket) {
+        Ok(Reply::Fetch(report)) => report,
+        other => panic!("{other:?}"),
+    };
+    assert!(report.fetched);
+    assert_eq!(fetches(&facts)[0].2.as_deref(), Some(socket.as_path()));
+}
+
+#[test]
+fn a_folder_whose_name_looks_like_a_remote_is_still_a_folder() {
+    let (h, facts) = harness_and_facts();
+    let odd = h.project.path().join("a:b");
+    std::fs::create_dir(&odd).unwrap();
+    let done = h.run(&["status", "a:b"], "");
+    assert!(!done.err.contains("not been fetched"), "{}", done.all());
+    assert!(fetches(&facts).is_empty());
 }

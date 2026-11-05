@@ -96,6 +96,32 @@ impl Deps for RealDeps {
                 .collect(),
         })
     }
+
+    fn fetch_remote(
+        &self,
+        mirror: &Path,
+        url: &str,
+        git_ref: &str,
+        agent_socket: Option<&Path>,
+    ) -> Result<String, String> {
+        let program = gitbroker::SshTransport::find_program()
+            .ok_or("no ssh program was found in /usr/bin, /usr/local/bin or /opt/homebrew/bin")?;
+        let agent = Self::agent(agent_socket);
+        let ssh = gitbroker::SshTransport::new(&program, agent.as_deref()).map_err(|e| e.to_string())?;
+        gitbroker::fetch_ssh(mirror, url, git_ref, &ssh).map_err(|e| e.to_string())
+    }
+}
+
+impl RealDeps {
+    /// The agent the client named, or else the one this daemon was started
+    /// with, if it is a socket of this user. With neither, `ssh` falls back to
+    /// its own key files, which works only for a key with no passphrase.
+    fn agent(given: Option<&Path>) -> Option<std::path::PathBuf> {
+        given.map(Path::to_path_buf).or_else(|| {
+            std::env::var_os("SSH_AUTH_SOCK")
+                .and_then(|path| daemon::remote::usable_agent_socket(Path::new(&path)))
+        })
+    }
 }
 
 /// Adds up what the snapshot holds, for the report. Bounded, because the
