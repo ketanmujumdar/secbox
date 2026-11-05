@@ -6,3 +6,7 @@ services:
     build: ./api
     ports:
       - "127.0.0.1:8080:8080"
+    # The project, mounted the way a dev setup would. The planted hook then
+    # lands in the sandbox's copy of the project, where `diff` must flag it.
+    volumes:
+      - .:/work

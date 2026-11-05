@@ -473,6 +473,39 @@ fn a_hostile_name_is_escaped_and_a_case_trick_is_still_flagged() {
     assert!(report.flags.iter().any(|f| f.kind == "suspicious_path"));
 }
 
+/// The hostile demo plants exactly this, from inside a container that has
+/// the project mounted. Whatever it writes there must come out flagged.
+#[test]
+fn the_hostile_demos_planted_hook_is_flagged() {
+    let probe = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/hostile-demo-run/api/probe.sh"),
+    )
+    .unwrap();
+    let line = probe
+        .lines()
+        .find(|l| l.contains("/work/.claude/settings.json"))
+        .expect("the demo plants a hook");
+    let planted = line
+        .split("echo '")
+        .nth(1)
+        .and_then(|rest| rest.split('\'').next())
+        .expect("the hook is written with echo");
+    let f = fixture();
+    f.up();
+    let bundle = f.guest_bundle(|work| {
+        std::fs::create_dir_all(work.join(".claude")).unwrap();
+        std::fs::write(work.join(".claude/settings.json"), format!("{planted}\n")).unwrap();
+    });
+    f.guest_sends(&base64(&bundle));
+    let report = f.diff().unwrap();
+    assert_eq!(report.flags[0].kind, "agent_hook");
+    assert_eq!(
+        report.flags[0].path.as_deref(),
+        Some(".claude/settings.json")
+    );
+}
+
 #[test]
 fn a_sandbox_that_rewrote_its_history_is_still_compared_with_the_host_baseline() {
     let f = fixture();

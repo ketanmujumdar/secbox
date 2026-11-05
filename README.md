@@ -31,10 +31,11 @@ any of it can be called working.
 | `up`, `down`, `status` | Built, for Compose projects and projects with only a Dockerfile. They need the daemon |
 | `logs [SERVICE] [-f] [--tail N] [--project PATH]` | Works on a running sandbox, through the daemon. Removes terminal control codes. Does not mask secret values |
 | `shell [SERVICE]`, `exec [--service S] -- CMD...` | Work on a running sandbox, on your real terminal. Control codes can't be filtered there |
-| `diff`, `export` | Not built |
+| `diff [PATH]` | Built, through the daemon, and tested against a fake engine only: **never run on a real VM**. Lists what changed in a running sandbox since its snapshot, with files that could act on your machine flagged first. Copies nothing out. See [Reviewing changes](#reviewing-changes-in-a-sandbox) |
+| `export` | Not built |
 | Desktop app (`apps/desktop`) | Early first cut. A menu bar icon that keeps the daemon running, and a window for status, start with plan approval, stop, destroy, logs and blocked hostnames. Same daemon, same powers as the CLI. Run on Linux under Xvfb only; macOS untested. See [its README](apps/desktop/README.md) |
 
-`up`, `down`, `status`, `logs`, `net blocked`, `shell` and `exec` send requests to a daemon,
+`up`, `down`, `status`, `logs`, `net blocked`, `shell`, `exec` and `diff` send requests to a daemon,
 `secboxd`, which holds the secrets, the policy and the approvals. With no daemon
 running they say so.
 
@@ -65,6 +66,39 @@ In the full-screen interface, the Logs panel follows new lines by itself. Scroll
 There is no SSH server and no open port in the VM. For `shell` and `exec` the daemon checks the sandbox is running and tells the CLI where the engine is, and the CLI runs the engine with a cleared environment. Anything you paste into that shell is inside the sandbox.
 
 `logs` masks nothing. A service given a secret can print it, and `logs` will then show it.
+
+## Reviewing changes in a sandbox
+
+```sh
+secbox diff                     # the current folder's project
+secbox diff path/to/project
+```
+
+```text
+Compared with the snapshot this sandbox started from (commit 1f2a12002068).
+
+FLAG  .claude/settings.json  adds a hook for an AI coding tool, which would run on your machine
+FLAG  .claude/settings.json  changes Claude Code settings, which can make it run commands on your machine
+
+2 files changed:
+  added     .claude/settings.json
+  modified  api/server.js
+
+2 flags to look at. Flags are a heuristic aid. Read the changes yourself before anything from this sandbox reaches your machine.
+Nothing was copied out of the sandbox. Export is not built yet.
+```
+
+It exits 0 when nothing is flagged, 5 when something is, or when the review stopped at a limit, and 1 when it could not compare. Flags cover AI tool settings and hooks (`.claude/`, `.cursor/`), `CLAUDE.md` and `AGENTS.md`, `.vscode/`, CI workflows, Git hooks such as `.husky`, package install scripts, lockfiles, Dockerfiles and Compose files, symlinks, binaries and likely secrets. Names are matched the way a case-insensitive filesystem would, so `.CLAUDE/Settings.json` and lookalikes with invisible characters flag too.
+
+How it works:
+
+- When a sandbox is created, the daemon commits the snapshot itself, keeps that commit in the project's state folder, and gives the sandbox the same commit as `/work/.git`. That commit is what `diff` compares with, whatever the sandbox does to its own history.
+- On `diff`, Git runs inside the sandbox only. It commits everything in `/work` onto a throwaway branch, uncommitted changes included, and sends a bundle of it back as text. The daemon stops reading at 128 MB.
+- The daemon checks the bundle, imports it into a new quarantine repository and reviews it there. Nothing from it is checked out or run, and Git on your machine never runs in a `.git` the sandbox wrote.
+
+Limits: files the project's `.gitignore` leaves out are not shown, and would not be in an export either. A sandbox created before this was added has nothing to compare with, and `diff` says to recreate it. The sandbox must be running. `export` is not built, so nothing reviewed here can leave the sandbox yet.
+
+The Review panel in the full-screen interface (`r`) shows the same lines, flags first in red. Press `5` to compare: it runs inside the sandbox, so it never runs by itself. Up, down, PgUp and PgDn scroll. The desktop app's Git review page shows the same, with a Compare button.
 
 ## Blocked hostnames
 
@@ -107,11 +141,12 @@ secbox net check tests/fixtures/policy.yaml PUT https://registry.npmjs.org/left-
 | 2 | Bad usage |
 | 3 | `check --strict` found Critical or High findings |
 | 4 | `net check` explained a denied request |
+| 5 | `diff` flagged something, or its review stopped at a limit |
 | 69 | The command is not built yet |
 
 ## Files it keeps
 
-State lives in `~/.secbox`, owner-only: per-project secret names, their assignments and a names-only audit log. Secret values go only to macOS Keychain or Linux Secret Service. Set `SECBOX_HOME` to use `$SECBOX_HOME/.secbox` instead, which helps when testing or when your home path is too long for Unix sockets.
+State lives in `~/.secbox`, owner-only: per-project secret names, their assignments, a names-only audit log, and for each sandbox a small Git repository holding the commit of the snapshot it was given (`baseline.git`, removed by `down --destroy`). Secret values go only to macOS Keychain or Linux Secret Service. Set `SECBOX_HOME` to use `$SECBOX_HOME/.secbox` instead, which helps when testing or when your home path is too long for Unix sockets.
 
 ## Changing the name
 
