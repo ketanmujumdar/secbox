@@ -310,6 +310,24 @@ impl LogsPanel {
     }
 }
 
+/// One secret on the Secrets panel. Never its value.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecretRow {
+    pub name: String,
+    /// How it was stored: typed at a prompt, or imported from a file.
+    pub source: String,
+    /// The services it is assigned to, and how it reaches them.
+    pub goes_to: String,
+}
+
+/// What the Secrets panel shows for the selected project.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecretsPanel {
+    pub rows: Vec<SecretRow>,
+    /// Why there are no rows, when there are none.
+    pub note: Option<Line>,
+}
+
 /// What the Traffic panel shows for the selected project.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrafficPanel {
@@ -357,6 +375,7 @@ pub struct Model {
     pub progress: Option<Progress>,
     pub logs: LogsPanel,
     pub traffic: TrafficPanel,
+    pub secrets: SecretsPanel,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -390,14 +409,7 @@ impl Model {
 /// otherwise read as "nothing happened".
 fn not_built(pane: Pane) -> &'static [&'static str] {
     match pane {
-        Pane::Projects | Pane::Logs | Pane::Traffic => &[],
-        Pane::Secrets => &[
-            "Secrets are stored, and assigned ones are delivered on each start.",
-            "",
-            "Use the secrets command to add and assign them. A service can read",
-            "what it is given. A secret held by the proxy also needs the gateway",
-            "to terminate TLS, which is not settled, so a plan with one is refused.",
-        ],
+        Pane::Projects | Pane::Logs | Pane::Traffic | Pane::Secrets => &[],
         Pane::Review => &[
             "Reviewing changes out of a sandbox is not built.",
             "",
@@ -604,6 +616,10 @@ fn body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, h: usi
     }
     if model.pane.0 == Pane::Traffic {
         traffic_body(model, screen, x, y, w, room);
+        return;
+    }
+    if model.pane.0 == Pane::Secrets {
+        secrets_body(model, screen, x, y, w, room);
         return;
     }
     if model.pane.0 != Pane::Projects {
@@ -939,6 +955,90 @@ fn live_tag(panel: &LogsPanel) -> (String, Style) {
         Live::Following => ("Following".to_owned(), Style::WindowGood),
         Live::Ended => ("Not following".to_owned(), Style::WindowWarn),
         Live::Off => (String::new(), Style::WindowDim),
+    }
+}
+
+/// The selected project's secrets: a name, how it was stored, and where it
+/// goes, in columns, then what is always true about them. Read-only: changing
+/// them stays with the secrets command, which asks for values at a hidden
+/// prompt.
+fn secrets_body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, room: usize) {
+    let panel = &model.secrets;
+    let width = w - 2;
+    let bottom = y + room;
+    let Some(row) = model.selected_row() else {
+        screen.text_cut(x + 1, y, "No project has been started on this machine.", width, Style::Window);
+        return;
+    };
+    screen.text_cut(x + 1, y, &row.name, width, Style::WindowDim);
+
+    // What is always true goes at the bottom, and is kept however many
+    // secrets there are, so the rows get what is left.
+    let footer: Vec<(String, Style)> = [
+        ("Names only. Values are never shown, and the keychain was not read.", Style::WindowWarn),
+        ("A service can read every secret it is given.", Style::WindowDim),
+    ]
+    .iter()
+    .flat_map(|(text, style)| wrap(text, width).into_iter().map(|piece| (piece, *style)))
+    .chain(
+        wrap(
+            &format!("Add and assign them with: {} secrets set NAME --service SERVICE", brand::CLI_BIN),
+            width,
+        )
+        .into_iter()
+        .map(|piece| (piece, Style::WindowDim)),
+    )
+    .collect();
+    let footer_y = bottom.saturating_sub(footer.len()).max(y + 1);
+    for (offset, (text, style)) in footer.iter().enumerate() {
+        if footer_y + offset < bottom {
+            screen.text_cut(x + 1, footer_y + offset, text, width, *style);
+        }
+    }
+    let rows_bottom = footer_y.saturating_sub(1);
+
+    let mut at = y + 2;
+    if let Some(note) = &panel.note {
+        if at < rows_bottom {
+            screen.text_cut(x + 1, at, &note.text, width, note.style);
+        }
+        return;
+    }
+    if panel.rows.is_empty() || at >= rows_bottom {
+        return;
+    }
+    let name_w = panel
+        .rows
+        .iter()
+        .map(|r| r.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(4, (width / 3).max(4));
+    let source_w = 8;
+    let columns = |name: &str, source: &str, goes: &str| {
+        format!("{:<name_w$}  {:<source_w$}  {goes}", cut(name, name_w), source)
+    };
+    screen.text_cut(x + 1, at, &columns("NAME", "SOURCE", "GOES TO"), width, Style::WindowDim);
+    at += 1;
+    let fits = rows_bottom.saturating_sub(at);
+    let shown = if panel.rows.len() > fits { fits.saturating_sub(1) } else { fits };
+    for secret in panel.rows.iter().take(shown) {
+        let style = if secret.goes_to == "no service" {
+            Style::WindowDim
+        } else {
+            Style::Window
+        };
+        screen.text_cut(x + 1, at, &columns(&secret.name, &secret.source, &secret.goes_to), width, style);
+        at += 1;
+    }
+    if shown < panel.rows.len() && at < rows_bottom {
+        screen.text_cut(
+            x + 1,
+            at,
+            &format!("and {} more. The secrets list command shows them all.", panel.rows.len() - shown),
+            width,
+            Style::WindowDim,
+        );
     }
 }
 
@@ -1351,16 +1451,81 @@ mod tests {
     }
 
     #[test]
-    fn every_panel_that_is_not_built_says_so_rather_than_looking_empty() {
-        for (pane, phrase) in [
-            (Pane::Secrets, "delivered on each start"),
-            (Pane::Review, "is not built"),
+    fn the_panel_that_is_not_built_says_so_rather_than_looking_empty() {
+        let mut m = model();
+        m.pane = PaneState(Pane::Review);
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("is not built"), "{text}");
+    }
+
+    fn secrets_model() -> Model {
+        let mut m = model();
+        m.pane = PaneState(Pane::Secrets);
+        m.secrets.rows = vec![
+            SecretRow {
+                name: "API_KEY".to_owned(),
+                source: "prompt".to_owned(),
+                goes_to: "api, worker: injected into the environment".to_owned(),
+            },
+            SecretRow {
+                name: "DB_PASSWORD".to_owned(),
+                source: "import".to_owned(),
+                goes_to: "no service".to_owned(),
+            },
+        ];
+        m
+    }
+
+    #[test]
+    fn the_secrets_panel_lists_names_and_where_they_go_and_never_a_value() {
+        let text = plain(&secrets_model(), 100, 30);
+        assert!(!text.contains("is not built"), "{text}");
+        for phrase in [
+            "NAME",
+            "GOES TO",
+            "API_KEY",
+            "api, worker: injected into the environment",
+            "DB_PASSWORD",
+            "no service",
+            "Values are never shown",
+            "secrets set NAME",
         ] {
-            let mut m = model();
-            m.pane = PaneState(pane);
-            let text = plain(&m, 80, 24);
-            assert!(text.contains(phrase), "{}: {text}", pane.label());
+            assert!(text.contains(phrase), "{phrase}: {text}");
         }
+    }
+
+    /// Whatever the number of secrets and the size of the screen, the words
+    /// saying values are never shown stay, and the frame holds.
+    #[test]
+    fn the_secrets_panel_keeps_its_warning_however_many_there_are() {
+        let mut m = secrets_model();
+        m.secrets.rows = (0..200)
+            .map(|n| SecretRow {
+                name: format!("SECRET_{n:03}"),
+                source: "prompt".to_owned(),
+                goes_to: "x".repeat(300),
+            })
+            .collect();
+        for (width, height) in [(MIN_WIDTH, MIN_HEIGHT), (80, 24), (200, 60)] {
+            let text = flat(&m, width, height);
+            assert!(text.contains("Values are never shown"), "{width}x{height}: {text}");
+            for line in plain(&m, width, height).lines() {
+                assert_eq!(line.chars().count(), width);
+            }
+        }
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("SECRET_000"), "{text}");
+        assert!(text.contains("more. The secrets list command"), "{text}");
+    }
+
+    #[test]
+    fn a_project_with_no_secrets_says_so() {
+        let mut m = secrets_model();
+        m.secrets.rows.clear();
+        m.secrets.note = Some(Line::plain("No secrets are recorded for this project."));
+        let text = plain(&m, 80, 24);
+        assert!(text.contains("No secrets are recorded"), "{text}");
+        assert!(!text.contains("GOES TO"), "{text}");
     }
 
     fn logs_model() -> Model {

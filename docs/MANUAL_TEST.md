@@ -295,6 +295,8 @@ In the full-screen interface, press `t` for Traffic. Up, down, PgUp and PgDn scr
 
 Press `p` for Projects. The Blocked box on the right has a red frame, gives the same totals as `status` with "t to see them", and never says "0". Beside it are Services with each one's health or state, Ports as `127.0.0.1:PORT`, and Resources, with the warning that the services came from inside the sandbox underneath. Shrink the terminal to 60 by 14: the boxes stack and drop, Blocked last, and nothing breaks the frame.
 
+Press `s` for Secrets. It lists the same names, sources and services as `secbox secrets list --project "$P"`, with no values, and macOS does not ask for keychain access. Up and down move to another project's list.
+
 On a stopped project, press `2` and answer `y`. A grey box titled `Starting` lists each step as the daemon reports it, the newest marked and the earlier ones ticked, the same steps `secbox up` prints. Keys do nothing until it ends; then the box goes and the bottom line says how long it took.
 
 A crafted name stays on one line, with its odd characters shown as `\040` and the like. To try it, send your own DNS packet with `nc -u` to port 53 of the nameserver in the sandbox's `/etc/resolv.conf`.

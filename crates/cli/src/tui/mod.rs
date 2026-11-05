@@ -12,6 +12,7 @@
 mod logs;
 mod overview;
 mod screen;
+mod secrets;
 mod style;
 mod term;
 mod traffic;
@@ -310,7 +311,17 @@ fn refresh_panel_if_showing(
     match model.pane.0 {
         Pane::Logs => *follow = refresh_logs(deps, model),
         Pane::Traffic => refresh_traffic(deps, model),
-        Pane::Projects | Pane::Secrets | Pane::Review => {}
+        Pane::Secrets => refresh_secrets(deps, model),
+        Pane::Projects | Pane::Review => {}
+    }
+}
+
+/// Reads the selected project's secret names. This reads a small file in the
+/// state folder and asks nothing of the daemon, so it needs no limit.
+fn refresh_secrets(deps: &mut Deps, model: &mut Model) {
+    match model.selected_row().cloned() {
+        Some(row) => secrets::refresh(deps.env, &mut model.secrets, &row.name),
+        None => model.secrets = view::SecretsPanel::default(),
     }
 }
 
