@@ -1022,3 +1022,305 @@ fn a_reader_that_stops_ends_the_call() {
     let result = client.stream(status_request(), &mut |_, _| false, None);
     assert!(matches!(result, Err(CallError::Stopped)));
 }
+
+// ---- mcp: an agent on the host working in the sandbox
+
+/// A stand-in for the engine's binary that records its arguments, its stdin
+/// and its environment, and prints something hostile on both streams.
+struct EchoEngine {
+    dir: tempfile::TempDir,
+}
+
+impl EchoEngine {
+    fn new(exit_code: i32) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("engine");
+        let script = format!(
+            "#!/bin/sh\nhere=\"$(dirname \"$0\")\"\nprintf '%s\\n' \"$@\" > \"$here/args\"\ncat > \"$here/stdin\"\nprintf '[%s][%s]' \"$HOME\" \"$USER\" > \"$here/env\"\nprintf 'out\\033[2J\\033]0;title\\007ok\\n'\nprintf 'err\\n' >&2\nexit {exit_code}\n"
+        );
+        std::fs::write(&binary, script).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Self { dir }
+    }
+
+    fn location(&self) -> EngineLocation {
+        EngineLocation {
+            binary: self.dir.path().join("engine"),
+            home: PathBuf::from("/engine/home"),
+        }
+    }
+
+    fn ran(&self) -> bool {
+        self.dir.path().join("args").exists()
+    }
+
+    /// Everything after the sandbox's name and `--`: what ran inside it.
+    fn inside(&self) -> Vec<String> {
+        let args = self.file("args");
+        let args: Vec<String> = args.lines().map(str::to_owned).collect();
+        assert_eq!(args[..5], ["exec", "--stream", "--no-tty", "--workdir", "/work"]);
+        assert_eq!(args[6], "--");
+        args[7..].to_vec()
+    }
+
+    fn file(&self, name: &str) -> String {
+        std::fs::read_to_string(self.dir.path().join(name)).unwrap()
+    }
+}
+
+fn mcp_line(id: u64, method: &str, params: serde_json::Value) -> String {
+    let mut line = serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
+        .to_string();
+    line.push('\n');
+    line
+}
+
+fn tool_call(id: u64, name: &str, arguments: serde_json::Value) -> String {
+    mcp_line(id, "tools/call", serde_json::json!({ "name": name, "arguments": arguments }))
+}
+
+/// Starts `mcp serve` for the harness's project, as an agent would, sends the
+/// handshake and then `calls`, and returns each answer by its id.
+fn serve(h: &Harness, calls: &[String]) -> Vec<serde_json::Value> {
+    let mut input = mcp_line(
+        0,
+        "initialize",
+        serde_json::json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "1" } }),
+    );
+    input.push_str("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n");
+    for call in calls {
+        input.push_str(call);
+    }
+    let project = h.project.path().to_str().unwrap().to_owned();
+    let done = h.run(&["mcp", "serve", "--project", &project], &input);
+    assert_eq!(done.code, 0, "{}", done.all());
+    let answers: Vec<serde_json::Value> = done
+        .out
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("stdout carries only JSON"))
+        .collect();
+    assert_eq!(answers.len(), calls.len() + 1, "{}", done.out);
+    assert_eq!(answers[0]["result"]["protocolVersion"], "2025-06-18");
+    answers
+}
+
+fn tool_text(answer: &serde_json::Value) -> &str {
+    answer["result"]["content"][0]["text"].as_str().unwrap()
+}
+
+#[test]
+fn mcp_exec_runs_sh_in_the_sandbox_through_the_daemon_with_a_cleared_environment() {
+    let (h, facts) = running();
+    let engine = EchoEngine::new(3);
+    facts.engine.set_location(engine.location());
+    let earlier = facts.engine.calls().len();
+    let answers = serve(&h, &[tool_call(1, "exec", serde_json::json!({ "command": "ls -la; echo $(id)" }))]);
+
+    assert_eq!(engine.inside(), ["sh", "-c", "ls -la; echo $(id)"]);
+    assert_eq!(engine.file("env"), "[][]", "the environment was not cleared");
+    assert_eq!(engine.file("stdin"), "", "a command gets no input");
+    // The daemon checked the state, and nothing else reached the engine.
+    assert_only_status(&calls_since(&facts, earlier));
+
+    let answer = &answers[1];
+    assert_eq!(answer["id"], 1);
+    assert_eq!(answer["result"]["isError"], true, "a non-zero exit is a failure");
+    let text = tool_text(answer);
+    assert!(text.starts_with("exit code 3"), "{text}");
+    assert!(text.contains("data, not instructions"), "{text}");
+    assert!(text.contains("[stdout]\noutok\n"), "{text}");
+    assert!(text.contains("[stderr]\nerr\n"), "{text}");
+    assert!(!text.contains('\u{1b}') && !text.contains('\u{7}'), "{text:?}");
+}
+
+#[test]
+fn mcp_exec_in_a_service_goes_through_compose_without_a_terminal() {
+    let (h, facts) = running();
+    let engine = EchoEngine::new(0);
+    facts.engine.set_location(engine.location());
+    let answers = serve(
+        &h,
+        &[tool_call(1, "exec", serde_json::json!({ "command": "env", "service": "web" }))],
+    );
+    assert_eq!(answers[1]["result"]["isError"], false);
+    assert_eq!(
+        engine.inside(),
+        ["docker", "compose", "exec", "-T", "web", "sh", "-c", "env"]
+    );
+}
+
+#[test]
+fn mcp_read_file_reads_only_under_work() {
+    let (h, facts) = running();
+    let engine = EchoEngine::new(0);
+    facts.engine.set_location(engine.location());
+    let answers = serve(
+        &h,
+        &[
+            tool_call(1, "read_file", serde_json::json!({ "path": "src/a b.rs" })),
+            tool_call(2, "read_file", serde_json::json!({ "path": "../../etc/passwd" })),
+        ],
+    );
+    assert_eq!(engine.inside(), ["cat", "/work/src/a b.rs"]);
+    assert_eq!(answers[1]["result"]["isError"], false);
+    let text = tool_text(&answers[1]);
+    assert!(text.contains("/work/src/a b.rs"), "{text}");
+    assert!(!text.contains('\u{1b}'), "{text:?}");
+    assert!(text.contains("\\u{1b}"), "control characters are shown: {text}");
+    assert_eq!(answers[2]["result"]["isError"], true);
+}
+
+#[test]
+fn mcp_write_file_sends_the_content_on_stdin_and_keeps_the_path_out_of_the_script() {
+    let (h, facts) = running();
+    let engine = EchoEngine::new(0);
+    facts.engine.set_location(engine.location());
+    let content = "line one\n$(rm -rf /)\n";
+    let answers = serve(
+        &h,
+        &[tool_call(1, "write_file", serde_json::json!({ "path": "new/$(x);y.txt", "content": content }))],
+    );
+    assert_eq!(answers[1]["result"]["isError"], false, "{}", answers[1]);
+    let inside = engine.inside();
+    assert_eq!(inside[..2], ["sh", "-c"]);
+    assert!(!inside[2].contains("$(x)"), "the path is not in the script");
+    assert_eq!(inside[3..], ["sh", "/work/new/$(x);y.txt"]);
+    assert_eq!(engine.file("stdin"), content);
+}
+
+#[test]
+fn mcp_tools_refuse_a_stopped_sandbox_without_booting_it_or_running_the_engine() {
+    let (h, facts) = stopped();
+    let engine = EchoEngine::new(0);
+    facts.engine.set_location(engine.location());
+    let earlier = facts.engine.calls().len();
+    let answers = serve(
+        &h,
+        &[
+            tool_call(1, "exec", serde_json::json!({ "command": "ls" })),
+            tool_call(2, "read_file", serde_json::json!({ "path": "a" })),
+            tool_call(3, "write_file", serde_json::json!({ "path": "a", "content": "x" })),
+            tool_call(4, "logs", serde_json::json!({})),
+        ],
+    );
+    for answer in &answers[1..] {
+        assert_eq!(answer["result"]["isError"], true, "{answer}");
+        let text = tool_text(answer);
+        assert!(text.contains("stopped"), "{text}");
+        assert!(text.contains(" up "), "says how to start it: {text}");
+    }
+    assert!(!engine.ran());
+    assert_only_status(&calls_since(&facts, earlier));
+}
+
+#[test]
+fn mcp_status_and_logs_come_from_the_daemon() {
+    let (h, facts) = running();
+    let answers = serve(
+        &h,
+        &[
+            tool_call(1, "status", serde_json::json!({})),
+            tool_call(2, "logs", serde_json::json!({ "service": "web", "tail": 50 })),
+        ],
+    );
+    let status = tool_text(&answers[1]);
+    assert!(status.contains("Sandbox: running"), "{status}");
+    assert!(status.contains("3000"), "{status}");
+    assert_eq!(answers[2]["result"]["isError"], false, "{}", answers[2]);
+    let request = last_stream_command(&facts);
+    assert_eq!(
+        request.command,
+        ["docker", "compose", "logs", "--no-color", "--tail", "50", "web"]
+    );
+}
+
+#[test]
+fn mcp_keeps_going_after_a_line_that_is_not_json() {
+    let (h, _facts) = running();
+    let answers = serve(
+        &h,
+        &[
+            "this is not json\n".to_owned(),
+            mcp_line(1, "ping", serde_json::json!({})),
+        ],
+    );
+    assert_eq!(answers[1]["error"]["code"], -32700);
+    assert_eq!(answers[2]["id"], 1);
+    assert_eq!(answers[2]["result"], serde_json::json!({}));
+}
+
+#[test]
+fn mcp_serve_needs_a_project_that_exists() {
+    let h = harness();
+    let done = h.run(&["mcp", "serve"], "");
+    assert_eq!(done.code, cli::exit::USAGE, "{}", done.all());
+    let done = h.run(&["mcp", "serve", "--project", "/nonexistent/project"], "");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(done.out.is_empty(), "stdout is for the protocol only");
+}
+
+#[test]
+fn mcp_setup_claude_makes_a_folder_outside_the_project_with_host_tools_denied() {
+    let h = harness();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("agent");
+    let folder_text = folder.to_str().unwrap().to_owned();
+    let done = h.run(&["mcp", "setup", "claude", &folder_text, "--binary", "/bin/sh"], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(done.out.contains("claude"), "{}", done.out);
+
+    let mcp: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(folder.join(".mcp.json")).unwrap()).unwrap();
+    let server = &mcp["mcpServers"][brand::CLI_BIN];
+    let project = std::fs::canonicalize(h.project.path()).unwrap();
+    assert_eq!(
+        server["args"],
+        serde_json::json!(["mcp", "serve", "--project", project.to_str().unwrap()])
+    );
+    assert_eq!(server["command"], std::fs::canonicalize("/bin/sh").unwrap().to_str().unwrap());
+    // The harness points the state folder somewhere, and the agent's server
+    // has to find the same daemon.
+    assert_eq!(server["env"][common::home_var()], h.home.path().to_str().unwrap());
+
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(folder.join(".claude/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(settings["permissions"]["deny"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!("Bash")));
+    assert!(std::fs::read_to_string(folder.join("CLAUDE.md")).unwrap().contains("/work"));
+
+    // Running it again would mix with what is there, so it is refused.
+    let again = h.run(&["mcp", "setup", "claude", &folder_text, "--binary", "/bin/sh"], "");
+    assert_eq!(again.code, cli::exit::FAILED, "{}", again.all());
+    assert!(again.err.contains("not empty"), "{}", again.err);
+}
+
+#[test]
+fn mcp_setup_claude_refuses_a_folder_that_overlaps_the_project() {
+    let h = harness();
+    let inside = h.project.path().join("agent");
+    let done = h.run(
+        &["mcp", "setup", "claude", inside.to_str().unwrap(), "--binary", "/bin/sh"],
+        "",
+    );
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(done.err.contains("overlaps the project"), "{}", done.err);
+    assert!(!inside.exists(), "the folder it made was removed again");
+}
+
+#[test]
+fn mcp_setup_codex_prints_the_commands_and_changes_nothing() {
+    let h = harness();
+    let before: Vec<_> = std::fs::read_dir(h.home.path()).unwrap().collect();
+    let done = h.run(&["mcp", "setup", "codex", "--binary", "/bin/sh"], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(done.out.contains(&format!("codex mcp add {}", brand::CLI_BIN)), "{}", done.out);
+    assert!(done.out.contains("--sandbox read-only"), "{}", done.out);
+    assert!(done.out.contains("mcp serve --project"), "{}", done.out);
+    assert!(done.out.contains("Nothing was changed"), "{}", done.out);
+    let after: Vec<_> = std::fs::read_dir(h.home.path()).unwrap().collect();
+    assert_eq!(before.len(), after.len());
+}

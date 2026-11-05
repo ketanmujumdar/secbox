@@ -125,6 +125,8 @@ Milestones 0 to 5 are complete, the leak suite passes on a real VM, and an indep
 ## After the first release
 
 - AI: `secbox ai login`, Claude Code and Codex in the VM, the MCP server and its tools, external MCP controls, and optional AI assessment.
+  - Built early: `secbox mcp serve`, a stdio MCP server that lets an agent on the host work in one project's sandbox with `status`, `logs`, `exec`, `read_file` and `write_file`, and `secbox mcp setup claude|codex` to configure the agent with its host tools off where it allows. Never run on a real VM. See `docs/MCP.md`.
+  - Still to build: `request_network`, `propose_change` and `rebuild`, which need approval prompts from the host OS; the vsock route for an agent inside the VM; and `secbox doctor` checking an agent folder's settings.
 - Linux support and testing, including encrypted Secret Service use.
 - CI with `cargo-deny` and `cargo-vet`.
 - Public repo, signed releases, automatic engine download with checksum check, the Homebrew tap, and the final name.

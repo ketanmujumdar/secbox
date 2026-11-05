@@ -10,6 +10,7 @@ mod debug;
 mod doctor;
 mod editor;
 pub mod host;
+mod mcp;
 mod net;
 mod resources;
 mod review;
@@ -109,6 +110,8 @@ enum Command {
     Shell(debug::ShellArgsCli),
     /// Run one command inside a running sandbox, and pass back its exit code
     Exec(debug::ExecArgsCli),
+    /// Let an AI agent on this machine (Claude Code, Codex) work inside a sandbox, over MCP
+    Mcp(mcp::McpArgs),
     /// Show what changed inside a sandbox, with risky files flagged first
     Diff(review::DiffArgsCli),
     /// Not built yet: export reviewed changes through Git
@@ -185,6 +188,7 @@ where
         Command::Logs(args) => debug::logs(&args, deps),
         Command::Shell(args) => debug::shell(&args, deps),
         Command::Exec(args) => debug::exec(&args, deps),
+        Command::Mcp(args) => mcp::run(&args, deps),
         Command::Diff(args) => review::run(&args, deps),
         Command::Export(_) => not_built("export", deps),
     }

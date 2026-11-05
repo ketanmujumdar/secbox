@@ -193,7 +193,15 @@ Codex device login is in beta and must be enabled in ChatGPT security settings f
 
 No tool can guarantee an AI won't be influenced, because anything it reads can contain instructions. secbox assumes the agent can be tricked and limits what a tricked agent can do.
 
-**Agents run inside the VM in v1.** A tricked agent then has only sandbox powers. An agent on the host may also have the user's shell and files, which secbox can't fully restrict, so host-side use would be a later, clearly labeled weaker mode.
+**Agents run inside the VM in v1.** A tricked agent then has only sandbox powers. An agent on the host may also have the user's shell and files, which secbox can't fully restrict, so host-side use is a clearly labeled weaker mode.
+
+**Host agents connect through `secbox mcp serve`.** Built early, because the code is in the VM and an agent people already use on the host otherwise can't see it. `docs/MCP.md` has the details:
+
+- **Transport:** stdio only. The agent starts the server as a child process, so there is no port for a local process or web page to reach.
+- **Scope:** one project, fixed by `--project` at start. The server is one more daemon client, with the powers of `secbox logs`, `status` and `exec` and nothing else.
+- **Tools:** `status`, `logs`, `exec`, `read_file` and `write_file`, all acting inside the VM. Each run goes through the daemon's `terminal` request, which refuses a sandbox that isn't running and writes an audit entry.
+- **Host tools off:** `secbox mcp setup claude` makes a separate folder whose settings deny Claude Code's shell, file and web tools. Codex can't turn its shell off, so its setup is weaker: read-only, with commands put to the person first.
+- **Not offered yet:** the tools that need approval, because the daemon can't ask a person yet.
 
 | Capability | MCP tool | Who can do it |
 | --- | --- | --- |
@@ -359,7 +367,7 @@ Budget the full VM size on the host, because memory isn't handed back after a bu
 | Decision | Recommendation | Why |
 | --- | --- | --- |
 | One VM per project? | Yes | Builds and runtime share one boundary, at an estimated 1 GB overhead |
-| Agents only inside the VM in v1? | Yes | A tricked agent gets only sandbox powers |
+| Agents only inside the VM in v1? | Yes by default, with host agents through `secbox mcp serve` as a labeled weaker mode | A tricked agent in the VM gets only sandbox powers. A host agent also keeps whatever host tools its own settings leave on |
 | API key plus in-VM subscription login in v1? | Yes, with a warning | Most developers expect to use a subscription |
 | CLI first, desktop app next? | Yes | Proves the security core first, on the same daemon API |
 | Tauri for the desktop app? | Yes | Needs no local port, and shares Rust with the daemon |
