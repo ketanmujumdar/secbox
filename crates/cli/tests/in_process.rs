@@ -24,7 +24,7 @@ fn set_stores_the_value_and_never_shows_or_writes_it() {
     assert_eq!(t.vault.value("API_KEY").as_deref(), Some(VALUE));
     assert!(!done.all().contains(VALUE));
     assert!(done.out.contains("API_KEY"));
-    assert!(done.out.contains("not protecting anything"));
+    assert!(done.out.contains("Do not rely on it"));
     let on_disk = read_all(&t.state());
     assert!(on_disk.contains("API_KEY"));
     assert!(!on_disk.contains(VALUE));

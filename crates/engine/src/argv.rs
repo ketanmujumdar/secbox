@@ -145,6 +145,12 @@ pub fn create(spec: &CreateSpec) -> Result<Vec<String>> {
         }
         args.push("--port".to_owned());
         args.push(format!("127.0.0.1:{0}:{0}", port.0));
+        // --no-net denies inbound traffic too, which resets connections to a
+        // published port. Open only that port, and only from the host's loopback.
+        if !matches!(spec.network, NetworkPolicy::PublicInternet) {
+            args.push("--net-rule".to_owned());
+            args.push(format!("allow:ingress@127.0.0.1/32:tcp:{}", port.0));
+        }
     }
     args.push(spec.image.clone());
     Ok(args)
@@ -285,6 +291,8 @@ mod tests {
                 "--no-net",
                 "--port",
                 "127.0.0.1:3000:3000",
+                "--net-rule",
+                "allow:ingress@127.0.0.1/32:tcp:3000",
                 "docker:dind",
             ]
         );
@@ -307,6 +315,24 @@ mod tests {
             assert!(args.iter().any(|a| a == wanted), "{wanted}");
         }
         assert!(!args.iter().any(|a| a == "allow@dns"));
+    }
+
+    #[test]
+    fn a_published_port_is_opened_only_from_loopback_under_a_closed_network() {
+        let mut s = spec();
+        s.ports = vec![HostPort(3000)];
+        for network in [
+            NetworkPolicy::DenyAll,
+            NetworkPolicy::AllowHosts {
+                hosts: vec!["a.b".into()],
+                tls: TlsMode::ServerNameOnly,
+            },
+        ] {
+            s.network = network;
+            let args = create(&s).unwrap();
+            assert!(args.iter().any(|a| a == "allow:ingress@127.0.0.1/32:tcp:3000"));
+            assert!(!args.iter().any(|a| a.contains("ingress@private")));
+        }
     }
 
     #[test]

@@ -78,7 +78,7 @@ pub fn human_bytes(bytes: u64) -> String {
 /// The sentence every refusal and report ends with until VM flows exist.
 pub fn not_protecting() -> String {
     format!(
-        "{} is an early build and is not protecting anything yet: no VM, no network control, no Git review.",
+        "{} is an early build. Do not rely on it for untrusted code: containment is not fully tested, and code cannot be exported yet.",
         brand::PRODUCT_NAME
     )
 }

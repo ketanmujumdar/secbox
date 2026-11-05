@@ -98,6 +98,6 @@ mod tests {
 
     #[test]
     fn a_relative_folder_is_refused() {
-        assert!(start(Path::new("/bin/true"), Path::new("relative")).is_err());
+        assert!(start(Path::new("/usr/bin/true"), Path::new("relative")).is_err());
     }
 }

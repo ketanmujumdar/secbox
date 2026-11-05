@@ -55,6 +55,8 @@ impl daemon::Deps for Facts {
         source: &Source,
         dest: &Path,
     ) -> Result<SnapshotPlan, String> {
+        // The real snapshot creates its destination and refuses one that exists.
+        std::fs::create_dir(dest).unwrap();
         std::fs::write(dest.join("compose.yaml"), b"services: {}\n").unwrap();
         Ok(SnapshotPlan {
             revision: match source {

@@ -486,7 +486,7 @@ mod tests {
                 home,
                 project: tempfile::TempDir::new().unwrap(),
                 // Something real to start, so that nothing looks for an editor.
-                bin: PathBuf::from("/bin/true"),
+                bin: PathBuf::from("/usr/bin/true"),
             }
         }
 
@@ -651,7 +651,7 @@ mod tests {
         bench.write(".vscode/tasks.json", r#"{"version":"2.0.0","tasks":[]}"#);
         let done = bench.open(&["--dry-run"]);
         assert_eq!(done.code, exit::OK, "{}", done.all());
-        assert!(done.out.contains("Would start /bin/true"), "{}", done.out);
+        assert!(done.out.contains("Would start /usr/bin/true"), "{}", done.out);
         assert!(done.out.contains("no shell"), "{}", done.out);
     }
 

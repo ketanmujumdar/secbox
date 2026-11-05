@@ -1,6 +1,6 @@
 # Installing secbox
 
-secbox is an early build and is not protecting anything yet. See the status in the README.
+secbox is an early build. Do not rely on it for untrusted code. See the status in the README.
 
 ## Requirements
 
@@ -25,7 +25,7 @@ cargo install --path crates/cli --locked --root /tmp/secbox-install
 export PATH="/tmp/secbox-install/bin:$PATH"
 ```
 
-The daemon `secboxd` is an empty placeholder today, so there is no need to install it. To install it anyway, run `cargo install --path crates/daemon --locked`.
+`up`, `down` and `status` also need the daemon, so install it too with `cargo install --path crates/daemon --locked`. Start it with `SECBOX_ENGINE_BIN=/absolute/path/to/msb secboxd` and leave it running.
 
 Check the install:
 

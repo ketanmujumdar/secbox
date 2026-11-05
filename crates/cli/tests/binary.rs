@@ -23,7 +23,7 @@ fn help_and_usage_use_the_brand_name() {
     let help = run_binary(dir.path(), &["--help"]);
     assert_eq!(help.code, exit::OK);
     assert!(help.out.contains(&format!("Usage: {}", brand::CLI_BIN)));
-    assert!(help.out.contains("not protecting anything yet"));
+    assert!(help.out.contains("Do not rely on it"));
     for name in [
         "doctor",
         "check",
@@ -50,7 +50,7 @@ fn unbuilt_commands_refuse_with_a_distinct_code() {
         let done = run_binary(dir.path(), &[command]);
         assert_eq!(done.code, NOT_BUILT, "{command}");
         assert!(done.err.contains("not built yet"), "{command}");
-        assert!(done.err.contains("not protecting anything"), "{command}");
+        assert!(done.err.contains("Do not rely on it"), "{command}");
         assert!(!dir.path().join(brand::STATE_DIR).exists());
     }
     assert_ne!(NOT_BUILT, exit::OK);
@@ -98,7 +98,7 @@ fn doctor_runs_without_path_docker_or_writing_anything() {
     ] {
         assert!(done.out.contains(label), "{label}: {}", done.out);
     }
-    assert!(done.out.contains("not protecting anything"));
+    assert!(done.out.contains("Do not rely on it"));
     assert!(!done.out.to_lowercase().contains("docker"));
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
 }
@@ -154,7 +154,7 @@ fn check_groups_a_hostile_compose_file_and_escapes_it() {
     let high = text.find("High (").expect("high group");
     assert!(critical < high);
     assert!(text.contains("web"));
-    assert!(text.contains("not protecting anything"));
+    assert!(text.contains("Do not rely on it"));
     assert!(!text.contains('\u{1b}'), "raw escape: {text:?}");
     assert!(!text.contains('\u{7}'), "raw bell: {text:?}");
     assert!(!text.contains('\u{202e}'), "raw bidi: {text:?}");

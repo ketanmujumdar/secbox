@@ -25,12 +25,12 @@ secbox --help
 secbox up --memory 6G --cpus 4; echo "exit $?"
 ```
 
-The help lists every command and says the tool is not protecting anything yet. `up` should print:
+The help lists every command and says the tool is an early build not to be relied on. `up` should print:
 
 ```text
 secbox up: not built yet
 Nothing was started, stopped or changed.
-secbox is an early build and is not protecting anything yet: no VM, no network control, no Git review.
+secbox is an early build. Do not rely on it for untrusted code: containment is not fully tested, and code cannot be exported yet.
 Do not run untrusted code on the assumption that this tool contains it.
 exit 69
 ```
@@ -58,7 +58,7 @@ Engine        warn  not found at /tmp/sbtest/.secbox/msb/bin/msb
 Suggested           4G memory, 2 CPUs, 20G disk
 
 Failed: 0. Warnings: 1.
-secbox is an early build and is not protecting anything yet: no VM, no network control, no Git review.
+secbox is an early build. Do not rely on it for untrusted code: containment is not fully tested, and code cannot be exported yet.
 exit 0
 ```
 

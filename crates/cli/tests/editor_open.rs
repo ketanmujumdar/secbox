@@ -34,7 +34,7 @@ fn run(home: &Path, cwd: &Path, args: &[&str]) -> Out {
         .env("HOME", home)
         .env(home_var(), home)
         // Something real to start, so no test ever needs an editor installed.
-        .env(format!("{}EDITOR_BIN", brand::ENV_PREFIX), "/bin/true")
+        .env(format!("{}EDITOR_BIN", brand::ENV_PREFIX), "/usr/bin/true")
         .current_dir(cwd)
         .stdin(Stdio::null())
         .output()

@@ -243,7 +243,7 @@ pub fn compose(model: &Model, width: usize, height: usize) -> Screen {
         (Some(busy), _) => (busy.clone(), Style::WindowWarn),
         (None, Some(message)) => (message.clone(), Style::WindowWarn),
         (None, None) => (
-            "Nothing here has run against a real VM. It is not protecting anything.".to_owned(),
+            "Early build. Do not rely on it for untrusted code.".to_owned(),
             Style::WindowAlert,
         ),
     };
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn the_warning_shows_until_something_else_needs_the_line() {
-        assert!(plain(&model(), 80, 24).contains("not protecting anything"));
+        assert!(plain(&model(), 80, 24).contains("Do not rely on it"));
         let mut m = model();
         // Words that cannot collide with a project's own state, which is
         // also drawn on screen.

@@ -558,6 +558,12 @@ fn a_snapshot_that_cannot_be_taken_stops_the_start() {
         .calls()
         .iter()
         .any(|c| matches!(c, FakeCall::CopyIn(..))));
+    // The sandbox is gone, so the next start can't reuse it with no code in it.
+    assert!(deps
+        .engine
+        .calls()
+        .iter()
+        .any(|c| matches!(c, FakeCall::Destroy(..))));
 }
 
 #[test]
