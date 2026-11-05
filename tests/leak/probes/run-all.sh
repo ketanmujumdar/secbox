@@ -10,7 +10,13 @@ if [ -z "${PROBE_GUEST_GATEWAY:-}" ] && command -v ip >/dev/null 2>&1; then
 fi
 PROBE_PREFIX=guest.
 export PROBE_PREFIX
+# Host access. These look at the guest itself, so they run once, here, and not
+# in every nested context.
 sh "$_dir/files-host.sh"
+sh "$_dir/host-sockets.sh"
+sh "$_dir/host-keychain.sh"
+sh "$_dir/host-share.sh"
+sh "$_dir/git-bundle.sh"
 sh "$_dir/context.sh"
 unset PROBE_PREFIX
 sh "$_dir/nested-container.sh"

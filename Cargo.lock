@@ -310,9 +310,13 @@ version = "0.1.0"
 dependencies = [
  "brand",
  "clap",
+ "daemon",
  "egress",
  "engine",
+ "hoststate",
+ "nix",
  "projectcheck",
+ "proto",
  "rpassword",
  "secrets",
  "serde",
@@ -390,6 +394,21 @@ dependencies = [
 [[package]]
 name = "daemon"
 version = "0.1.0"
+dependencies = [
+ "brand",
+ "engine",
+ "gitbroker",
+ "hoststate",
+ "nix",
+ "projectcheck",
+ "proto",
+ "secrets",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+]
 
 [[package]]
 name = "dbus"
@@ -665,6 +684,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hoststate"
+version = "0.1.0"
+dependencies = [
+ "brand",
+ "secrets",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -937,6 +967,15 @@ dependencies = [
  "serde",
  "serde_norway",
  "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

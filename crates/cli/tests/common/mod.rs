@@ -9,7 +9,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use cli::{exit, Deps, HostInfo, Hypervisor};
+use cli::{exit, DaemonClient, Deps, HostInfo, Hypervisor, NoDaemon};
 use secrets::{MemoryStore, ProjectId, SecretName, SecretStore, SecretValue, StoreError};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -175,7 +175,16 @@ pub struct Harness {
     pub color: bool,
     /// Answers for the hidden prompt, in order.
     pub answers: Mutex<Vec<String>>,
+    /// Where requests go. Without one, every command that needs the daemon
+    /// fails the same way, which is what the real binary does with no daemon
+    /// running.
+    pub daemon: Option<Box<dyn DaemonClient + Send + Sync>>,
 }
+
+/// Stands in for a daemon that is not there.
+pub static NO_DAEMON: NoDaemon = NoDaemon {
+    reason: String::new(),
+};
 
 impl Harness {
     pub fn new() -> Self {
@@ -190,7 +199,15 @@ impl Harness {
             host: big_host(),
             color: false,
             answers: Mutex::new(Vec::new()),
+            daemon: None,
         }
+    }
+
+    /// Points this harness at something that answers requests.
+    #[must_use]
+    pub fn with_daemon(mut self, daemon: Box<dyn DaemonClient + Send + Sync>) -> Self {
+        self.daemon = Some(daemon);
+        self
     }
 
     pub fn answer(&self, values: &[&str]) {
@@ -231,6 +248,7 @@ impl Harness {
                 store: &store,
                 prompt: &prompt,
                 host: &host,
+                daemon: self.daemon.as_ref().map_or(&NO_DAEMON as &dyn DaemonClient, |d| d.as_ref()),
             },
         );
         Output {

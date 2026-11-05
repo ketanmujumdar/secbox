@@ -1278,6 +1278,83 @@ fn env_file_is_left_out_of_snapshot_and_reported() {
 }
 
 #[test]
+fn common_secret_files_are_left_out_of_snapshot_and_content_is_warned_about() {
+    let lab = Lab::new();
+    for dir in ["deploy", ".aws", "infra", "app", ".vscode"] {
+        fs::create_dir_all(lab.src.join(dir)).unwrap();
+    }
+    let token = format!("ghp_{}", "a".repeat(36));
+    for (path, body) in [
+        (".env", "SECRET=root".to_string()),
+        ("deploy/id_rsa", "-----BEGIN OPENSSH PRIVATE KEY-----".to_string()),
+        ("deploy/server.pem", "-----BEGIN PRIVATE KEY-----".to_string()),
+        (".aws/credentials", "aws_access_key_id = SECRET".to_string()),
+        (".npmrc", "//registry.npmjs.org/:_authToken=SECRETTOKEN".to_string()),
+        (".git-credentials", "https://u:SECRET@example.invalid".to_string()),
+        ("infra/terraform.tfvars", "password = \"SECRET\"".to_string()),
+        ("infra/terraform.tfstate", "{\"SECRET\": 1}".to_string()),
+        (".vscode/sftp.json", "{\"password\": \"SECRET\"}".to_string()),
+        (".env.example", "TOKEN=placeholder".to_string()),
+        ("app/main.py", format!("TOKEN = \"{token}\"\n")),
+        ("keep.txt", "ok".to_string()),
+    ] {
+        fs::write(lab.src.join(path), body).unwrap();
+    }
+    let tip = commit_all(&lab.src, "with secrets");
+
+    let dest = lab.root.join("snap");
+    let report = snapshot(&lab.src, &tip, &dest).unwrap();
+
+    let expected: &[(&str, ExclusionReason)] = &[
+        (".env", ExclusionReason::EnvFile),
+        ("deploy/id_rsa", ExclusionReason::PrivateKey),
+        ("deploy/server.pem", ExclusionReason::PrivateKey),
+        (".aws/credentials", ExclusionReason::CloudCredentials),
+        (".npmrc", ExclusionReason::ToolCredentials),
+        (".git-credentials", ExclusionReason::ToolCredentials),
+        ("infra/terraform.tfvars", ExclusionReason::InfrastructureState),
+        ("infra/terraform.tfstate", ExclusionReason::InfrastructureState),
+        (".vscode/sftp.json", ExclusionReason::EditorOrAgentSecret),
+    ];
+    for (path, reason) in expected {
+        assert!(
+            fs::symlink_metadata(dest.join(path)).is_err(),
+            "{path} was copied"
+        );
+        let shown = format!("{path:?}");
+        let entry = report.excluded.iter().find(|e| e.path == shown);
+        assert_eq!(entry.map(|e| e.reason), Some(*reason), "{shown}");
+    }
+    assert_eq!(report.excluded.len(), expected.len(), "{:?}", report.excluded);
+    for kept in [".env.example", "app/main.py", "keep.txt"] {
+        assert!(dest.join(kept).is_file(), "{kept}");
+    }
+
+    // The file with a token in it is copied, and warned about by name only.
+    assert!(report.scan_complete);
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert_eq!(report.warnings[0].path, r#""app/main.py""#);
+    assert_eq!(report.warnings[0].rule, SecretRule::GithubToken);
+
+    // No secret value reaches the destination or the report.
+    let mut pending = vec![dest.clone()];
+    while let Some(dir) = pending.pop() {
+        for item in fs::read_dir(dir).unwrap() {
+            let path = item.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                let body = fs::read_to_string(&path).unwrap();
+                assert!(!body.contains("SECRET"), "{}", path.display());
+            }
+        }
+    }
+    let json = serde_json::to_string(&report).unwrap();
+    assert!(!json.contains("SECRET"), "{json}");
+    assert!(!json.contains(&token), "{json}");
+}
+
+#[test]
 fn snapshot_rejects_a_traversal_tree_and_leaves_nothing() {
     let lab = Lab::new();
     commit_file(&lab.src, "a.txt", b"x\n", "first");

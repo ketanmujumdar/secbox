@@ -14,6 +14,8 @@ if printf '%s\n' "$_out" | grep -q "^PROBE ${PROBE_PREFIX}control\.local REACHED
 fi
 export PROBE_CONTROL_OK PROBE_PREFIX
 
-for _p in net-host net-canary net-udp net-ipv6 net-lan net-metadata net-denied secret-env secret-inject; do
+for _p in net-host net-canary net-udp net-quic net-ipv6 net-lan net-metadata \
+    net-denied net-dns-volume net-fronting write-npm write-payment \
+    secret-env secret-inject; do
     sh "$_dir/$_p.sh"
 done

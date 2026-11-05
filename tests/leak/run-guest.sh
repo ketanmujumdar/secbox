@@ -31,7 +31,11 @@ i=0
 while [ ! -s "$T/ports" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 read -r TCP_PORT UDP_PORT <"$T/ports"
 
-DOCKER_HOSTS="registry-1.docker.io auth.docker.io production.cloudflare.docker.com production.cloudfront.docker.com docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com"
+# registry.npmjs.org is allowed on purpose: a build needs to read from it, so a
+# host rule cannot stop `npm publish`. Allowing it is what makes write-npm.sh a
+# test of method rules instead of host rules. api.stripe.com is deliberately
+# never allowed, so write-payment.sh tests the host rule.
+DOCKER_HOSTS="registry-1.docker.io auth.docker.io production.cloudflare.docker.com production.cloudfront.docker.com docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com registry.npmjs.org"
 rules=
 for h in $DOCKER_HOSTS; do rules="$rules --net-rule allow@$h"; done
 CONTROL=registry-1.docker.io:443
@@ -111,8 +115,36 @@ SHA=$(printf '%s' "$FAKE_VALUE" | shasum -a 256 | cut -d' ' -f1)
     -e PROBE_SECRET_DENIED_URL="${SECRET_FLAGS:+https://postman-echo.com/headers}" \
     -e PROBE_SECRET_PLAIN_URL="${SECRET_FLAGS:+http://httpbin.org/headers}" \
     -e PROBE_WGET_INSECURE="${PROBE_WGET_INSECURE:-}" \
+    -e PROBE_GUEST_STATE=/.msb \
+    -e PROBE_IPV6_CONTROL_URL="http://[2606:4700:4700::1111]/" \
+    -e PROBE_IPV6_TARGET_URL="http://[2001:4860:4860::8888]/" \
+    -e PROBE_IPV6_METADATA_URL="http://[fd00:ec2::254]/latest/meta-data/" \
+    -e PROBE_QUIC_CONTROL=production.cloudflare.docker.com:443 \
+    -e PROBE_QUIC_TARGET=www.google.com:443 \
+    -e PROBE_QUIC_IP=8.8.8.8:443 \
+    -e PROBE_DNS_CONTROL_NAME=registry-1.docker.io \
+    -e PROBE_DNS_TUNNEL_BASE=example.org \
+    -e PROBE_DNS_TUNNEL_COUNT="${PROBE_DNS_TUNNEL_COUNT:-12}" \
+    -e PROBE_FRONT_URL=https://registry-1.docker.io/v2/ \
+    -e PROBE_FRONT_MARKER=401 \
+    -e PROBE_FRONT_HOST=example.com \
+    -e PROBE_FRONT_HOST_MARKER='Example Domain' \
+    -e PROBE_FRONT_PLAIN_TARGET=registry-1.docker.io:80 \
+    -e PROBE_FRONT_PLAIN_PATH=/v2/ \
+    -e PROBE_NPM_READ_URL=https://registry.npmjs.org/npm \
+    -e PROBE_NPM_READ_MARKER=dist-tags \
+    -e PROBE_NPM_PUT_URL="https://registry.npmjs.org/secbox-leak-probe-$RUN_ID" \
+    -e PROBE_NPM_PUT_MARKER=unauthorized \
+    -e PROBE_PAYMENT_URL=https://api.stripe.com/v1/charges \
+    -e PROBE_PAYMENT_MARKER=invalid_request_error \
+    -e PROBE_PAYMENT_PLAIN_TARGET=api.stripe.com:80 \
+    -e PROBE_PAYMENT_PLAIN_PATH=/v1/charges \
     -- sh /probes/run-all.sh >"$T/raw" 2>&1
 echo "# exec exit=$?" >&2
-python3 -I "$HERE/verify.py" "$T/raw" "$T/listener.log" >"$OUT"
+# The host side of the engine's guest-state share. verify.py only lstats names
+# inside it: nothing here follows a path the guest wrote.
+GUEST_STATE=$MSB_HOME/sandboxes/$NAME/guest-state
+[ -d "$GUEST_STATE" ] || GUEST_STATE=
+python3 -I "$HERE/verify.py" "$T/raw" "$T/listener.log" "$GUEST_STATE" >"$OUT"
 echo "# listener log:" >&2
 cut -c1-160 "$T/listener.log" | sort | uniq -c >&2

@@ -4,14 +4,18 @@
 //! swaps the store in the real binary.
 
 mod check;
+pub mod client;
 mod doctor;
+mod editor;
 pub mod host;
 mod net;
 mod resources;
 mod secret_cmd;
 pub mod state;
 mod ui;
+mod tui;
 mod uninstall;
+mod vm;
 
 use std::ffi::OsString;
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -20,6 +24,7 @@ use std::path::{Path, PathBuf};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use secrets::{KeyringStore, ProjectId, SecretStore, SecretValue};
 
+pub use client::{CallError, DaemonClient, NoDaemon, SocketClient};
 pub use host::{HostInfo, Hypervisor};
 pub use ui::esc;
 
@@ -48,6 +53,8 @@ pub struct Deps<'a> {
     pub store: &'a dyn Fn(&ProjectId) -> Box<dyn SecretStore>,
     pub prompt: &'a dyn Fn(&str) -> io::Result<SecretValue>,
     pub host: &'a dyn Fn(&Path) -> HostInfo,
+    /// Where requests go. The command line decides nothing on its own.
+    pub daemon: &'a dyn DaemonClient,
 }
 
 /// Prints a line to stdout. A closed pipe is not an error worth reporting.
@@ -64,7 +71,7 @@ pub(crate) use {say, tell};
 #[derive(Parser)]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -73,6 +80,10 @@ enum Command {
     Doctor,
     /// Check a project's files and print what they ask for
     Check(check::CheckArgs),
+    /// Run the editor safety checks, then open the project in an editor
+    Open(editor::OpenArgs),
+    /// Turn the editor safety checks on and off, at user level
+    Checks(editor::ChecksArgs),
     /// Show requested and resolved RAM, CPU and disk limits
     Resources(resources::ResourcesArgs),
     /// Manage per-project secrets in the OS keychain
@@ -81,12 +92,12 @@ enum Command {
     Net(net::NetArgs),
     /// Remove the state folder (needs --purge)
     Uninstall(uninstall::UninstallArgs),
-    /// Not built yet: start a project in a VM
-    Up(NotBuiltArgs),
-    /// Not built yet: stop a project's VM
-    Down(NotBuiltArgs),
-    /// Not built yet: show a project's VM
-    Status(NotBuiltArgs),
+    /// Start a project in a sandbox
+    Up(vm::UpArgsCli),
+    /// Stop a project's sandbox, or destroy it
+    Down(vm::DownArgsCli),
+    /// Show a project's sandbox
+    Status(vm::StatusArgsCli),
     /// Not built yet: review changes made in a VM
     Diff(NotBuiltArgs),
     /// Not built yet: export reviewed changes through Git
@@ -142,16 +153,23 @@ where
             return exit::USAGE;
         }
     };
-    match cli.command {
+    let Some(command) = cli.command else {
+        // No command at all opens the full-screen interface, which is one
+        // more client of the same daemon.
+        return tui::run(deps);
+    };
+    match command {
         Command::Doctor => doctor::run(deps),
         Command::Check(args) => check::run(&args, deps),
+        Command::Open(args) => editor::open(&args, deps),
+        Command::Checks(args) => editor::checks(&args, deps),
         Command::Resources(args) => resources::run(&args, deps),
         Command::Secrets(args) => secret_cmd::run(args, deps),
         Command::Net(args) => net::run(&args, deps),
         Command::Uninstall(args) => uninstall::run(&args, deps),
-        Command::Up(_) => not_built("up", deps),
-        Command::Down(_) => not_built("down", deps),
-        Command::Status(_) => not_built("status", deps),
+        Command::Up(args) => vm::up(&args, deps),
+        Command::Down(args) => vm::down(&args, deps),
+        Command::Status(args) => vm::status(&args, deps),
         Command::Diff(_) => not_built("diff", deps),
         Command::Export(_) => not_built("export", deps),
     }
@@ -210,6 +228,23 @@ pub fn real_main() -> i32 {
             return exit::FAILED;
         }
     };
+    // Where the daemon's socket is. A state folder that cannot even be
+    // located is reported once here, rather than by each command.
+    let located = state::StatePaths::locate(&env);
+    let socket_client;
+    let no_daemon;
+    let daemon: &dyn DaemonClient = match &located {
+        Ok(paths) => {
+            socket_client = SocketClient::new(&paths.state);
+            &socket_client
+        }
+        Err(reason) => {
+            no_daemon = NoDaemon {
+                reason: reason.clone(),
+            };
+            &no_daemon
+        }
+    };
     let code = run(
         std::env::args_os(),
         &mut Deps {
@@ -222,6 +257,7 @@ pub fn real_main() -> i32 {
             store: &store,
             prompt: &prompt,
             host: &host::probe,
+            daemon,
         },
     );
     let _ = io::stdout().flush();

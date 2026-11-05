@@ -18,6 +18,9 @@ pub struct CheckArgs {
     /// Exit with code 3 on Critical or High findings, or an unsupported project
     #[arg(long)]
     strict: bool,
+    /// Offer to change user editor settings that failed a check. Never project files
+    #[arg(long)]
+    fix: bool,
 }
 
 pub fn run(args: &CheckArgs, deps: &mut Deps) -> i32 {
@@ -46,6 +49,8 @@ pub fn run(args: &CheckArgs, deps: &mut Deps) -> i32 {
             return exit::FAILED;
         }
     }
+    say!(deps);
+    blocking |= crate::editor::report(&root, args.fix, deps);
     if !detection.notes.is_empty() {
         say!(deps);
         say!(deps, "{}", paint(deps.color, Tone::Strong, "Notes"));
