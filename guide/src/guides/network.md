@@ -90,7 +90,7 @@ secbox net blocked --project PATH
 secbox status                     # includes a count
 ```
 
-In the [full-screen interface](terminal-ui.md), press `t` for the Traffic panel. The Projects panel shows the count in a Blocked box, in red when anything was refused.
+In the [full-screen interface](terminal-ui.md), press `n` for the selected project's Network tab, whose name carries the number of hostnames refused. The Overview tab shows the count in a Blocked box, in red when anything was refused.
 
 **Read this before relying on the list:**
 

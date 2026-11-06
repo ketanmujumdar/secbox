@@ -5,12 +5,25 @@
 //! the same rules. It needs no web view and no front-end toolchain, which is
 //! the reason to try it before a desktop app.
 //!
+//! With no project yet, the page offers the two ways to bring one in: `g`
+//! clones an SSH remote and `f` adds a folder, offering the one it was started
+//! in when that looks like a project. With projects, they are listed down a
+//! rail on the left, `+` (or `N`) offers the same two ways again, and the
+//! selected project has five tabs, each opened by the letter drawn on it:
+//! `o` Overview, `l` Logs, `n` Network, `c` Changes and `s` Secrets. Keys that
+//! act on a sandbox work only on Overview, and only where its state allows:
+//! `u` starts, `S` stops and `x` destroys. Pull (`p`) and push (`P`) work only
+//! on Changes. The bar along the bottom lists only the keys that work.
+//!
 //! Starting a project still needs a person to agree, so the start key opens a
-//! box showing what would happen and waits. Nothing is forwarded by a
-//! keystroke that did not see what it was agreeing to.
+//! box showing the plan, grouped as the review groups it, and waits. Only `y`
+//! agrees, and only once the whole plan has been on screen; Enter means no.
+//! Nothing is forwarded by a keystroke that did not see what it was agreeing
+//! to.
 
 mod logs;
 mod overview;
+mod plan;
 mod review;
 mod screen;
 mod secrets;
@@ -20,14 +33,18 @@ mod traffic;
 mod view;
 
 use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use proto::{DownArgs, PlanArgs, PlanReport, Reply, Request, SandboxState, Source};
+use proto::{DownArgs, PlanArgs, Reply, Request, SandboxState, Source};
 
+use crate::client::CallError;
 use crate::{debug, exit, tell, Deps};
 use style::Style;
 pub(crate) use term::SavedSettings;
-use view::{Dialog, Key, Line, Model, Pane, PaneState, Row, RowState};
+use view::{
+    Answer, Choice, ChoiceKey, Daemon, Dialog, Key, Line, Model, NewProject, Row, RowState, Tab,
+};
 
 /// What a keystroke is waiting for a person to confirm.
 struct Pending {
@@ -61,13 +78,13 @@ pub fn run(deps: &mut Deps) -> i32 {
     let mut model = Model::default();
     let mut pending: Option<Pending> = None;
     let mut confirming: Option<bool> = None;
-    // A Git remote being typed, for Import.
-    let mut importing: Option<String> = None;
     // A box that only reports, closed by any key.
     let mut notice = false;
-    // The log being followed, if the Logs panel is showing one.
+    // The log being followed, if the Logs tab is showing one.
     let mut follow: Option<logs::Follow> = None;
     let mut keyboard = term::Keyboard::default();
+    // The size last drawn at, which is the size a question was seen at.
+    let mut size = (0, 0);
     load_projects(deps, &mut model);
 
     let mut queued: Vec<u8> = Vec::new();
@@ -82,7 +99,10 @@ pub fn run(deps: &mut Deps) -> i32 {
         // Drawing asks the terminal its size, so it is done only when
         // something changed, not on every tick.
         if dirty {
-            draw(deps, &model);
+            size = draw(deps, &model);
+            if let Some(dialog) = model.dialog.as_mut() {
+                dialog.note_seen(size.0, size.1);
+            }
             dirty = false;
         }
         // A question is answered by a key pressed after it was seen, never by
@@ -98,27 +118,36 @@ pub fn run(deps: &mut Deps) -> i32 {
             }
         }
         dirty = true;
-        // Typing a remote takes the bytes themselves, pastes included.
-        if let Some(text) = importing.as_mut() {
+
+        // Typing a remote or a folder takes the bytes themselves, pastes
+        // included. Whatever follows Enter in the same read is dropped, so it
+        // cannot answer the question that Enter brings up.
+        if let Some(new) = model.new_project.as_mut().filter(|new| new.typing) {
             let bytes = std::mem::take(&mut queued);
-            match edit_line(text, &bytes) {
-                LineEdit::Typing => model.dialog = Some(import_dialog(text)),
+            let chosen = new.chosen;
+            let (text, kind) = match chosen {
+                Choice::Git => (&mut new.remote, LineKind::Remote),
+                Choice::Folder => (&mut new.folder, LineKind::Path),
+            };
+            match edit_line(text, &bytes, kind) {
+                LineEdit::Typing => {}
                 LineEdit::Cancel => {
-                    importing = None;
-                    model.dialog = None;
-                    model.message = Some("Nothing was imported.".to_owned());
+                    new.typing = false;
+                    model.message = Some("Nothing was added.".to_owned());
                 }
                 LineEdit::Submit => {
-                    let url = importing.take().unwrap_or_default();
-                    model.dialog = None;
-                    pending = import(deps, &mut model, url.trim());
+                    new.typing = false;
+                    let value = text.clone();
+                    pending = match chosen {
+                        Choice::Git => import(deps, &mut model, value.trim()),
+                        Choice::Folder => add_folder(deps, &mut model, &value),
+                    };
                 }
             }
             continue;
         }
         let taken = view::first_key_len(&queued);
-        let key = view::key(&queued[..taken]);
-        queued.drain(..taken);
+        let bytes: Vec<u8> = queued.drain(..taken).collect();
 
         if notice {
             notice = false;
@@ -126,155 +155,163 @@ pub fn run(deps: &mut Deps) -> i32 {
             continue;
         }
 
-        if let Some(destroy) = confirming {
-            match key {
-                Key::Yes => {
-                    confirming = None;
-                    model.dialog = None;
-                    stop(deps, &mut model, destroy);
-                    refresh_panel_if_showing(deps, &mut model, &mut follow);
+        if confirming.is_some() || pending.is_some() {
+            match view::answer(&bytes) {
+                Answer::Yes if model.dialog.as_ref().is_some_and(|d| !d.seen_all) => {
+                    model.message = Some("Read all of it first: down shows the rest.".to_owned());
                 }
-                Key::No | Key::Quit => {
-                    confirming = None;
+                Answer::Yes => {
                     model.dialog = None;
-                    model.message = Some("Nothing was changed.".to_owned());
+                    if let Some(destroy) = confirming.take() {
+                        stop(deps, &mut model, destroy);
+                    } else if let Some(waiting) = pending.take() {
+                        start(deps, &mut model, waiting);
+                    }
+                    refresh_tab_if_showing(deps, &mut model, &mut follow);
                 }
-                _ => {}
+                Answer::No => {
+                    model.dialog = None;
+                    model.message = Some(
+                        if pending.take().is_some() {
+                            "Nothing was started."
+                        } else {
+                            "Nothing was changed."
+                        }
+                        .to_owned(),
+                    );
+                    confirming = None;
+                }
+                moved @ (Answer::Up | Answer::Down | Answer::PageUp | Answer::PageDown) => {
+                    let delta = match moved {
+                        Answer::Up => -1,
+                        Answer::Down => 1,
+                        Answer::PageUp => -LOG_PAGE,
+                        _ => LOG_PAGE,
+                    };
+                    if let Some(dialog) = model.dialog.as_mut() {
+                        dialog.scroll_by(delta, size.0, size.1);
+                    }
+                }
+                Answer::Other => {}
             }
             continue;
         }
 
-        if pending.is_some() {
-            match key {
-                Key::Yes => {
-                    let waiting = pending.take().expect("checked just above");
-                    model.dialog = None;
-                    start(deps, &mut model, waiting);
-                    refresh_panel_if_showing(deps, &mut model, &mut follow);
-                }
-                Key::No | Key::Quit => {
-                    pending = None;
-                    model.dialog = None;
-                    model.message = Some("Nothing was started.".to_owned());
-                }
-                _ => {}
+        if model.new_project.is_some() {
+            match choose(deps, &mut model, &bytes) {
+                Chose::Quit => break,
+                Chose::Back => refresh_tab_if_showing(deps, &mut model, &mut follow),
+                Chose::Stay => {}
             }
             continue;
         }
 
+        let key = view::key(&bytes);
+        let offers = model.offers();
+        let tab = model.tab;
         match key {
             Key::Quit => break,
-            Key::Up if model.pane.0 == Pane::Logs => model.logs.scroll_by(1),
-            Key::Down if model.pane.0 == Pane::Logs => model.logs.scroll_by(-1),
-            Key::PageUp if model.pane.0 == Pane::Logs => model.logs.scroll_by(LOG_PAGE),
-            Key::PageDown if model.pane.0 == Pane::Logs => model.logs.scroll_by(-LOG_PAGE),
-            Key::Follow if model.pane.0 == Pane::Logs => model.logs.jump_to_newest(),
-            Key::Up if model.pane.0 == Pane::Traffic => model.traffic.scroll_by(1),
-            Key::Down if model.pane.0 == Pane::Traffic => model.traffic.scroll_by(-1),
-            Key::PageUp if model.pane.0 == Pane::Traffic => model.traffic.scroll_by(LOG_PAGE),
-            Key::PageDown if model.pane.0 == Pane::Traffic => model.traffic.scroll_by(-LOG_PAGE),
-            Key::Up if model.pane.0 == Pane::Review => model.review.scroll_by(-1),
-            Key::Down if model.pane.0 == Pane::Review => model.review.scroll_by(1),
-            Key::PageUp if model.pane.0 == Pane::Review => model.review.scroll_by(-LOG_PAGE),
-            Key::PageDown if model.pane.0 == Pane::Review => model.review.scroll_by(LOG_PAGE),
+            Key::Up | Key::Down | Key::PageUp | Key::PageDown
+                if matches!(tab, Tab::Logs | Tab::Network | Tab::Changes) =>
+            {
+                // Logs and Network count back from the newest; Changes reads
+                // down from the top.
+                let back = match key {
+                    Key::Up => 1,
+                    Key::Down => -1,
+                    Key::PageUp => LOG_PAGE,
+                    _ => -LOG_PAGE,
+                };
+                match tab {
+                    Tab::Logs => model.logs.scroll_by(back),
+                    Tab::Network => model.traffic.scroll_by(back),
+                    _ => model.review.scroll_by(-back),
+                }
+            }
+            Key::Up | Key::Down => {
+                model.move_by(if key == Key::Up { -1 } else { 1 });
+                show_selected(deps, &mut model);
+                refresh_tab_if_showing(deps, &mut model, &mut follow);
+            }
+            Key::Follow if tab == Tab::Logs => model.logs.jump_to_newest(),
+            Key::PreviousService | Key::NextService if tab == Tab::Logs => {
+                model
+                    .logs
+                    .choose(if key == Key::NextService { 1 } else { -1 });
+                refresh_tab_if_showing(deps, &mut model, &mut follow);
+            }
+            Key::Open(next) => open_tab(deps, &mut model, &mut follow, next),
+            Key::NextTab => open_tab(deps, &mut model, &mut follow, tab.next()),
+            Key::PreviousTab => open_tab(deps, &mut model, &mut follow, tab.previous()),
             // Comparing runs inside the sandbox, so it happens only when asked.
-            Key::Refresh if model.pane.0 == Pane::Review => {
+            Key::Refresh if tab == Tab::Changes => {
                 load_projects(deps, &mut model);
                 compare(deps, &mut model);
             }
-            Key::Up => {
-                model.move_by(-1);
-                show_selected(deps, &mut model);
-                refresh_panel_if_showing(deps, &mut model, &mut follow);
-            }
-            Key::Down => {
-                model.move_by(1);
-                show_selected(deps, &mut model);
-                refresh_panel_if_showing(deps, &mut model, &mut follow);
-            }
-            Key::Tab => {
-                model.pane = PaneState(model.pane.0.next());
-                model.message = None;
-                refresh_panel_if_showing(deps, &mut model, &mut follow);
-            }
             Key::Refresh => {
                 load_projects(deps, &mut model);
-                refresh_panel_if_showing(deps, &mut model, &mut follow);
+                refresh_tab_if_showing(deps, &mut model, &mut follow);
             }
-            Key::PreviousService | Key::NextService if model.pane.0 == Pane::Logs => {
-                model.logs.choose(if key == Key::NextService { 1 } else { -1 });
-                refresh_panel_if_showing(deps, &mut model, &mut follow);
-            }
-            // What acts on a sandbox works only where the project list is,
-            // so a key pressed while reading something else cannot stop one.
-            Key::Start if model.pane.0 == Pane::Projects => {
+            // What acts on a sandbox works only on Overview, so a key pressed
+            // while reading something else cannot stop one.
+            Key::Start if tab == Tab::Overview && offers.start => {
                 pending = propose_start(deps, &mut model);
             }
-            Key::Shell if matches!(model.pane.0, Pane::Projects | Pane::Logs) => {
+            Key::Stop if tab == Tab::Overview && offers.stop => {
+                if let Some(row) = model.selected_row().cloned() {
+                    model.dialog = Some(Dialog::question(
+                        format!("Stop {}", screen::cut(&row.name, 30)),
+                        vec![
+                            Line::plain("Its services stop and their ports close."),
+                            Line::plain("Its data is kept for the next start."),
+                        ],
+                    ));
+                    confirming = Some(false);
+                }
+            }
+            Key::Destroy if tab == Tab::Overview && offers.destroy => {
+                if let Some(row) = model.selected_row().cloned() {
+                    model.dialog = Some(Dialog::question(
+                        format!("Destroy {}", screen::cut(&row.name, 30)),
+                        vec![
+                            Line::plain("This removes the sandbox and everything in it,"),
+                            Line::plain("including its database and uploads."),
+                            Line::plain(""),
+                            Line::styled("This cannot be undone.", Style::WindowAlert),
+                        ],
+                    ));
+                    confirming = Some(true);
+                }
+            }
+            Key::Shell if matches!(tab, Tab::Overview | Tab::Logs) && offers.shell => {
                 open_shell(deps, &mut model, &raw);
                 // Whatever was typed for the shell was the shell's.
                 queued.clear();
             }
-            Key::Import if model.pane.0 == Pane::Projects => {
-                let text = String::new();
-                model.dialog = Some(import_dialog(&text));
-                importing = Some(text);
-            }
-            Key::Pull | Key::Push if model.pane.0 == Pane::Projects => {
+            Key::Pull | Key::Push if tab == Tab::Changes => {
                 if git_on_selected(deps, &mut model, key == Key::Push) {
                     notice = true;
                 }
                 queued.clear();
-                refresh_panel_if_showing(deps, &mut model, &mut follow);
+                refresh_tab_if_showing(deps, &mut model, &mut follow);
             }
-            Key::Open(pane) => {
-                model.pane = PaneState(pane);
+            Key::NewProject => {
+                follow = None;
                 model.message = None;
-                refresh_panel_if_showing(deps, &mut model, &mut follow);
+                model.new_project = Some(new_project_page(deps));
             }
-            Key::Stop if model.pane.0 == Pane::Projects => {
-                if let Some(row) = model.selected_row().cloned() {
-                    model.dialog = Some(Dialog {
-                        title: format!("Stop {}", screen::cut(&row.name, 30)),
-                        lines: vec![
-                            "Its services stop and their ports close.".to_owned(),
-                            "Its data is kept for the next start.".to_owned(),
-                        ],
-                        footer: None,
-                    });
-                    confirming = Some(false);
-                }
-            }
-            Key::Destroy if model.pane.0 == Pane::Projects => {
-                if let Some(row) = model.selected_row().cloned() {
-                    model.dialog = Some(Dialog {
-                        title: format!("Destroy {}", screen::cut(&row.name, 30)),
-                        lines: vec![
-                            "This removes the sandbox and everything in it,".to_owned(),
-                            "including its database and uploads.".to_owned(),
-                            String::new(),
-                            "This cannot be undone.".to_owned(),
-                        ],
-                        footer: None,
-                    });
-                    confirming = Some(true);
-                }
-            }
-            Key::Help => model.message = Some(view::help_for(model.pane.0).to_owned()),
-            Key::Start
-            | Key::Stop
-            | Key::Destroy
+            Key::Help => model.message = Some(view::help_for(&model).to_owned()),
+            Key::PageUp
+            | Key::PageDown
+            | Key::Follow
             | Key::PreviousService
             | Key::NextService
-            | Key::Follow
+            | Key::Start
+            | Key::Stop
+            | Key::Destroy
             | Key::Shell
-            | Key::Import
             | Key::Pull
             | Key::Push
-            | Key::PageUp
-            | Key::PageDown
-            | Key::Yes
-            | Key::No
             | Key::Other => {}
         }
     }
@@ -282,9 +319,61 @@ pub fn run(deps: &mut Deps) -> i32 {
     exit::OK
 }
 
-fn draw(deps: &mut Deps, model: &Model) {
+/// What a key on the New project page led to.
+enum Chose {
+    Stay,
+    /// Back to the selected project, whose tab may need reading again.
+    Back,
+    Quit,
+}
+
+/// A key on the page that offers the two ways in. Choosing one starts typing
+/// into it; the folder line starts with the folder offered, if there is one.
+fn choose(deps: &mut Deps, model: &mut Model, bytes: &[u8]) -> Chose {
+    let has_projects = !model.projects.is_empty();
+    let Some(new) = model.new_project.as_mut() else {
+        return Chose::Stay;
+    };
+    let open = |new: &mut NewProject, choice: Choice| {
+        new.chosen = choice;
+        new.typing = true;
+        if choice == Choice::Folder && new.folder.is_empty() {
+            new.folder = new.offered.clone().unwrap_or_default();
+        }
+    };
+    match view::choice_key(bytes) {
+        ChoiceKey::Git => open(new, Choice::Git),
+        ChoiceKey::Folder => open(new, Choice::Folder),
+        ChoiceKey::Enter => {
+            let chosen = new.chosen;
+            open(new, chosen);
+        }
+        ChoiceKey::Left => new.chosen = Choice::Git,
+        ChoiceKey::Right => new.chosen = Choice::Folder,
+        ChoiceKey::Back if has_projects => {
+            model.new_project = None;
+            model.message = None;
+            show_selected(deps, model);
+            return Chose::Back;
+        }
+        ChoiceKey::Help => model.message = Some(view::help_for(model).to_owned()),
+        ChoiceKey::Quit => return Chose::Quit,
+        ChoiceKey::Back | ChoiceKey::Other => {}
+    }
+    Chose::Stay
+}
+
+fn open_tab(deps: &mut Deps, model: &mut Model, follow: &mut Option<logs::Follow>, tab: Tab) {
+    model.tab = tab;
+    model.message = None;
+    refresh_tab_if_showing(deps, model, follow);
+}
+
+/// Draws the screen and returns the size it was drawn at.
+fn draw(deps: &mut Deps, model: &Model) -> (usize, usize) {
     let (width, height) = term::size(deps.env, deps.input, deps.out);
-    let rows = view::render(model, width as usize, height as usize);
+    let (width, height) = (width as usize, height as usize);
+    let rows = view::render(model, width, height);
     let fixed = has_fixed_colours(deps);
     let mut out = String::from("\x1b[H");
     let last = rows.len().saturating_sub(1);
@@ -310,6 +399,7 @@ fn draw(deps: &mut Deps, model: &Model) {
     }
     let _ = deps.out.write_all(out.as_bytes());
     let _ = deps.out.flush();
+    (width, height)
 }
 
 /// Whether the terminal has the 256-colour table, whose colours themes leave alone.
@@ -323,6 +413,9 @@ fn load_projects(deps: &mut Deps, model: &mut Model) {
     model.message = None;
     let Ok(paths) = crate::state::StatePaths::locate(deps.env) else {
         model.message = Some("cannot find the state folder".to_owned());
+        if model.projects.is_empty() && model.new_project.is_none() {
+            model.new_project = Some(new_project_page(deps));
+        }
         return;
     };
     model.projects = crate::state::known_projects(&paths)
@@ -334,52 +427,104 @@ fn load_projects(deps: &mut Deps, model: &mut Model) {
         })
         .collect();
     model.selected = model.selected.min(model.projects.len().saturating_sub(1));
+    let mut answered = false;
+    let mut failed = false;
     for index in 0..model.projects.len() {
         let path = model.projects[index].path.clone();
-        if let Some(report) = status_of(deps, &path) {
-            model.projects[index].state = match report.sandbox {
-                SandboxState::Running => RowState::Running,
-                SandboxState::Stopped => RowState::Stopped,
-                SandboxState::None => RowState::None,
-                SandboxState::Unknown => RowState::Unknown,
-            };
+        match logs::status(deps.daemon, &path) {
+            Ok(report) => {
+                answered = true;
+                model.projects[index].state = match report.sandbox {
+                    SandboxState::Running => RowState::Running,
+                    SandboxState::Stopped => RowState::Stopped,
+                    SandboxState::None => RowState::None,
+                    SandboxState::Unknown => RowState::Unknown,
+                };
+            }
+            Err(CallError::Refused(_)) => answered = true,
+            Err(_) => failed = true,
         }
     }
+    if model.projects.is_empty() {
+        // An empty path is refused before the daemon touches anything, so
+        // this asks only whether it is there.
+        match logs::status(deps.daemon, "") {
+            Ok(_) | Err(CallError::Refused(_)) => answered = true,
+            Err(_) => failed = true,
+        }
+        if model.new_project.is_none() {
+            model.new_project = Some(new_project_page(deps));
+        }
+    }
+    model.daemon = match (answered, failed) {
+        (true, _) => Daemon::Up,
+        (false, true) => Daemon::Down,
+        (false, false) => Daemon::Unknown,
+    };
     show_selected(deps, model);
 }
 
-fn status_of(deps: &mut Deps, path: &str) -> Option<proto::StatusReport> {
-    logs::status(deps.daemon, path).ok()
+/// The New project page, with the folder this was started in offered when it
+/// looks like a project, and chosen first then.
+fn new_project_page(deps: &Deps) -> NewProject {
+    let offered = offered_folder(deps);
+    NewProject {
+        chosen: if offered.is_some() {
+            Choice::Folder
+        } else {
+            Choice::Git
+        },
+        offered,
+        ..NewProject::default()
+    }
 }
 
-/// Reads whatever the showing panel needs. This waits for the daemon, but only
+/// The current folder, if it looks like a project: it has a Compose file, a
+/// Dockerfile, a dev container or a package manifest. The home folder and the
+/// root are never offered, whatever they hold.
+fn offered_folder(deps: &Deps) -> Option<String> {
+    let cwd = deps.cwd.as_path();
+    let home = (deps.env)("HOME").map(PathBuf::from);
+    if cwd == Path::new("/") || home.as_deref() == Some(cwd) {
+        return None;
+    }
+    match projectcheck::detect::detect(cwd) {
+        Ok(found) => match found.kind {
+            projectcheck::detect::ProjectKind::Unknown
+            | projectcheck::detect::ProjectKind::Unsupported { .. } => None,
+            _ => Some(cwd.to_string_lossy().into_owned()),
+        },
+        Err(_) => None,
+    }
+}
+
+/// Reads whatever the showing tab needs. This waits for the daemon, but only
 /// up to the limits in [`logs`] and [`traffic`], so a slow sandbox cannot freeze
-/// the interface. A log is followed only while its panel shows, so leaving it
+/// the interface. A log is followed only while its tab shows, so leaving it
 /// ends the command inside the sandbox.
-fn refresh_panel_if_showing(
-    deps: &mut Deps,
-    model: &mut Model,
-    follow: &mut Option<logs::Follow>,
-) {
+fn refresh_tab_if_showing(deps: &mut Deps, model: &mut Model, follow: &mut Option<logs::Follow>) {
     // Stopped first, so a new one never runs beside the old one.
     *follow = None;
-    match model.pane.0 {
-        Pane::Logs => *follow = refresh_logs(deps, model),
-        Pane::Traffic => refresh_traffic(deps, model),
-        Pane::Secrets => refresh_secrets(deps, model),
-        Pane::Review => match model.selected_row() {
+    if model.new_project.is_some() {
+        return;
+    }
+    match model.tab {
+        Tab::Logs => *follow = refresh_logs(deps, model),
+        Tab::Network => refresh_traffic(deps, model),
+        Tab::Secrets => refresh_secrets(deps, model),
+        Tab::Changes => match model.selected_row() {
             Some(row) => {
                 let path = row.path.clone();
                 model.review.belong_to(&path);
             }
             None => model.review = view::ReviewPanel::default(),
         },
-        Pane::Projects => {}
+        Tab::Overview => {}
     }
 }
 
 /// Compares the selected project's sandbox with its snapshot, into the
-/// Review panel.
+/// Changes tab.
 fn compare(deps: &mut Deps, model: &mut Model) {
     let Some(row) = model.selected_row().cloned() else {
         model.review = view::ReviewPanel::default();
@@ -397,7 +542,8 @@ fn refresh_secrets(deps: &mut Deps, model: &mut Model) {
     match model.selected_row().cloned() {
         Some(row) => {
             secrets::refresh(deps.env, &mut model.secrets, &row.name);
-            model.secrets.reach = status_of(deps, &row.path)
+            model.secrets.reach = logs::status(deps.daemon, &row.path)
+                .ok()
                 .and_then(|report| report.exposure)
                 .map(|e| {
                     proto::exposure_lines(&e.secrets, e.reachable_hosts.as_deref(), true)
@@ -457,7 +603,7 @@ fn show_selected(deps: &mut Deps, model: &mut Model) {
 const SHELL_LIMIT: Duration = Duration::from_secs(15);
 
 /// Opens a shell for the selected project, on the person's own terminal, the
-/// way `shell` does: into the service chosen on the Logs panel, if there is
+/// way `shell` does: into the service chosen on the Logs tab, if there is
 /// one, or the sandbox itself. The interface steps aside while it runs and
 /// comes back when it ends.
 fn open_shell(deps: &mut Deps, model: &mut Model, raw: &term::RawMode) {
@@ -470,7 +616,7 @@ fn open_shell(deps: &mut Deps, model: &mut Model, raw: &term::RawMode) {
         Ok(report) if report.sandbox == SandboxState::Running => {}
         Ok(_) => {
             model.message = Some(
-                "There is no running sandbox to open a shell in. Start it from Projects with 2."
+                "There is no running sandbox to open a shell in. Start it with u on Overview."
                     .to_owned(),
             );
             return;
@@ -504,7 +650,6 @@ fn open_shell(deps: &mut Deps, model: &mut Model, raw: &term::RawMode) {
     model.message = Some(format!("The shell in {place} ended with exit code {code}."));
 }
 
-/// Builds a plan and shows it in a box, so that Yes agrees to something seen.
 /// What a keystroke did to a line being typed.
 #[derive(Debug, PartialEq, Eq)]
 enum LineEdit {
@@ -513,46 +658,81 @@ enum LineEdit {
     Cancel,
 }
 
-const MAX_URL: usize = 300;
+/// What a line holds, which decides what can be typed into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineKind {
+    /// An SSH remote: printable ASCII, no spaces.
+    Remote,
+    /// A folder: anything but control characters.
+    Path,
+}
 
-/// Applies typed or pasted bytes to a line. Only printable ASCII is kept,
-/// which is all an SSH remote can hold. A lone Esc or Ctrl-C cancels; other
-/// escape sequences, such as arrow keys, are ignored.
-fn edit_line(text: &mut String, bytes: &[u8]) -> LineEdit {
+const MAX_URL: usize = 300;
+const MAX_PATH: usize = 4096;
+
+/// Applies typed or pasted bytes to a line. A remote keeps only printable
+/// ASCII, which is all one can hold; a folder keeps any character but a
+/// control code. A lone Esc or Ctrl-C cancels; other escape sequences, such
+/// as arrow keys, are ignored.
+fn edit_line(text: &mut String, bytes: &[u8], kind: LineKind) -> LineEdit {
     if bytes == b"\x1b" {
         return LineEdit::Cancel;
     }
     if bytes.first() == Some(&0x1b) {
         return LineEdit::Typing;
     }
-    for &byte in bytes {
-        match byte {
-            b'\r' | b'\n' => return LineEdit::Submit,
-            0x03 => return LineEdit::Cancel,
-            0x7f | 0x08 => {
+    let most = match kind {
+        LineKind::Remote => MAX_URL,
+        LineKind::Path => MAX_PATH,
+    };
+    for ch in String::from_utf8_lossy(bytes).chars() {
+        match ch {
+            '\r' | '\n' => return LineEdit::Submit,
+            '\u{3}' => return LineEdit::Cancel,
+            '\u{7f}' | '\u{8}' => {
                 text.pop();
             }
-            0x15 => text.clear(),
-            0x21..=0x7e if text.len() < MAX_URL => text.push(byte as char),
+            '\u{15}' => text.clear(),
+            c if text.len() + c.len_utf8() > most => {}
+            c if kind == LineKind::Remote && c.is_ascii_graphic() => text.push(c),
+            c if kind == LineKind::Path && !c.is_control() && c != char::REPLACEMENT_CHARACTER => {
+                text.push(c);
+            }
             _ => {}
         }
     }
     LineEdit::Typing
 }
 
-fn import_dialog(text: &str) -> Dialog {
-    Dialog {
-        title: "Import from Git".to_owned(),
-        lines: vec![
-            "An SSH remote, such as git@github.com:org/repo.git".to_owned(),
-            String::new(),
-            format!("> {text}_"),
-            String::new(),
-            "Fetched here with your SSH key, then you see the plan.".to_owned(),
-            "The key never enters the sandbox.".to_owned(),
-        ],
-        footer: Some("Enter fetches   Esc cancels".to_owned()),
+/// A leading `~` is the home folder, as a shell would read it.
+fn expand_home(text: &str, env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
+    let home = || env("HOME").map(PathBuf::from);
+    match text.strip_prefix('~') {
+        Some("") => home().unwrap_or_else(|| PathBuf::from(text)),
+        Some(rest) if rest.starts_with('/') => home()
+            .map(|home| home.join(rest.trim_start_matches('/')))
+            .unwrap_or_else(|| PathBuf::from(text)),
+        _ => PathBuf::from(text),
     }
+}
+
+/// Adds a folder: works out its plan, which also lists it, and proposes
+/// starting it, which shows the plan and waits for a yes like any other start.
+fn add_folder(deps: &mut Deps, model: &mut Model, text: &str) -> Option<Pending> {
+    let text = text.trim();
+    if text.is_empty() {
+        model.message = Some("Nothing was added.".to_owned());
+        return None;
+    }
+    let path = expand_home(text, deps.env);
+    let root = match crate::project_dir(Some(&path), deps) {
+        Ok(root) => root,
+        Err(reason) => {
+            model.message = Some(format!("That folder cannot be added: {reason}"));
+            return None;
+        }
+    };
+    propose_start_for(deps, model, &root.to_string_lossy(), true)
 }
 
 /// Fetches a remote, adds it to the list, and proposes starting it, which
@@ -562,7 +742,8 @@ fn import(deps: &mut Deps, model: &mut Model, url: &str) -> Option<Pending> {
         model.message = Some("Nothing was imported.".to_owned());
         return None;
     }
-    model.busy = Some("Fetching on this machine. Your SSH agent may ask you to approve.".to_owned());
+    model.busy =
+        Some("Fetching on this machine. Your SSH agent may ask you to approve.".to_owned());
     draw(deps, model);
     let request = Request::Fetch(proto::FetchArgs {
         url: url.to_owned(),
@@ -581,15 +762,24 @@ fn import(deps: &mut Deps, model: &mut Model, url: &str) -> Option<Pending> {
         }
     };
     load_projects(deps, model);
-    if let Some(index) = model.projects.iter().position(|row| row.path == report.project_path) {
+    if let Some(index) = model
+        .projects
+        .iter()
+        .position(|row| row.path == report.project_path)
+    {
         model.selected = index;
+        model.new_project = None;
+        model.tab = Tab::Overview;
         show_selected(deps, model);
     }
     if !report.fetched {
-        model.message = Some("Already in a sandbox. Press g to pull newer commits.".to_owned());
+        model.message =
+            Some("Already in a sandbox. Press p on Changes to pull newer commits.".to_owned());
         return None;
     }
-    propose_start(deps, model)
+    // The plan is asked for by the path the daemon fetched into, so the box
+    // can only ever show the project that was just fetched.
+    propose_start_for(deps, model, &report.project_path, false)
 }
 
 /// Pulls or pushes in the selected project and shows what Git said. Returns
@@ -599,9 +789,16 @@ fn git_on_selected(deps: &mut Deps, model: &mut Model, push: bool) -> bool {
         return false;
     };
     let verb = if push { "Pushing" } else { "Pulling" };
-    model.busy = Some(format!("{verb} {}. Your SSH agent may ask you to approve.", screen::cut(&row.name, 30)));
+    model.busy = Some(format!(
+        "{verb} {}. Your SSH agent may ask you to approve.",
+        screen::cut(&row.name, 30)
+    ));
     draw(deps, model);
-    let op = if push { proto::GitOp::Push } else { proto::GitOp::Pull };
+    let op = if push {
+        proto::GitOp::Push
+    } else {
+        proto::GitOp::Pull
+    };
     let result = crate::git_cmd::call(std::path::Path::new(&row.path), op, deps);
     model.busy = None;
     let report = match result {
@@ -616,7 +813,10 @@ fn git_on_selected(deps: &mut Deps, model: &mut Model, push: bool) -> bool {
         lines.drain(..lines.len() - 10);
     }
     for update in &report.updates {
-        lines.push(format!("pushed {} {:.10} -> {:.10}", update.name, update.old, update.new));
+        lines.push(format!(
+            "pushed {} {:.10} -> {:.10}",
+            update.name, update.old, update.new
+        ));
     }
     if let Some(branch) = &report.branch {
         lines.push(format!("on branch {branch}"));
@@ -630,19 +830,35 @@ fn git_on_selected(deps: &mut Deps, model: &mut Model, push: bool) -> bool {
         lines.push(String::new());
         lines.push(reason.clone());
     }
-    model.dialog = Some(Dialog { title, lines, footer: Some("Press any key".to_owned()) });
+    model.dialog = Some(Dialog::notice(
+        title,
+        lines.into_iter().map(Line::plain).collect(),
+        "Press any key",
+    ));
     true
 }
 
+/// Proposes starting the selected project.
 fn propose_start(deps: &mut Deps, model: &mut Model) -> Option<Pending> {
     let row = model.selected_row().cloned()?;
-    let plan = match deps.daemon.call(
+    propose_start_for(deps, model, &row.path, false)
+}
+
+/// Builds a plan and shows it in a box, so that Yes agrees to something seen.
+/// For a project not listed yet, asking for its plan is what lists it, so the
+/// list is read again and the project chosen.
+fn propose_start_for(deps: &mut Deps, model: &mut Model, path: &str, new: bool) -> Option<Pending> {
+    model.busy = Some("Working out the plan.".to_owned());
+    draw(deps, model);
+    let answer = deps.daemon.call(
         Request::Plan(PlanArgs {
-            project: row.path.clone(),
+            project: path.to_owned(),
             source: Source::default(),
         }),
         &mut |_, _| {},
-    ) {
+    );
+    model.busy = None;
+    let plan = match answer {
         Ok(Reply::Plan(plan)) => *plan,
         Ok(_) => return None,
         Err(error) => {
@@ -650,73 +866,41 @@ fn propose_start(deps: &mut Deps, model: &mut Model) -> Option<Pending> {
             return None;
         }
     };
+    if new {
+        load_projects(deps, model);
+        if let Some(index) = model.projects.iter().position(|row| row.path == path) {
+            model.selected = index;
+            show_selected(deps, model);
+        }
+        if !model.projects.is_empty() {
+            model.new_project = None;
+            model.tab = Tab::Overview;
+        }
+    }
+    let name = model
+        .selected_row()
+        .filter(|row| row.path == path)
+        .map_or_else(|| crate::ui::esc(&plan.project_id), |row| row.name.clone());
     if !plan.blockers.is_empty() {
         model.detail = plan
             .blockers
             .iter()
-            .map(|b| Line::styled(b.clone(), Style::WindowAlert))
+            .map(|b| Line::styled(crate::ui::esc(b), Style::WindowAlert))
             .collect();
-        model.message = Some("This cannot be started. See the panel.".to_owned());
+        model.message = Some("This cannot be started. See Overview.".to_owned());
         return None;
     }
     let ports: Vec<u16> = plan.ports.iter().map(|p| p.host_port).collect();
-    model.dialog = Some(Dialog {
-        title: format!("Start {}", screen::cut(&row.name, 30)),
-        lines: dialog_lines(&plan, &ports),
-        footer: None,
-    });
+    model.dialog = Some(Dialog::question(
+        format!("Start {}", screen::cut(&name, 30)),
+        plan::start_lines(&plan),
+    ));
     Some(Pending {
-        name: row.name,
-        project: row.path,
+        name,
+        project: path.to_owned(),
         digest: plan.digest,
         ports,
     })
-}
-
-fn dialog_lines(plan: &PlanReport, ports: &[u16]) -> Vec<String> {
-    let mut lines = vec![
-        format!(
-            "{} services from commit {}",
-            plan.services.len(),
-            plan.snapshot
-                .revision
-                .as_deref()
-                .map_or("the working tree", |r| r.get(..12).unwrap_or(r))
-        ),
-        String::new(),
-    ];
-    if ports.is_empty() {
-        lines.push("No ports would be forwarded.".to_owned());
-    } else {
-        lines.push(format!(
-            "Forward to 127.0.0.1:  {}",
-            ports
-                .iter()
-                .map(u16::to_string)
-                .collect::<Vec<_>>()
-                .join("  ")
-        ));
-        lines.push("Anything on this machine could then reach them.".to_owned());
-    }
-    lines.push(String::new());
-    lines.push(format!(
-        "{} hosts allowed for the build, {} while it runs.",
-        plan.network.build_hosts.len(),
-        plan.network.run_hosts.len()
-    ));
-    if plan.network.merged_for_whole_life {
-        lines.push("Build hosts stay reachable after the build.".to_owned());
-    }
-    let exposure = proto::exposure_lines(
-        &proto::held_from_plan(&plan.secrets),
-        Some(&proto::reachable_while_running(&plan.network)),
-        true,
-    );
-    if !exposure.is_empty() {
-        lines.push(String::new());
-        lines.extend(exposure);
-    }
-    lines
 }
 
 /// The shortest time between two drawings of the start's progress. A build
@@ -761,7 +945,10 @@ fn start(deps: &mut Deps, model: &mut Model, pending: Pending) {
         Ok(_) => "The daemon answered something else.".to_owned(),
         Err(error) => logs::failure(&error).text,
     });
+    // Reading the list again clears the line, so what happened is kept.
+    let said = model.message.take();
     load_projects(deps, model);
+    model.message = said;
 }
 
 fn stop(deps: &mut Deps, model: &mut Model, destroy: bool) {
@@ -778,15 +965,16 @@ fn stop(deps: &mut Deps, model: &mut Model, destroy: bool) {
         &mut |_, _| {},
     );
     model.busy = None;
-    model.message = Some(match result {
+    let said = match result {
         Ok(Reply::Down(report)) if report.destroyed => {
             "Destroyed. Rotate every secret it was given.".to_owned()
         }
         Ok(Reply::Down(_)) => "Stopped. Its data is kept for the next start.".to_owned(),
         Ok(_) => "The daemon answered something else.".to_owned(),
         Err(error) => logs::failure(&error).text,
-    });
+    };
     load_projects(deps, model);
+    model.message = Some(said);
 }
 
 #[cfg(test)]
@@ -796,31 +984,87 @@ mod import_tests {
     #[test]
     fn a_remote_is_typed_pasted_edited_and_submitted() {
         let mut text = String::new();
-        assert_eq!(edit_line(&mut text, b"git@github.com:org/rep"), LineEdit::Typing);
-        assert_eq!(edit_line(&mut text, b"x\x7fo.git"), LineEdit::Typing);
+        let remote = LineKind::Remote;
+        assert_eq!(
+            edit_line(&mut text, b"git@github.com:org/rep", remote),
+            LineEdit::Typing
+        );
+        assert_eq!(
+            edit_line(&mut text, b"x\x7fo.git", remote),
+            LineEdit::Typing
+        );
         assert_eq!(text, "git@github.com:org/repo.git");
-        assert_eq!(edit_line(&mut text, b"\r"), LineEdit::Submit);
-        assert_eq!(edit_line(&mut text, b"\x1b[D"), LineEdit::Typing, "arrows are ignored");
+        assert_eq!(edit_line(&mut text, b"\r", remote), LineEdit::Submit);
+        assert_eq!(
+            edit_line(&mut text, b"\x1b[D", remote),
+            LineEdit::Typing,
+            "arrows are ignored"
+        );
         assert_eq!(text, "git@github.com:org/repo.git");
     }
 
     #[test]
-    fn control_and_wide_characters_never_reach_the_line() {
+    fn control_and_wide_characters_never_reach_a_remote() {
         let mut text = String::new();
-        edit_line(&mut text, "a b\tc\u{1b}d\u{e9}".as_bytes());
+        edit_line(
+            &mut text,
+            "a b\tc\u{1b}d\u{e9}".as_bytes(),
+            LineKind::Remote,
+        );
         assert!(text.chars().all(|c| c.is_ascii_graphic()), "{text:?}");
-        assert_eq!(edit_line(&mut text, b"\x1b"), LineEdit::Cancel);
-        assert_eq!(edit_line(&mut text, b"\x03"), LineEdit::Cancel);
+        assert_eq!(
+            edit_line(&mut text, b"\x1b", LineKind::Remote),
+            LineEdit::Cancel
+        );
+        assert_eq!(
+            edit_line(&mut text, b"\x03", LineKind::Remote),
+            LineEdit::Cancel
+        );
         let mut long = String::new();
-        edit_line(&mut long, &[b'a'; 1000]);
+        edit_line(&mut long, &[b'a'; 1000], LineKind::Remote);
         assert_eq!(long.len(), MAX_URL);
     }
 
+    /// A folder can hold spaces and letters from any language, but never a
+    /// control code, which could otherwise reach the terminal.
     #[test]
-    fn the_import_box_says_where_the_key_stays_and_how_to_leave() {
-        let dialog = import_dialog("git@h:o/r.git");
-        assert!(dialog.lines.iter().any(|l| l.contains("> git@h:o/r.git_")));
-        assert!(dialog.lines.iter().any(|l| l.contains("never enters the sandbox")));
-        assert!(dialog.footer.as_deref().unwrap().contains("Esc"));
+    fn a_folder_keeps_spaces_and_letters_but_no_control_codes() {
+        let mut text = String::new();
+        edit_line(
+            &mut text,
+            "~/My Projects/caf\u{e9}\u{7}\u{9b}x".as_bytes(),
+            LineKind::Path,
+        );
+        assert_eq!(text, "~/My Projects/caf\u{e9}x");
+        assert!(text.chars().all(|c| !c.is_control()), "{text:?}");
+        edit_line(&mut text, b"\x15", LineKind::Path);
+        assert!(text.is_empty());
+        let mut long = String::new();
+        edit_line(&mut long, &[b'a'; 10_000], LineKind::Path);
+        assert_eq!(long.len(), MAX_PATH);
+    }
+
+    /// Enter submits, and whatever came after it in the same read is not
+    /// typed, so a paste cannot carry on into the question Enter brings up.
+    #[test]
+    fn what_follows_enter_in_a_paste_is_not_kept() {
+        let mut text = String::new();
+        assert_eq!(
+            edit_line(&mut text, b"/srv/app\ry", LineKind::Path),
+            LineEdit::Submit
+        );
+        assert_eq!(text, "/srv/app");
+    }
+
+    #[test]
+    fn a_leading_tilde_is_the_home_folder() {
+        let env = |name: &str| (name == "HOME").then(|| std::ffi::OsString::from("/home/ada"));
+        assert_eq!(
+            expand_home("~/code/app", &env),
+            PathBuf::from("/home/ada/code/app")
+        );
+        assert_eq!(expand_home("~", &env), PathBuf::from("/home/ada"));
+        assert_eq!(expand_home("/srv/~x", &env), PathBuf::from("/srv/~x"));
+        assert_eq!(expand_home("~bob/x", &env), PathBuf::from("~bob/x"));
     }
 }

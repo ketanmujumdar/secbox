@@ -63,7 +63,7 @@ fn usable_services(report: &StatusReport) -> Vec<String> {
 
 fn not_running_note(state: SandboxState, path: &str) -> String {
     let start = format!(
-        "Start it from Projects with 2, or run: {} up {}",
+        "Start it with u on Overview, or run: {} up {}",
         brand::CLI_BIN,
         text::escape(path)
     );
@@ -193,11 +193,11 @@ fn ended(result: Result<Reply, CallError>) -> Line {
     match result {
         Ok(Reply::Logs(report)) => match report.code {
             Some(0) | None => Line::styled(
-                "The log ended, so nothing new will appear. Press 5 to read it again.",
+                "The log ended, so nothing new will appear. Press r to read it again.",
                 Style::WindowWarn,
             ),
             Some(code) => Line::styled(
-                format!("The log command inside the sandbox exited with {code}. Press 5 to try again."),
+                format!("The log command inside the sandbox exited with {code}. Press r to try again."),
                 Style::WindowAlert,
             ),
         },
@@ -315,7 +315,7 @@ fn read_once(client: &dyn DaemonClient, panel: &mut LogsPanel, path: &str) {
 
 pub(super) fn failure(error: &CallError) -> Line {
     let message = match error {
-        CallError::TimedOut => "The daemon did not answer in time. Press 5 to try again.".to_owned(),
+        CallError::TimedOut => "The daemon did not answer in time. Press r to try again.".to_owned(),
         other => text::escape(&other.message().replace('\n', " ")),
     };
     Line::styled(message, Style::WindowAlert)
@@ -441,7 +441,7 @@ mod tests {
             let panel = filled(&daemon);
             assert!(!daemon.asked_for_logs(), "{state:?}");
             let note = panel.note.unwrap().text;
-            assert!(note.contains("Projects with 2"), "{note}");
+            assert!(note.contains("u on Overview"), "{note}");
             assert!(note.contains(" up /p"), "{note}");
             assert!(panel.lines.is_empty());
         }
@@ -613,7 +613,7 @@ mod tests {
         assert!(follow.over());
         assert_eq!(panel.live, Live::Ended);
         assert_eq!(panel.lines, ["no newline at the end"]);
-        assert!(panel.note.unwrap().text.contains("Press 5"));
+        assert!(panel.note.unwrap().text.contains("Press r"));
     }
 
     #[test]

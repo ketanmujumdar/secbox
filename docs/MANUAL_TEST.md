@@ -241,7 +241,7 @@ secbox shell --project "$P"
 
 `exit 3` leaves it, and `echo $?` on the host shows 3. Typing into a shell writes a history file inside the sandbox, as any shell does. `secbox shell postgres --project "$P"` opens one in that container.
 
-In the full-screen interface, press `l` for Logs, the left and right arrows or `[` and `]` to choose a service or All, up, down, PgUp and PgDn to scroll, `5` to read again, `1` for help and `q` to quit. The bar along the bottom changes with the panel: on Logs it shows Service, Scroll, Follow and Shell, and no Start, Stop or Destroy. Pressing `2`, `3` or `x` there does nothing; they work only on Projects.
+In the full-screen interface, press `l` for the Logs tab, the left and right arrows or `[` and `]` to choose a service or All, up, down, PgUp and PgDn to scroll, `r` to read again, `?` for help and `q` to quit. The bar along the bottom changes with the tab: on Logs it shows Scroll, Service, Follow and Shell, and no Start, Stop or Destroy. Pressing `u`, `S` or `x` there does nothing; they work only on Overview.
 
 The Logs panel follows on its own, and says `Following` at the top right. From a second terminal, make a service write a line, for example `secbox exec --service api --project "$P" -- sh -c 'echo hello > /proc/1/fd/1'`. It appears within about a second without a key being pressed. Press up: the tag changes to `Paused`, the view stays still while more lines arrive, and the tag counts them. `f` or End, or scrolling back down to the newest line, follows again. Choosing another service or panel, or quitting, ends the log command inside the sandbox: check with the `ps` line above, which should print 0 once you are back on Projects.
 
@@ -329,7 +329,7 @@ Check on GitHub that `main` did not move. Then pull: push a commit to `main` fro
 
 Every push and refusal is in `~/.secbox/daemon-audit.jsonl` (`git_pushed`, `git_push_refused`).
 
-In the terminal UI: press `i`, paste the URL, Enter. The plan appears; `y` starts it. With the project selected, `g` pulls and `G` pushes, each showing what Git said. In the desktop app: paste the URL into Import, approve the plan, then use the Git tab.
+In the terminal UI: press `+` for New project (or start with no projects), `g`, paste the URL, Enter. The plan appears; `y` starts it, and Enter or `n` cancels. On the project's Changes tab (`c`), `p` pulls and `P` pushes, each showing what Git said. In the desktop app: paste the URL into Import, approve the plan, then use the Git tab.
 
 With MCP: run `secbox mcp setup claude /tmp/agent-test --project "$R"`, start Claude Code there, and ask it to make a branch, change a file, commit and push. Then ask it to push to `main`. It should be refused.
 
@@ -375,7 +375,7 @@ You should see each hostname once, with its time and count, and the newest last.
 
 Keep it open with `secbox net blocked -f --project "$P"` and run another lookup from a second terminal. It appears within about two seconds, and Ctrl-C ends it.
 
-In the full-screen interface, press `t` for Traffic. Up, down, PgUp and PgDn scroll, `5` reads the newest, and the warning stays on screen while you scroll.
+In the full-screen interface, press `n` for the Network tab. Up, down, PgUp and PgDn scroll, `r` reads the newest, and the warning stays on screen while you scroll.
 
 Press `p` for Projects. The Blocked box on the right has a red frame, gives the same totals as `status` with "t to see them", and never says "0". Beside it are Services with each one's health or state, Ports as `127.0.0.1:PORT`, and Resources, with the warning that the services came from inside the sandbox underneath. Shrink the terminal to 60 by 14: the boxes stack and drop, Blocked last, and nothing breaks the frame.
 
