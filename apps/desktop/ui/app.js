@@ -637,6 +637,69 @@
     }
   });
 
+  // ---------- importing from Git ----------
+
+  $('import-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const url = $('import-url').value.trim();
+    if (!url) return;
+    busy('Fetching on this machine. Your SSH agent may ask you to approve.');
+    let view;
+    try {
+      view = await invoke('import_remote', { url });
+    } catch (error) {
+      busy('');
+      banner(errorText(error));
+      return;
+    }
+    busy('');
+    $('import-url').value = '';
+    banner(view.message, 'info');
+    await refreshProjects();
+    await select(view.project_path);
+    if (view.fetched) await startProject();
+  });
+
+  // ---------- Git ----------
+
+  async function runGit(op, message) {
+    const row = selectedRow();
+    if (!row) { banner('Choose a project first.'); return; }
+    const waiting = op === 'pull' || op === 'push';
+    busy(waiting ? (op === 'pull' ? 'Pulling' : 'Pushing') + '. Your SSH agent may ask you to approve.' : 'Asking Git');
+    let view;
+    try {
+      view = await invoke('git', { project: row.path, op, commitMessage: message || null });
+    } catch (error) {
+      busy('');
+      banner(errorText(error));
+      return;
+    }
+    busy('');
+    const title = $('git-title');
+    title.textContent = view.title;
+    title.className = view.ok ? '' : 'bad';
+    show(title, true);
+    const updates = $('git-updates');
+    clear(updates);
+    for (const line of view.updates) updates.appendChild(el('li', 'pushed ' + line));
+    if (view.refused) updates.appendChild(el('li', view.refused, 'bad'));
+    $('git-output').textContent = view.output.join('\n');
+    $('git-branch').textContent = view.branch ? 'On branch ' + view.branch : '';
+    return view;
+  }
+
+  $('git-status').addEventListener('click', () => runGit('status'));
+  $('git-pull').addEventListener('click', () => runGit('pull'));
+  $('git-push').addEventListener('click', () => runGit('push'));
+  $('git-commit-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const message = $('git-message').value.trim();
+    if (!message) { banner('Write a commit message first.'); return; }
+    const view = await runGit('commit', message);
+    if (view && view.ok) $('git-message').value = '';
+  });
+
   $('refresh').addEventListener('click', async () => {
     await refreshDaemon();
     await refreshProjects();
@@ -693,7 +756,7 @@
     if (state.projects.length === 0) {
       show($('overview-grid'), false);
       show($('overview-empty'), true);
-      $('overview-empty').textContent = 'No project selected. Add a project folder in the sidebar.';
+      $('overview-empty').textContent = 'No project selected. Import an SSH remote or add a project folder in the sidebar.';
     }
     // The menu bar icon may have started or restarted the daemon meanwhile.
     setInterval(async () => {

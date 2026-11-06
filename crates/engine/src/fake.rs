@@ -27,6 +27,7 @@ pub enum FakeCall {
     /// be printed by a failing test. Read it with [`FakeEngine::inputs`].
     ExecWithInput(SandboxName, ExecRequest),
     ExecDetached(SandboxName, ExecRequest),
+    ExecPiped(SandboxName, ExecRequest),
     CopyIn(SandboxName, PathBuf, GuestPath),
     Logs(SandboxName, LogOptions),
 }
@@ -53,6 +54,9 @@ struct State {
     stream_stays_open: bool,
     streams_stopped: usize,
     location: Option<EngineLocation>,
+    /// Where `/work` is on this machine, for [`Engine::exec_piped`]. With one
+    /// set, piped commands really run, locally, in that folder.
+    piped_root: Option<PathBuf>,
     inputs: Vec<(Vec<String>, String)>,
     keeps_files: bool,
     lookups_denied: u32,
@@ -106,6 +110,16 @@ impl FakeEngine {
     /// place a client could run this engine from.
     pub fn set_location(&self, location: EngineLocation) {
         self.lock().location = Some(location);
+    }
+
+    /// Makes Git really run, on this machine, in `root`, standing in for the
+    /// guest's `/work`: every [`Engine::exec_piped`], and every `exec` whose
+    /// command is `git ...` or a `sh -c` script that runs Git. Anything else,
+    /// such as Docker, still gets the canned answers. The commands get a
+    /// cleared environment with only `PATH` and `HOME` (set to `root`), so a
+    /// test can drive a real protocol through the code that relays it.
+    pub fn run_piped_in(&self, root: &Path) {
+        self.lock().piped_root = Some(root.to_path_buf());
     }
 
     /// Makes this engine keep files under its location as the real one does: the
@@ -321,6 +335,10 @@ impl Engine for FakeEngine {
         let mut state = self.begin(FakeCall::Exec(name.clone(), request.clone()))?;
         crate::argv::exec(name, request)?;
         running_box(&mut state, name)?;
+        if let Some(root) = state.piped_root.clone().filter(|_| runs_git(request)) {
+            drop(state);
+            return run_locally(&root, request, &[]);
+        }
         Ok(state.exec_results.pop_front().unwrap_or_default())
     }
 
@@ -375,11 +393,47 @@ impl Engine for FakeEngine {
         let mut state = self.begin(FakeCall::ExecWithInput(name.clone(), request.clone()))?;
         crate::argv::exec_with_input(name, request)?;
         running_box(&mut state, name)?;
+        if let Some(root) = state.piped_root.clone().filter(|_| runs_git(request)) {
+            drop(state);
+            return run_locally(&root, request, input);
+        }
         state.inputs.push((
             request.command.clone(),
             String::from_utf8_lossy(input).into_owned(),
         ));
         Ok(state.exec_results.pop_front().unwrap_or_default())
+    }
+
+    fn exec_piped(&self, name: &SandboxName, request: &ExecRequest) -> Result<std::process::Child> {
+        let mut state = self.begin(FakeCall::ExecPiped(name.clone(), request.clone()))?;
+        crate::argv::exec_terminal(name, request, false)?;
+        running_box(&mut state, name)?;
+        let Some(root) = state.piped_root.clone() else {
+            return Err(EngineError::NotSupported {
+                operation: "exec_piped",
+                reason: "the fake engine was not told where to run piped commands",
+            });
+        };
+        drop(state);
+        let (program, args) = request.command.split_first().ok_or(EngineError::InvalidInput {
+            field: "command",
+            reason: "empty".to_owned(),
+        })?;
+        std::process::Command::new(program)
+            .args(args)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &root)
+            .envs(request.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .current_dir(&root)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| EngineError::Spawn {
+                operation: "fake exec".to_owned(),
+                reason: e.kind().to_string(),
+            })
     }
 
     fn exec_detached(&self, name: &SandboxName, request: &ExecRequest) -> Result<String> {
@@ -443,6 +497,47 @@ fn read_tree(host: &Path, guest: &str, files: &mut BTreeMap<String, Vec<u8>>) {
             read_tree(&entry.path(), &below, files);
         }
     }
+}
+
+/// Whether a command runs Git, for [`FakeEngine::run_piped_in`].
+fn runs_git(request: &ExecRequest) -> bool {
+    match request.command.first().map(String::as_str) {
+        Some("git") => true,
+        Some("sh") => request.command.get(2).is_some_and(|script| script.contains("git ")),
+        _ => false,
+    }
+}
+
+fn run_locally(root: &Path, request: &ExecRequest, input: &[u8]) -> Result<ExecOutput> {
+    use std::io::Write as _;
+    let (program, args) = request.command.split_first().ok_or(EngineError::InvalidInput {
+        field: "command",
+        reason: "empty".to_owned(),
+    })?;
+    let spawn_error = |e: std::io::Error| EngineError::Spawn {
+        operation: "fake exec".to_owned(),
+        reason: e.kind().to_string(),
+    };
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", root)
+        .current_dir(root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(spawn_error)?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input);
+    }
+    let done = child.wait_with_output().map_err(spawn_error)?;
+    Ok(ExecOutput {
+        code: done.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&done.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&done.stderr).into_owned(),
+    })
 }
 
 #[cfg(test)]

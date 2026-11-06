@@ -17,6 +17,8 @@
     "allow-logs",
     "allow-logs-stop",
     "allow-blocked",
+    "allow-import-remote",
+    "allow-git",
     "allow-diff"
   ]
 }

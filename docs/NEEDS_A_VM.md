@@ -14,7 +14,7 @@ hand on a Mac. Nothing in `crates/daemon` or `crates/cli` was part of that run.
 | Gap | Effect |
 | --- | --- |
 | No `/dev/kvm`, no engine binary | Nothing can boot. Every VM path is unexercised |
-| git 2.43, and `gitbroker` requires 2.50 | Worked around on Nov 5, 2026 by building git 2.56.0 from the kernel.org tarball into `/usr/local` and linking `/usr/bin/git` to it. With that, every `gitbroker` test ran and passed, and so did the `diff` tests in `crates/daemon/tests/diff.rs`. A fresh container is back to 2.43 |
+| git 2.43, and `gitbroker` requires 2.50 | Worked around on Nov 5, 2026 by building git 2.56.0 from the kernel.org tarball into `/usr/local` and linking `/usr/bin/git` to it. With that, every `gitbroker` test ran and passed, and so did the `diff` tests in `crates/daemon/tests/diff.rs`. A fresh container is back to 2.43. The SSH fetch test added later in `crates/gitbroker/src/remote.rs` has not run on that build; it passed once on 2.43 with the version check lowered for the run |
 
 ## Logs and terminals: what ran on a real VM
 
@@ -24,6 +24,21 @@ On Nov 5, 2026, on a Mac, against a running `demo_shop` sandbox, using a second 
 - [ ] Refusing a sandbox that is really stopped. This ran only with a stub engine that reports `Stopped`, because the real sandbox was in use.
 - [ ] Hostile output from inside a VM. Hostile bytes ran only from a stub engine through the real binaries and socket, and in tests.
 - [ ] Commands typed into `shell SERVICE`. Only opening it and leaving with Ctrl-D ran, so as not to write a history file in the container.
+
+## Git: import, pull and push through the relay
+
+Built on Nov 5, 2026 (`docs/GIT.md`). Tested end to end with real Git on both sides, but with a local folder as the VM and a local repository as the server. **Never run in a VM, against a real server, or with a real agent.**
+
+- [ ] **Git in the guest.** The relay runs `git`, `mkfifo`, `mktemp` and `cat` inside the VM. Check that `docker:dind` has Git. If it doesn't, the clone fails with "git is not installed in this sandbox", and the image needs it added.
+- [ ] **Two-way streaming through `msb exec --stream --no-tty`,** with stdin and stdout both busy at once, for a whole clone. Exec on pipes ran on a real VM, but only one way at a time.
+- [ ] **End of stream:** when Git in the VM closes its side, the host sees end of input, and the next step follows. In tests, a copy of the pipe held open made both sides wait for ever. The relay script now holds each end in one process only. Check that `msb` closes the guest's stdout when the guest closes it.
+- [ ] `secbox up git@github.com:ORG/REPO.git` against a private repository: the clone has the full history at the approved commit, and `git push` typed in the VM fails with the message.
+- [ ] `secbox git pull`, `commit` and `push` on a branch, the push landing on GitHub, and a push to `main` refused with nothing sent.
+- [ ] 1Password: its prompt appears for the import fetch, the clone, each pull and each push; approving works; denying fails quickly with the hint. Once with the daemon started by the desktop app at login, relying on `IdentityAgent` in `~/.ssh/config`.
+- [ ] A host missing from `known_hosts` failing with the hint, and nothing written to `known_hosts`.
+- [ ] A large repository cloning inside the 15-minute limit.
+- [ ] The MCP tools from Claude Code: `git_pull`, `git_commit` and `git_push` on a branch, and refused on `main`.
+- [ ] The desktop app: Import, then the plan, then the Git tab's Status, Pull, Commit and Push.
 
 ## AI agents through MCP
 

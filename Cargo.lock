@@ -313,6 +313,7 @@ dependencies = [
  "daemon",
  "egress",
  "engine",
+ "gitbroker",
  "hoststate",
  "nix",
  "projectcheck",

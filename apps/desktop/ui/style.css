@@ -327,3 +327,20 @@ dialog::backdrop { background: rgba(10, 14, 20, .45); }
 @media (max-width: 1000px) {
   .grid { grid-template-columns: 1fr; }
 }
+
+/* Import and the Git tab */
+.import-note { margin: 0 0 8px; }
+#git-commit-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+#git-title { margin: 12px 0 6px; font-size: 15px; }
+#git-title.bad, #git-updates .bad { color: var(--bad); }
+#git-output:empty { display: none; }
+#git-output { min-height: 0; max-height: 360px; }

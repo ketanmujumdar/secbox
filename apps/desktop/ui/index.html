@@ -17,7 +17,7 @@
         <button class="tab" data-tab="logs">Logs</button>
         <button class="tab" data-tab="traffic">Blocked traffic</button>
         <button class="tab" data-tab="secrets">Secrets</button>
-        <button class="tab" data-tab="review">Git review</button>
+        <button class="tab" data-tab="review">Git</button>
         <button class="tab" data-tab="about">Terminal &amp; about</button>
       </nav>
       <div class="side-heading">
@@ -25,6 +25,11 @@
         <button class="link" id="refresh" title="Read the list again">Refresh</button>
       </div>
       <ul class="projects" id="projects"></ul>
+      <form class="add" id="import-form" autocomplete="off">
+        <input id="import-url" type="text" spellcheck="false" placeholder="git@github.com:org/repo.git" aria-label="SSH remote to import">
+        <button type="submit" class="small">Import</button>
+      </form>
+      <p class="muted small-text import-note">Fetched here with your SSH key. The key never enters the sandbox.</p>
       <form class="add" id="add-form" autocomplete="off">
         <input id="add-path" type="text" spellcheck="false" placeholder="/full/path/to/project" aria-label="Project folder">
         <button type="submit" class="small">Add</button>
@@ -125,6 +130,24 @@
       </section>
 
       <section class="panel hidden" data-panel="review">
+        <div class="card wide">
+          <h2>Git</h2>
+          <p class="muted">For a project imported from an SSH remote. The sandbox holds a real clone. Pull and push use your SSH key on this machine; your SSH agent, such as 1Password, may ask you to approve. A push to main or master, a branch delete and tags are refused before anything is sent.</p>
+          <div class="toolbar">
+            <button class="small" id="git-status">Status</button>
+            <button class="small" id="git-pull">Pull</button>
+            <button class="small" id="git-push">Push branch</button>
+            <span class="muted" id="git-branch"></span>
+          </div>
+          <form class="toolbar" id="git-commit-form" autocomplete="off">
+            <input id="git-message" type="text" spellcheck="false" placeholder="Commit message" aria-label="Commit message">
+            <button type="submit" class="small">Commit all changes</button>
+          </form>
+          <h3 id="git-title" class="hidden"></h3>
+          <ul class="notes" id="git-updates"></ul>
+          <pre class="logs" id="git-output"></pre>
+          <p class="note">Make a branch before pushing, in Terminal &amp; about's shell: <code>git switch -c my-branch</code>.</p>
+        </div>
         <div class="toolbar">
           <button class="small" id="review-read">Compare with the snapshot</button>
           <span class="muted" id="review-base"></span>

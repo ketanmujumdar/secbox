@@ -95,13 +95,38 @@ pub(crate) fn git_dir_of(repo: &Path) -> Result<PathBuf> {
         return Err(not_repo());
     }
     let dot_git = repo.join(".git");
-    if dot_git.exists() {
+    let meta = std::fs::symlink_metadata(&dot_git);
+    if meta.as_ref().is_ok_and(|m| m.is_dir()) {
         Ok(dot_git)
+    } else if meta.as_ref().is_ok_and(|m| m.is_file()) {
+        // A `.git` file points at the repository: written by `git worktree`,
+        // and by the daemon for a project fetched from a remote. It is read
+        // here rather than left to git, so the folder git is given is known.
+        gitfile_target(repo, &dot_git).ok_or_else(not_repo)
     } else if repo.join("HEAD").is_file() && repo.join("objects").is_dir() {
         Ok(repo.to_path_buf())
     } else {
         Err(not_repo())
     }
+}
+
+/// Follows a `gitdir:` line to a folder that looks like a repository.
+fn gitfile_target(repo: &Path, file: &Path) -> Option<PathBuf> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    File::open(file).ok()?.take(4096).read_to_string(&mut text).ok()?;
+    let target = text.lines().find_map(|line| line.strip_prefix("gitdir:"))?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    let target = Path::new(target);
+    let target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        repo.join(target)
+    };
+    let real = std::fs::canonicalize(target).ok()?;
+    (real.join("HEAD").is_file()).then_some(real)
 }
 
 /// Split into checked components. `.`, `..`, empty parts and absolute paths mean

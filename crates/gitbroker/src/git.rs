@@ -82,6 +82,9 @@ pub(crate) enum Protocol {
     None,
     File,
     Https,
+    /// SSH through the one command line in [`crate::SshTransport`]. Without
+    /// one, `core.sshCommand` stays `false` and the call fails closed.
+    Ssh,
 }
 
 pub(crate) struct GitOutput {
@@ -110,6 +113,7 @@ pub(crate) struct GitCmd {
     timeout: Duration,
     max_stdout: u64,
     stdout_file: Option<PathBuf>,
+    ssh: Option<crate::remote::SshTransport>,
 }
 
 impl GitCmd {
@@ -123,7 +127,14 @@ impl GitCmd {
             timeout: DEFAULT_TIMEOUT,
             max_stdout: DEFAULT_MAX_STDOUT,
             stdout_file: None,
+            ssh: None,
         }
+    }
+
+    /// The SSH command and agent socket for a call with [`Protocol::Ssh`].
+    pub fn ssh(mut self, transport: &crate::remote::SshTransport) -> Self {
+        self.ssh = Some(transport.clone());
+        self
     }
 
     /// Name the repository explicitly, so git never discovers one. The working
@@ -180,6 +191,14 @@ impl GitCmd {
             Protocol::None => {}
             Protocol::File => all.push("protocol.file.allow=always".to_string()),
             Protocol::Https => all.push("protocol.https.allow=always".to_string()),
+            Protocol::Ssh => {
+                all.push("protocol.ssh.allow=always".to_string());
+                // Later on the command line wins, so this replaces the
+                // hardened `false` for this one call.
+                if let Some(ssh) = &self.ssh {
+                    all.push(format!("core.sshCommand={}", ssh.command_line()));
+                }
+            }
         }
         all.extend(self.extra_config.iter().cloned());
         all
@@ -203,6 +222,13 @@ impl GitCmd {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
+        // The agent socket is the one thing from the user's environment that
+        // may reach git, and only on a call that was given one.
+        if self.protocol == Protocol::Ssh {
+            if let Some(socket) = self.ssh.as_ref().and_then(|ssh| ssh.agent_socket()) {
+                cmd.env("SSH_AUTH_SOCK", socket);
+            }
+        }
         for entry in self.config_args() {
             cmd.arg("-c").arg(entry);
         }
@@ -446,6 +472,50 @@ fn parse_version(text: &str) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ssh_transport(dir: &Path) -> crate::remote::SshTransport {
+        use std::os::unix::fs::PermissionsExt;
+        let program = dir.join("ssh");
+        std::fs::write(&program, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let socket = dir.join("agent");
+        std::mem::forget(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+        crate::remote::SshTransport::new(&program, Some(&socket)).unwrap()
+    }
+
+    fn last_ssh_command(config: &[String]) -> Option<&str> {
+        config
+            .iter()
+            .rev()
+            .find_map(|entry| entry.strip_prefix("core.sshCommand="))
+    }
+
+    #[test]
+    fn ssh_is_allowed_and_given_its_command_only_on_an_ssh_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let ssh = ssh_transport(dir.path());
+
+        let call = GitCmd::new("fetch").protocol(Protocol::Ssh).ssh(&ssh);
+        let config = call.config_args();
+        assert!(config.contains(&"protocol.ssh.allow=always".to_string()));
+        assert_eq!(last_ssh_command(&config), Some(ssh.command_line().as_str()));
+        let command = call.command(Path::new("/usr/bin/git"), dir.path());
+        let socket = command
+            .get_envs()
+            .find(|(key, _)| *key == "SSH_AUTH_SOCK")
+            .and_then(|(_, value)| value);
+        assert_eq!(socket, Some(dir.path().join("agent").as_os_str()));
+
+        // Given a transport but not the protocol, nothing changes.
+        let other = GitCmd::new("archive").protocol(Protocol::File).ssh(&ssh);
+        assert_eq!(last_ssh_command(&other.config_args()), Some("false"));
+        let command = other.command(Path::new("/usr/bin/git"), dir.path());
+        assert!(command.get_envs().all(|(key, _)| key != "SSH_AUTH_SOCK"));
+
+        // The protocol without a transport fails closed.
+        let bare = GitCmd::new("fetch").protocol(Protocol::Ssh);
+        assert_eq!(last_ssh_command(&bare.config_args()), Some("false"));
+    }
 
     #[test]
     fn version_parsing() {

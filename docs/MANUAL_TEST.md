@@ -295,6 +295,46 @@ Running `secbox mcp setup claude /tmp/agent-test` a second time should refuse be
 
 For Codex, run `secbox mcp setup codex --project "$P"`, follow what it prints, and repeat steps 1, 2 and 5. Expect it to ask before running host commands rather than refuse them.
 
+## 12. Git: import, pull and push
+
+This needs a daemon built from this code, a repository with a `compose.yaml` that your SSH key can read and push to, and the host's key already in `~/.ssh/known_hosts`. Turn on branch protection for `main` if you like; secbox refuses `main` either way. Set `R` to the repository's SSH URL. Nothing here needs a clone on this machine. If you use 1Password, expect its prompt at each fetch, clone, pull and push, and approve it.
+
+```sh
+R=git@github.com:you/some-compose-app.git
+secbox up "$R"                                    # fetches, shows the plan; say yes; clones into the VM
+secbox exec --project "$R" -- git log --oneline -3   # the real history
+secbox exec --project "$R" -- sh -c 'env | grep -c SSH_; ls ~/.ssh 2>&1'   # 0, and no such folder
+secbox exec --project "$R" -- git push origin HEAD:refs/heads/x   # fails: "holds no Git credentials"
+```
+
+A branch, a commit and a push:
+
+```sh
+secbox exec --project "$R" -- git switch -c secbox-test
+secbox exec --project "$R" -- sh -c 'date > secbox-test.txt'
+secbox git commit -m "Try the relay" --project "$R"   # under your own Git name
+secbox git push --project "$R"                        # "pushed refs/heads/secbox-test ..."
+```
+
+Check on GitHub that `secbox-test` has the commit, under your name. Then the refusal:
+
+```sh
+secbox exec --project "$R" -- git switch main
+secbox exec --project "$R" -- sh -c 'date >> README.md'
+secbox git commit -m "Should not leave" --project "$R"
+secbox git push --project "$R"                        # refused: pushing to main is not allowed; exit 1
+```
+
+Check on GitHub that `main` did not move. Then pull: push a commit to `main` from somewhere else, and run `secbox git pull --project "$R"`. The new commit appears in the sandbox, and nothing is recreated.
+
+Every push and refusal is in `~/.secbox/daemon-audit.jsonl` (`git_pushed`, `git_push_refused`).
+
+In the terminal UI: press `i`, paste the URL, Enter. The plan appears; `y` starts it. With the project selected, `g` pulls and `G` pushes, each showing what Git said. In the desktop app: paste the URL into Import, approve the plan, then use the Git tab.
+
+With MCP: run `secbox mcp setup claude /tmp/agent-test --project "$R"`, start Claude Code there, and ask it to make a branch, change a file, commit and push. Then ask it to push to `main`. It should be refused.
+
+Clean up: delete the `secbox-test` branch on GitHub, then `secbox down --destroy "$R"`.
+
 ## Blocked hostnames
 
 Run these against a sandbox you can afford to lose, because seeing events on an older project means recreating it.

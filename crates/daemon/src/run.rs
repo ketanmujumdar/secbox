@@ -336,6 +336,35 @@ fn copy_in_snapshot(
     args: &UpArgs,
 ) -> Result<(), ApiError> {
     let staging = tempdir_in_state(service)?;
+    // A project imported from a remote becomes a real clone, through the Git
+    // relay, at the commit the plan was made from. Its history comes along.
+    if let Some(remote) = crate::remote::remote_of(service, project) {
+        let commit = crate::gitref::head_commit(&project.root)
+            .map_err(|e| internal(format!("cannot tell which commit was approved: {e}")))?;
+        crate::diff::forget_baseline(project);
+        crate::gitrelay::clone_into_sandbox(service, project, &remote.url, &remote.git_ref, &commit)?;
+        // The approved commit is what `diff` compares with. The host's mirror
+        // holds it, so nothing is read back from the clone in the guest.
+        crate::diff::remember_baseline(project, Some(commit.clone()))?;
+        if let Some(generated) = &plan.generated_compose {
+            let file = staging.path().join(GENERATED_COMPOSE_FILE);
+            std::fs::write(&file, generated)
+                .map_err(|e| internal(format!("cannot write the generated Compose file: {}", e.kind())))?;
+            let guest = GuestPath::new(format!("{WORK_DIR}/{GENERATED_COMPOSE_FILE}"))
+                .map_err(|e| internal(e.to_string()))?;
+            service
+                .deps()
+                .engine()
+                .copy_in(&project.sandbox, &file, &guest)
+                .map_err(|e| engine_error(e.to_string()))?;
+        }
+        service.record(
+            audit::entry(service.deps().now_unix(), audit::Action::SnapshotTaken)
+                .project(project.id.as_str())
+                .detail(format!("cloned {} at {commit}", remote.url)),
+        );
+        return Ok(());
+    }
     // The snapshot creates its own destination and refuses one that exists.
     let snapshot = staging.path().join("snapshot");
     let report = service

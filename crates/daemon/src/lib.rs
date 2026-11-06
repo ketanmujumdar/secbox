@@ -19,8 +19,10 @@ pub mod buildhosts;
 pub mod debug;
 pub mod diff;
 pub mod gitref;
+pub mod gitrelay;
 pub mod mask;
 pub mod plan;
+pub mod remote;
 pub mod run;
 pub mod secret;
 pub mod server;
@@ -74,6 +76,33 @@ pub trait Deps: Send + Sync {
         source: &proto::Source,
         dest: &Path,
     ) -> Result<proto::SnapshotPlan, String>;
+
+    /// Fetches `git_ref` from an SSH remote into the bare repository at
+    /// `mirror`, with the user's own `ssh` and, if given, their agent. Returns
+    /// the full id of the commit fetched. The URL and ref were checked first.
+    /// A seam, so the daemon's handling can be tested without a network.
+    fn fetch_remote(
+        &self,
+        _mirror: &Path,
+        _url: &str,
+        _git_ref: &str,
+        _agent_socket: Option<&Path>,
+    ) -> Result<String, String> {
+        Err("fetching from a Git remote is not available in this build".to_owned())
+    }
+
+    /// Starts `ssh` to one Git service of `url`, with the user's own `ssh`,
+    /// config and agent, for the relay to pump. A seam, so the relay can be
+    /// tested against a local repository.
+    fn spawn_ssh(
+        &self,
+        _url: &str,
+        _service: gitbroker::GitService,
+        _git_protocol: Option<&str>,
+        _agent_socket: Option<&Path>,
+    ) -> Result<std::process::Child, String> {
+        Err("reaching a Git remote is not available in this build".to_owned())
+    }
 }
 
 /// One project, as the daemon sees it.
@@ -154,6 +183,11 @@ impl Service {
             Request::Blocked(args) => {
                 let project = self.open(&args.project)?;
                 blocked::report(self, &project, args).map(Reply::Blocked)
+            }
+            Request::Fetch(args) => remote::fetch(self, args, progress).map(Reply::Fetch),
+            Request::Git(args) => {
+                let project = self.open(&args.project)?;
+                gitrelay::handle(self, &project, args).map(Reply::Git)
             }
             Request::Diff(args) => {
                 let project = self.open(&args.project)?;

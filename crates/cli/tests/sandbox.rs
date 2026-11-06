@@ -27,7 +27,36 @@ const GIB: u64 = 1 << 30;
 
 struct Facts {
     engine: FakeEngine,
+    /// Every fetch asked for: URL, ref and agent socket.
+    fetches: std::sync::Mutex<Vec<(String, String, Option<PathBuf>)>>,
+    /// What a fetch fails with, if it should.
+    fetch_error: std::sync::Mutex<Option<String>>,
+    /// A bare repository standing in for the remote. With one, the relay's
+    /// `ssh` runs `git upload-pack` or `git receive-pack` on it directly.
+    git_remote: std::sync::Mutex<Option<PathBuf>>,
+    /// Every relay connection: service and agent socket.
+    relayed: std::sync::Mutex<Vec<(gitbroker::GitService, Option<PathBuf>)>>,
 }
+
+/// Runs system Git to set up or inspect a test repository. The code under
+/// test never runs Git on the host this way.
+fn test_git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "Remote")
+        .env("GIT_AUTHOR_EMAIL", "remote@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Remote")
+        .env("GIT_COMMITTER_EMAIL", "remote@example.invalid")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// The commit a fake fetch reports.
+const FETCHED: &str = "0123456789abcdef0123456789abcdef01234567";
 
 impl daemon::Deps for Facts {
     fn engine(&self) -> &dyn Engine {
@@ -54,15 +83,75 @@ impl daemon::Deps for Facts {
         Box::new(MemoryStore::default())
     }
 
+    /// Stands in for git over ssh: makes the mirror's HEAD name a commit, as
+    /// the real fetch leaves it, and records what was asked.
+    fn fetch_remote(
+        &self,
+        mirror: &Path,
+        url: &str,
+        git_ref: &str,
+        agent_socket: Option<&Path>,
+    ) -> Result<String, String> {
+        self.fetches.lock().unwrap().push((
+            url.to_owned(),
+            git_ref.to_owned(),
+            agent_socket.map(Path::to_path_buf),
+        ));
+        if let Some(error) = self.fetch_error.lock().unwrap().clone() {
+            return Err(error);
+        }
+        let commit = match self.git_remote.lock().unwrap().clone() {
+            Some(bare) => test_git(&bare, &["rev-parse", "HEAD"]).trim().to_owned(),
+            None => FETCHED.to_owned(),
+        };
+        std::fs::create_dir_all(mirror.join("objects")).unwrap();
+        std::fs::write(mirror.join("HEAD"), format!("{commit}\n")).unwrap();
+        Ok(commit)
+    }
+
+    fn spawn_ssh(
+        &self,
+        _url: &str,
+        service: gitbroker::GitService,
+        git_protocol: Option<&str>,
+        agent_socket: Option<&Path>,
+    ) -> Result<std::process::Child, String> {
+        self.relayed.lock().unwrap().push((service, agent_socket.map(Path::to_path_buf)));
+        let bare = self.git_remote.lock().unwrap().clone().ok_or("no test remote")?;
+        let sub = match service {
+            gitbroker::GitService::UploadPack => "upload-pack",
+            gitbroker::GitService::ReceivePack => "receive-pack",
+        };
+        let mut command = std::process::Command::new("git");
+        command
+            .arg(sub)
+            .arg(&bare)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if let Some(protocol) = git_protocol {
+            command.env("GIT_PROTOCOL", protocol);
+        }
+        command.spawn().map_err(|e| e.to_string())
+    }
+
     fn snapshot(
         &self,
-        _root: &Path,
+        root: &Path,
         source: &Source,
         dest: &Path,
     ) -> Result<SnapshotPlan, String> {
         // The real snapshot creates its destination and refuses one that exists.
         std::fs::create_dir(dest).unwrap();
         std::fs::write(dest.join("compose.yaml"), b"services: {}\n").unwrap();
+        if root.ends_with("mirror.git") {
+            // Exporting a fetched remote's commit: give it a small project.
+            std::fs::write(dest.join("compose.yaml"), "services:\n  web:\n    image: web:1\n").unwrap();
+            std::fs::write(dest.join(brand::CONFIG_FILE), "resources:\n  memory: 4G\n  cpus: 2\n  disk: 30G\n").unwrap();
+        }
         Ok(SnapshotPlan {
             revision: match source {
                 Source::Commit { revision } => Some(revision.clone()),
@@ -165,6 +254,10 @@ fn harness_and_facts() -> (Harness, Arc<Facts>) {
     .unwrap();
     let facts = Arc::new(Facts {
         engine: FakeEngine::new(),
+        fetches: std::sync::Mutex::new(Vec::new()),
+        fetch_error: std::sync::Mutex::new(None),
+        git_remote: std::sync::Mutex::new(None),
+        relayed: std::sync::Mutex::new(Vec::new()),
     });
     let service = daemon::Service::new(
         StatePaths {
@@ -1323,4 +1416,355 @@ fn mcp_setup_codex_prints_the_commands_and_changes_nothing() {
     assert!(done.out.contains("Nothing was changed"), "{}", done.out);
     let after: Vec<_> = std::fs::read_dir(h.home.path()).unwrap().collect();
     assert_eq!(before.len(), after.len());
+}
+
+// ---- projects fetched from an SSH remote
+
+const REMOTE: &str = "git@example.invalid:org/shop.git";
+
+fn fetches(facts: &Facts) -> Vec<(String, String, Option<PathBuf>)> {
+    facts.fetches.lock().unwrap().clone()
+}
+
+#[test]
+fn up_with_an_ssh_remote_fetches_on_the_host_then_starts_from_that_commit() {
+    let w = remote_setup();
+    let (h, facts) = (&w.h, &w.facts);
+    let head = test_git(&w.bare, &["rev-parse", "HEAD"]).trim().to_owned();
+    let done = h.run(&["up", REMOTE, "--all-ports"], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert_eq!(fetches(facts), [(REMOTE.to_owned(), "HEAD".to_owned(), None)]);
+    assert!(done.out.contains("Fetched"), "{}", done.out);
+    assert!(done.out.contains(&head), "{}", done.out);
+    assert!(done.out.contains("key"), "says where the key stays: {}", done.out);
+
+    // The files live in the daemon's own folder, with a `.git` pointing at
+    // the mirror, and that commit is what the sandbox was given.
+    let remote = h.state().join("remote");
+    let folder = std::fs::read_dir(&remote).unwrap().next().unwrap().unwrap().path();
+    let name = folder.file_name().unwrap().to_str().unwrap().to_owned();
+    assert!(name.starts_with("example-invalid-shop-"), "{name}");
+    let root = folder.join("shop");
+    let pointer = std::fs::read_to_string(root.join(".git")).unwrap();
+    assert_eq!(pointer.trim(), format!("gitdir: {}", folder.join("mirror.git").display()));
+    assert_eq!(daemon::gitref::head_commit(&root).unwrap(), head);
+    assert_eq!(test_git(&w.work, &["rev-parse", "HEAD"]).trim(), head, "the sandbox was cloned at that commit");
+
+    // Other commands take the remote in place of a folder.
+    let status = h.run(&["status", REMOTE], "");
+    assert_eq!(status.code, 0, "{}", status.all());
+    assert!(status.out.contains("running"), "{}", status.out);
+    assert_eq!(fetches(facts).len(), 1, "looking a remote up does not fetch");
+}
+
+#[test]
+fn up_passes_on_the_ref_asked_for() {
+    let w = remote_setup();
+    let (h, facts) = (&w.h, &w.facts);
+    let done = h.run(&["up", REMOTE, "--ref", "release/1.2", "--all-ports"], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert_eq!(fetches(facts)[0].1, "release/1.2");
+    assert_eq!(test_git(&w.work, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "release/1.2");
+}
+
+#[test]
+fn a_remote_is_never_fetched_again_under_an_existing_sandbox() {
+    let w = remote_setup();
+    let (h, facts) = (&w.h, &w.facts);
+    assert_eq!(h.run(&["up", REMOTE, "--all-ports"], "").code, 0);
+    assert_eq!(h.run(&["down", REMOTE], "").code, 0);
+    let again = h.run(&["up", REMOTE, "--ref", "other", "--all-ports"], "");
+    assert_eq!(again.code, 0, "{}", again.all());
+    assert_eq!(fetches(facts).len(), 1, "fetched again under a sandbox");
+    assert!(again.out.contains("not fetched again"), "{}", again.out);
+    assert!(again.out.contains("--ref was not used"), "{}", again.out);
+    assert!(again.out.contains("git pull"), "{}", again.out);
+
+    // Once it is destroyed, the next up fetches afresh. A real destroy takes
+    // /work with it; the stand-in has to be emptied by hand.
+    assert_eq!(h.run(&["down", REMOTE, "--destroy"], "").code, 0);
+    std::fs::remove_dir_all(&w.work).unwrap();
+    std::fs::create_dir(&w.work).unwrap();
+    assert_eq!(h.run(&["up", REMOTE, "--all-ports"], "").code, 0);
+    assert_eq!(fetches(facts).len(), 2);
+}
+
+#[test]
+fn a_failed_fetch_says_what_to_do_and_starts_nothing() {
+    let (h, facts) = harness_and_facts();
+    *facts.fetch_error.lock().unwrap() =
+        Some("git@example.invalid: Permission denied (publickey).".to_owned());
+    let done = h.run(&["up", REMOTE, "--all-ports"], "");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(done.err.contains("Permission denied"), "{}", done.err);
+    assert!(done.err.contains("ssh-add"), "{}", done.err);
+    assert!(facts.engine.calls().iter().all(|call| matches!(call, FakeCall::Status(_))), "{:?}", facts.engine.calls());
+}
+
+#[test]
+fn a_remote_that_could_carry_an_option_is_refused_before_anything_runs() {
+    let (h, facts) = harness_and_facts();
+    for url in [
+        "git@example.invalid:-oProxyCommand=x",
+        "ssh://-oProxyCommand=touch/x",
+        "ext::sh:x",
+        "git@example.invalid:org/../../x",
+    ] {
+        let done = h.run(&["up", url], "");
+        assert_eq!(done.code, cli::exit::FAILED, "{url}: {}", done.all());
+    }
+    assert!(fetches(&facts).is_empty());
+    assert!(!h.state().join("remote").exists() || std::fs::read_dir(h.state().join("remote")).unwrap().next().is_none());
+}
+
+#[test]
+fn https_remotes_and_misplaced_flags_are_refused() {
+    let (h, facts) = harness_and_facts();
+    let done = h.run(&["up", "https://example.invalid/org/shop.git"], "");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(done.err.contains("only SSH"), "{}", done.err);
+    let done = h.run(&["up", "--ref", "main"], "");
+    assert_eq!(done.code, cli::exit::USAGE, "{}", done.all());
+    let done = h.run(&["up", REMOTE, "--include-uncommitted"], "");
+    assert_eq!(done.code, cli::exit::USAGE, "{}", done.all());
+    assert!(fetches(&facts).is_empty());
+}
+
+#[test]
+fn a_remote_never_fetched_is_not_found_by_other_commands() {
+    let (h, facts) = harness_and_facts();
+    let done = h.run(&["status", REMOTE], "");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(done.err.contains("not been fetched"), "{}", done.err);
+    assert!(fetches(&facts).is_empty());
+}
+
+#[test]
+fn only_an_agent_socket_of_this_user_is_passed_to_ssh() {
+    let (h, facts) = harness_and_facts();
+    let daemon = h.daemon.as_ref().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("not-a-socket");
+    std::fs::write(&file, "").unwrap();
+    let ask = |sock: &Path| {
+        daemon.call(
+            Request::Fetch(proto::FetchArgs {
+                url: REMOTE.to_owned(),
+                git_ref: None,
+                fetch: true,
+                ssh_auth_sock: Some(sock.to_str().unwrap().to_owned()),
+            }),
+            &mut |_, _| {},
+        )
+    };
+    assert!(ask(&file).is_err());
+    assert!(fetches(&facts).is_empty());
+
+    let socket = dir.path().join("agent");
+    let _agent = UnixListener::bind(&socket).unwrap();
+    let report = match ask(&socket) {
+        Ok(Reply::Fetch(report)) => report,
+        other => panic!("{other:?}"),
+    };
+    assert!(report.fetched);
+    assert_eq!(fetches(&facts)[0].2.as_deref(), Some(socket.as_path()));
+}
+
+#[test]
+fn a_folder_whose_name_looks_like_a_remote_is_still_a_folder() {
+    let (h, facts) = harness_and_facts();
+    let odd = h.project.path().join("a:b");
+    std::fs::create_dir(&odd).unwrap();
+    let done = h.run(&["status", "a:b"], "");
+    assert!(!done.err.contains("not been fetched"), "{}", done.all());
+    assert!(fetches(&facts).is_empty());
+}
+
+// ---- Git through the relay: real Git on both sides
+
+/// A remote with one commit on main, a project that was fetched from it, and
+/// a folder that stands in for the sandbox's /work, where Git really runs.
+struct RelayWorld {
+    h: Harness,
+    facts: Arc<Facts>,
+    bare: PathBuf,
+    work: PathBuf,
+    _dirs: tempfile::TempDir,
+}
+
+fn relay_world() -> RelayWorld {
+    let w = remote_setup();
+    let up = w.h.run(&["up", REMOTE, "--all-ports"], "");
+    assert_eq!(up.code, 0, "{}", up.all());
+    w
+}
+
+/// The remote and the stand-in /work, before anything is started.
+fn remote_setup() -> RelayWorld {
+    let (h, facts) = harness_and_facts();
+    let dirs = tempfile::tempdir().unwrap();
+    let seed = dirs.path().join("seed");
+    std::fs::create_dir(&seed).unwrap();
+    test_git(&seed, &["init", "-q", "-b", "main"]);
+    std::fs::write(seed.join("compose.yaml"), "services:\n  web:\n    image: web:1\n").unwrap();
+    std::fs::write(seed.join("README"), "one\n").unwrap();
+    test_git(&seed, &["add", "."]);
+    test_git(&seed, &["commit", "-q", "-m", "first"]);
+    test_git(&seed, &["branch", "release/1.2"]);
+    let bare = dirs.path().join("origin.git");
+    test_git(dirs.path(), &["clone", "-q", "--bare", seed.to_str().unwrap(), bare.to_str().unwrap()]);
+    let work = dirs.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    *facts.git_remote.lock().unwrap() = Some(bare.clone());
+    facts.engine.run_piped_in(&work);
+    RelayWorld { h, facts, bare, work, _dirs: dirs }
+}
+
+#[test]
+fn up_clones_the_remote_into_the_sandbox_with_its_history_and_no_credential() {
+    let w = relay_world();
+    assert_eq!(std::fs::read_to_string(w.work.join("README")).unwrap(), "one\n");
+    assert_eq!(test_git(&w.work, &["log", "--format=%s"]).trim(), "first");
+    assert_eq!(
+        test_git(&w.work, &["rev-parse", "HEAD"]),
+        test_git(&w.bare, &["rev-parse", "main"]),
+        "the sandbox is at the approved commit"
+    );
+    assert_eq!(test_git(&w.work, &["remote", "get-url", "origin"]).trim(), REMOTE);
+    // Only a fetch reached the remote, and nothing was copied in instead.
+    assert_eq!(w.facts.relayed.lock().unwrap().iter().map(|r| r.0).collect::<Vec<_>>(), [gitbroker::GitService::UploadPack]);
+    assert!(!w.facts.engine.calls().iter().any(|call| matches!(call, FakeCall::CopyIn(..))));
+
+    // A push typed inside the sandbox has nothing to authenticate with.
+    let plain = std::process::Command::new("git")
+        .args(["push", "origin", "HEAD:refs/heads/sneaky"])
+        .current_dir(&w.work)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &w.work)
+        .output()
+        .unwrap();
+    assert!(!plain.status.success());
+    let said = String::from_utf8_lossy(&plain.stderr);
+    assert!(said.contains("holds no Git credentials"), "{said}");
+    assert!(!test_git(&w.bare, &["branch", "--list"]).contains("sneaky"));
+}
+
+#[test]
+fn a_branch_is_committed_and_pushed_through_the_relay() {
+    let w = relay_world();
+    test_git(&w.work, &["switch", "-q", "-c", "feature/one"]);
+    std::fs::write(w.work.join("new.txt"), "made in the sandbox\n").unwrap();
+    let commit = w.h.run(&["git", "commit", "-m", "Add new.txt", "--project", REMOTE], "");
+    assert_eq!(commit.code, 0, "{}", commit.all());
+    assert!(commit.out.contains("Add new.txt"), "{}", commit.out);
+
+    let push = w.h.run(&["git", "push", "--project", REMOTE], "");
+    assert_eq!(push.code, 0, "{}", push.all());
+    assert!(push.out.contains("pushed refs/heads/feature/one"), "{}", push.out);
+    assert_eq!(
+        test_git(&w.bare, &["rev-parse", "refs/heads/feature/one"]),
+        test_git(&w.work, &["rev-parse", "HEAD"])
+    );
+    assert_eq!(test_git(&w.bare, &["show", "feature/one:new.txt"]), "made in the sandbox\n");
+    let log = std::fs::read_to_string(w.h.state().join("daemon-audit.jsonl")).unwrap_or_default();
+    assert!(log.contains("git_pushed") && log.contains("refs/heads/feature/one"), "{log}");
+
+    // The sandbox's branch now tracks the remote one.
+    let status = w.h.run(&["git", "status", "--project", REMOTE], "");
+    assert!(status.out.contains("origin/feature/one"), "{}", status.out);
+}
+
+#[test]
+fn a_push_to_main_is_refused_before_the_remote_gets_anything() {
+    let w = relay_world();
+    let before = test_git(&w.bare, &["rev-parse", "main"]);
+    std::fs::write(w.work.join("README"), "changed\n").unwrap();
+    assert_eq!(w.h.run(&["git", "commit", "-m", "Change", "--project", REMOTE], "").code, 0);
+    let push = w.h.run(&["git", "push", "--project", REMOTE], "");
+    assert_eq!(push.code, cli::exit::FAILED, "{}", push.all());
+    assert!(push.err.contains("refused") && push.err.contains("main"), "{}", push.all());
+    assert!(push.all().contains("git switch -c"), "says what to do: {}", push.all());
+    assert_eq!(test_git(&w.bare, &["rev-parse", "main"]), before, "main did not move");
+    let log = std::fs::read_to_string(w.h.state().join("daemon-audit.jsonl")).unwrap_or_default();
+    assert!(log.contains("git_push_refused"), "{log}");
+}
+
+#[test]
+fn pull_brings_in_new_commits_without_recreating_anything() {
+    let w = relay_world();
+    // Someone else pushes to main.
+    let other = w._dirs.path().join("other");
+    test_git(w._dirs.path(), &["clone", "-q", w.bare.to_str().unwrap(), other.to_str().unwrap()]);
+    std::fs::write(other.join("README"), "two\n").unwrap();
+    test_git(&other, &["commit", "-q", "-am", "second"]);
+    test_git(&other, &["push", "-q", "origin", "main"]);
+    // The clone was made at a commit, so give main its upstream as a person would.
+    test_git(&w.work, &["checkout", "-q", "-B", "main", "--track", "origin/main"]);
+
+    let creates = w.facts.engine.calls().iter().filter(|c| matches!(c, FakeCall::Create(_))).count();
+    let pull = w.h.run(&["git", "pull", "--project", REMOTE], "");
+    assert_eq!(pull.code, 0, "{}", pull.all());
+    assert_eq!(std::fs::read_to_string(w.work.join("README")).unwrap(), "two\n");
+    let after = w.facts.engine.calls().iter().filter(|c| matches!(c, FakeCall::Create(_))).count();
+    assert_eq!(creates, after, "no sandbox was made again");
+}
+
+#[test]
+fn git_commands_refuse_a_project_that_did_not_come_from_a_remote() {
+    let (h, _facts) = running();
+    let done = h.run(&["git", "pull"], "");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(done.err.contains("not started from a Git remote"), "{}", done.err);
+}
+
+/// Like [`serve`], for a project named by its remote.
+fn serve_remote(h: &Harness, calls: &[String]) -> Vec<serde_json::Value> {
+    let mut input = mcp_line(
+        0,
+        "initialize",
+        serde_json::json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "1" } }),
+    );
+    for call in calls {
+        input.push_str(call);
+    }
+    let done = h.run(&["mcp", "serve", "--project", REMOTE], &input);
+    assert_eq!(done.code, 0, "{}", done.all());
+    done.out.lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+}
+
+#[test]
+fn an_agent_commits_and_pushes_a_branch_through_mcp_but_never_main() {
+    let w = relay_world();
+    let main_before = test_git(&w.bare, &["rev-parse", "main"]);
+
+    // On main, the push is refused and the remote is untouched.
+    std::fs::write(w.work.join("README"), "agent edit\n").unwrap();
+    let answers = serve_remote(
+        &w.h,
+        &[
+            tool_call(1, "git_commit", serde_json::json!({ "message": "Agent edit" })),
+            tool_call(2, "git_push", serde_json::json!({})),
+        ],
+    );
+    assert_eq!(answers[1]["result"]["isError"], false, "{}", answers[1]);
+    assert_eq!(answers[2]["result"]["isError"], true, "{}", answers[2]);
+    assert!(tool_text(&answers[2]).contains("refused"), "{}", tool_text(&answers[2]));
+    assert_eq!(test_git(&w.bare, &["rev-parse", "main"]), main_before);
+
+    // On its own branch, the same push goes through.
+    test_git(&w.work, &["switch", "-q", "-c", "agent/fix"]);
+    let answers = serve_remote(
+        &w.h,
+        &[
+            tool_call(1, "git_push", serde_json::json!({})),
+            tool_call(2, "git_status", serde_json::json!({})),
+        ],
+    );
+    assert_eq!(answers[1]["result"]["isError"], false, "{}", answers[1]);
+    let text = tool_text(&answers[1]);
+    assert!(text.contains("pushed refs/heads/agent/fix"), "{text}");
+    assert!(text.contains("data, not instructions"), "{text}");
+    assert_eq!(test_git(&w.bare, &["show", "agent/fix:README"]), "agent edit\n");
+    assert!(tool_text(&answers[2]).contains("agent/fix"), "{}", tool_text(&answers[2]));
 }

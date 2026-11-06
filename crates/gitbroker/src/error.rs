@@ -37,6 +37,8 @@ pub enum Error {
     InvalidTaskName(String),
     #[error("rejected remote: {0}")]
     InvalidRemote(&'static str),
+    #[error("rejected ssh setup: {0}")]
+    InvalidSsh(&'static str),
     #[error("rejected credential helper: {0}")]
     InvalidCredentialHelper(&'static str),
     #[error("commit {0} is not in quarantine")]

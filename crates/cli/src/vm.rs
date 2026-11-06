@@ -18,8 +18,12 @@ const LABEL: usize = 11;
 
 #[derive(Args)]
 pub struct UpArgsCli {
-    /// Project folder [default: the current folder]
+    /// Project folder, or an SSH remote such as git@github.com:org/repo.git,
+    /// which the daemon fetches on this machine with your SSH key [default: the current folder]
     path: Option<PathBuf>,
+    /// With an SSH remote: the branch, tag or full commit id to fetch [default: the remote's default branch]
+    #[arg(long = "ref", value_name = "REF")]
+    git_ref: Option<String>,
     /// Start from this commit, named by its full id [default: HEAD]
     #[arg(long, value_name = "ID")]
     commit: Option<String>,
@@ -53,8 +57,36 @@ pub struct StatusArgsCli {
 }
 
 pub fn up(args: &UpArgsCli, deps: &mut Deps) -> i32 {
-    let Some(root) = resolve(args.path.as_deref(), "up", deps) else {
-        return exit::FAILED;
+    let remote = args
+        .path
+        .as_deref()
+        .filter(|path| crate::names_remote(path, deps))
+        .map(|path| path.to_string_lossy().into_owned());
+    let root = match &remote {
+        Some(url) => {
+            if args.include_uncommitted {
+                tell!(deps, "up: a remote has no uncommitted changes, so --include-uncommitted does not apply.");
+                return exit::USAGE;
+            }
+            if args.commit.is_some() {
+                tell!(deps, "up: for a remote, name the branch, tag or commit with --ref.");
+                return exit::USAGE;
+            }
+            match fetch(url, args.git_ref.as_deref(), deps) {
+                Some(root) => root,
+                None => return exit::FAILED,
+            }
+        }
+        None => {
+            if args.git_ref.is_some() {
+                tell!(deps, "up: --ref is for an SSH remote. For a folder, use --commit with a full commit id.");
+                return exit::USAGE;
+            }
+            let Some(root) = resolve(args.path.as_deref(), "up", deps) else {
+                return exit::FAILED;
+            };
+            root
+        }
     };
     let source = match (&args.commit, args.include_uncommitted) {
         (Some(_), true) => {
@@ -523,6 +555,52 @@ fn choose_ports(plan: &PlanReport, args: &UpArgsCli, deps: &mut Deps) -> Result<
         say!(deps, "No ports will be forwarded. Use --port to pick some.");
         Ok(Vec::new())
     }
+}
+
+/// Has the daemon fetch a remote project on this machine, and says what it
+/// got. Returns the folder the daemon keeps it in.
+fn fetch(url: &str, git_ref: Option<&str>, deps: &mut Deps) -> Option<PathBuf> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        tell!(deps, "up: only SSH remotes can be fetched for now, such as git@github.com:org/repo.git.");
+        return None;
+    }
+    // The agent this shell uses, which may be newer than the daemon's. It is
+    // a path, not a key, and the daemon checks it belongs to this user.
+    let ssh_auth_sock = (deps.env)("SSH_AUTH_SOCK")
+        .map(|path| path.to_string_lossy().into_owned())
+        .filter(|path| !path.is_empty());
+    let answer = request(
+        deps,
+        Request::Fetch(proto::FetchArgs {
+            url: url.to_owned(),
+            git_ref: git_ref.map(str::to_owned),
+            fetch: true,
+            ssh_auth_sock,
+        }),
+        "up",
+    );
+    let report = match answer {
+        Ok(Reply::Fetch(report)) => report,
+        Ok(_) => {
+            unexpected("up", deps);
+            return None;
+        }
+        Err(_) => return None,
+    };
+    let commit = report.commit.as_deref().unwrap_or("an unknown commit");
+    if report.fetched {
+        say!(deps, "Fetched {} ({}) at {} on this machine, with your SSH key.", esc(&report.url), esc(&report.git_ref), esc(commit));
+        say!(deps, "The sandbox gets the files. Your key, agent and Git credentials stay on this machine.");
+    } else {
+        say!(deps, "{} is already in a sandbox, so it was not fetched again.", esc(&report.url));
+        if git_ref.is_some() {
+            say!(deps, "--ref was not used for the same reason. Switch branches inside the sandbox with git.");
+        }
+        say!(deps, "Bring in newer commits with: {} git pull --project {}", brand::CLI_BIN, esc(url));
+    }
+    say!(deps, "Other commands take the same remote in place of a folder.");
+    say!(deps);
+    Some(PathBuf::from(report.project_path))
 }
 
 fn resolve(path: Option<&std::path::Path>, command: &str, deps: &mut Deps) -> Option<PathBuf> {

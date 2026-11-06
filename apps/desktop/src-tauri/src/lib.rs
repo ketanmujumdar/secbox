@@ -230,6 +230,46 @@ async fn add_project(path: String, state: State<'_, Arc<AppState>>) -> Result<St
     .await
 }
 
+#[tauri::command]
+async fn import_remote(url: String, state: State<'_, Arc<AppState>>) -> Result<ops::ImportView, String> {
+    let state = Arc::clone(&state);
+    blocking(move || {
+        let url = url.trim().to_owned();
+        if url.is_empty() {
+            return Err("Give an SSH remote, such as git@github.com:org/repo.git.".to_owned());
+        }
+        ops::import_remote(&state.client, &url, ops::agent_socket()).map_err(message)
+    })
+    .await
+}
+
+/// One Git operation on a project imported from a remote: `status`, `pull`,
+/// `commit` (with a message) or `push`. Pull and push use the person's SSH key
+/// on this machine, through the daemon's relay, which checks every push.
+#[tauri::command]
+async fn git(
+    project: String,
+    op: String,
+    commit_message: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<ops::GitView, String> {
+    let state = Arc::clone(&state);
+    blocking(move || {
+        let op = match op.as_str() {
+            "status" => proto::GitOp::Status,
+            "pull" => proto::GitOp::Pull,
+            "push" => proto::GitOp::Push,
+            "commit" => proto::GitOp::Commit {
+                message: commit_message.unwrap_or_default(),
+                paths: Vec::new(),
+            },
+            _ => return Err("That is not a Git operation this window offers.".to_owned()),
+        };
+        ops::git(&state.client, &project, op, ops::host_identity(), ops::agent_socket()).map_err(message)
+    })
+    .await
+}
+
 #[derive(Serialize)]
 struct StatusReply {
     #[serde(flatten)]
@@ -573,6 +613,8 @@ pub fn run() {
             logs,
             logs_stop,
             blocked,
+            import_remote,
+            git,
             diff,
         ])
         .build(tauri::generate_context!())

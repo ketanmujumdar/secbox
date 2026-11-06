@@ -948,3 +948,138 @@ mod tests {
         }
     }
 }
+
+
+// ---------- Git remotes ----------
+
+/// A fetch or a relayed Git command waits on the network and on the person's
+/// SSH agent, which may be asking them to approve.
+const GIT_LIMIT: Duration = Duration::from_secs(16 * 60);
+
+/// What the window shows after an import.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ImportView {
+    pub project_path: String,
+    pub commit: Option<String>,
+    pub fetched: bool,
+    pub message: String,
+}
+
+/// Fetches an SSH remote on this machine, with the person's own key, into the
+/// daemon's folder. Starting it is a separate step, with its plan.
+pub fn import_remote(client: &Client, url: &str, agent: Option<String>) -> Result<ImportView, CallError> {
+    let reply = client.call(
+        Request::Fetch(proto::FetchArgs {
+            url: url.to_owned(),
+            git_ref: None,
+            fetch: true,
+            ssh_auth_sock: agent,
+        }),
+        Some(GIT_LIMIT),
+    )?;
+    let Reply::Fetch(report) = reply else {
+        return Err(wrong_reply());
+    };
+    let message = if report.fetched {
+        format!(
+            "Fetched {} at {}. Your key stayed on this machine.",
+            text::escape(&report.url),
+            report.commit.as_deref().unwrap_or("an unknown commit")
+        )
+    } else {
+        "This remote is already in a sandbox, so it was not fetched again. Use Pull on the Git tab.".to_owned()
+    };
+    Ok(ImportView {
+        project_path: report.project_path,
+        commit: report.commit,
+        fetched: report.fetched,
+        message,
+    })
+}
+
+/// What the Git tab shows after an operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitView {
+    pub ok: bool,
+    pub title: String,
+    /// What Git printed in the sandbox, filtered by the daemon and again here.
+    pub output: Vec<String>,
+    pub updates: Vec<String>,
+    pub branch: Option<String>,
+    pub refused: Option<String>,
+}
+
+pub fn git(
+    client: &Client,
+    project: &str,
+    op: proto::GitOp,
+    identity: Option<proto::GitIdentity>,
+    agent: Option<String>,
+) -> Result<GitView, CallError> {
+    let name = match &op {
+        proto::GitOp::Status => "Status",
+        proto::GitOp::Pull => "Pull",
+        proto::GitOp::Commit { .. } => "Commit",
+        proto::GitOp::Push => "Push",
+    };
+    let reply = client.call(
+        Request::Git(proto::GitArgs {
+            project: project.to_owned(),
+            action: op,
+            identity,
+            ssh_auth_sock: agent,
+        }),
+        Some(GIT_LIMIT),
+    )?;
+    let Reply::Git(report) = reply else {
+        return Err(wrong_reply());
+    };
+    let mut filter = TerminalFilter::new();
+    let mut output = filter.push(report.output.as_bytes());
+    output.push_str(&filter.finish());
+    let outcome = match (&report.refused, report.ok) {
+        (Some(_), _) => "refused",
+        (None, true) => "done",
+        (None, false) => "failed",
+    };
+    Ok(GitView {
+        ok: report.ok,
+        title: format!("{name} {outcome}"),
+        output: output.lines().take(400).map(str::to_owned).collect(),
+        updates: report
+            .updates
+            .iter()
+            .map(|u| format!("{} {:.10} -> {:.10}", text::escape(&u.name), u.old, u.new))
+            .collect(),
+        branch: report.branch.map(|b| text::escape(&b)),
+        refused: report.refused.map(|r| text::escape(&r)),
+    })
+}
+
+/// The person's name and email from their global Git settings, so commits in
+/// the sandbox are theirs. Only the global file is read.
+pub fn host_identity() -> Option<proto::GitIdentity> {
+    let git = ["/usr/bin/git", "/usr/local/bin/git", "/opt/homebrew/bin/git"]
+        .into_iter()
+        .find(|path| Path::new(path).is_file())?;
+    let read = |key: &str| -> Option<String> {
+        let out = std::process::Command::new(git)
+            .args(["config", "--global", "--get", key])
+            .env_clear()
+            .envs(std::env::var_os("HOME").map(|home| ("HOME", home)))
+            .current_dir("/")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        let value = String::from_utf8(out.stdout).ok()?.trim().to_owned();
+        (out.status.success() && !value.is_empty()).then_some(value)
+    };
+    let identity = proto::GitIdentity { name: read("user.name")?, email: read("user.email")? };
+    proto::check_identity(&identity).is_ok().then_some(identity)
+}
+
+/// This app's SSH agent socket, if it has one. A path, never a key.
+pub fn agent_socket() -> Option<String> {
+    std::env::var("SSH_AUTH_SOCK").ok().filter(|path| !path.is_empty())
+}

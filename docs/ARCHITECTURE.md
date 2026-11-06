@@ -226,6 +226,8 @@ The VM reaches the host daemon over vsock, with no host port and a fixed set of 
 
 The VM holds no Git credentials, SSH agent or push remote, so the agent can commit but can't publish.
 
+**Projects from a remote, with a Git relay:** `secbox up git@host:org/repo.git` needs no clone on the host. The VM gets a real clone with its full history, and still holds no credential. Its Git uses a relay script as its `ssh`, which hands the connection back to the daemon. The daemon runs the real `ssh` on the host, with the user's agent, to the project's own URL only. Before a push leaves, the daemon reads Git's branch list and refuses `main`, `master`, deletes and tags. Pull and push are commands (`secbox git`, MCP `git_pull` and `git_push`), not credentials, so a tricked agent can push a branch but can't reach `main` or another repository. The host never parses the VM's Git data beyond that list. `docs/GIT.md` has the details.
+
 ![Git flow across the remote, the host broker and the VM](images/git-flow.png)
 
 The host never mounts or runs Git inside a `.git` written by the sandbox. Hooks, `core.fsmonitor` and `core.sshCommand` could otherwise execute on the host.

@@ -61,6 +61,10 @@ pub fn run(deps: &mut Deps) -> i32 {
     let mut model = Model::default();
     let mut pending: Option<Pending> = None;
     let mut confirming: Option<bool> = None;
+    // A Git remote being typed, for Import.
+    let mut importing: Option<String> = None;
+    // A box that only reports, closed by any key.
+    let mut notice = false;
     // The log being followed, if the Logs panel is showing one.
     let mut follow: Option<logs::Follow> = None;
     let mut keyboard = term::Keyboard::default();
@@ -83,7 +87,7 @@ pub fn run(deps: &mut Deps) -> i32 {
         }
         // A question is answered by a key pressed after it was seen, never by
         // one already on its way, such as from a paste.
-        if confirming.is_some() || pending.is_some() {
+        if confirming.is_some() || pending.is_some() || notice {
             queued.clear();
         }
         if queued.is_empty() {
@@ -94,9 +98,33 @@ pub fn run(deps: &mut Deps) -> i32 {
             }
         }
         dirty = true;
+        // Typing a remote takes the bytes themselves, pastes included.
+        if let Some(text) = importing.as_mut() {
+            let bytes = std::mem::take(&mut queued);
+            match edit_line(text, &bytes) {
+                LineEdit::Typing => model.dialog = Some(import_dialog(text)),
+                LineEdit::Cancel => {
+                    importing = None;
+                    model.dialog = None;
+                    model.message = Some("Nothing was imported.".to_owned());
+                }
+                LineEdit::Submit => {
+                    let url = importing.take().unwrap_or_default();
+                    model.dialog = None;
+                    pending = import(deps, &mut model, url.trim());
+                }
+            }
+            continue;
+        }
         let taken = view::first_key_len(&queued);
         let key = view::key(&queued[..taken]);
         queued.drain(..taken);
+
+        if notice {
+            notice = false;
+            model.dialog = None;
+            continue;
+        }
 
         if let Some(destroy) = confirming {
             match key {
@@ -187,6 +215,18 @@ pub fn run(deps: &mut Deps) -> i32 {
                 // Whatever was typed for the shell was the shell's.
                 queued.clear();
             }
+            Key::Import if model.pane.0 == Pane::Projects => {
+                let text = String::new();
+                model.dialog = Some(import_dialog(&text));
+                importing = Some(text);
+            }
+            Key::Pull | Key::Push if model.pane.0 == Pane::Projects => {
+                if git_on_selected(deps, &mut model, key == Key::Push) {
+                    notice = true;
+                }
+                queued.clear();
+                refresh_panel_if_showing(deps, &mut model, &mut follow);
+            }
             Key::Open(pane) => {
                 model.pane = PaneState(pane);
                 model.message = None;
@@ -200,6 +240,7 @@ pub fn run(deps: &mut Deps) -> i32 {
                             "Its services stop and their ports close.".to_owned(),
                             "Its data is kept for the next start.".to_owned(),
                         ],
+                        footer: None,
                     });
                     confirming = Some(false);
                 }
@@ -214,6 +255,7 @@ pub fn run(deps: &mut Deps) -> i32 {
                             String::new(),
                             "This cannot be undone.".to_owned(),
                         ],
+                        footer: None,
                     });
                     confirming = Some(true);
                 }
@@ -226,6 +268,9 @@ pub fn run(deps: &mut Deps) -> i32 {
             | Key::NextService
             | Key::Follow
             | Key::Shell
+            | Key::Import
+            | Key::Pull
+            | Key::Push
             | Key::PageUp
             | Key::PageDown
             | Key::Yes
@@ -460,6 +505,135 @@ fn open_shell(deps: &mut Deps, model: &mut Model, raw: &term::RawMode) {
 }
 
 /// Builds a plan and shows it in a box, so that Yes agrees to something seen.
+/// What a keystroke did to a line being typed.
+#[derive(Debug, PartialEq, Eq)]
+enum LineEdit {
+    Typing,
+    Submit,
+    Cancel,
+}
+
+const MAX_URL: usize = 300;
+
+/// Applies typed or pasted bytes to a line. Only printable ASCII is kept,
+/// which is all an SSH remote can hold. A lone Esc or Ctrl-C cancels; other
+/// escape sequences, such as arrow keys, are ignored.
+fn edit_line(text: &mut String, bytes: &[u8]) -> LineEdit {
+    if bytes == b"\x1b" {
+        return LineEdit::Cancel;
+    }
+    if bytes.first() == Some(&0x1b) {
+        return LineEdit::Typing;
+    }
+    for &byte in bytes {
+        match byte {
+            b'\r' | b'\n' => return LineEdit::Submit,
+            0x03 => return LineEdit::Cancel,
+            0x7f | 0x08 => {
+                text.pop();
+            }
+            0x15 => text.clear(),
+            0x21..=0x7e if text.len() < MAX_URL => text.push(byte as char),
+            _ => {}
+        }
+    }
+    LineEdit::Typing
+}
+
+fn import_dialog(text: &str) -> Dialog {
+    Dialog {
+        title: "Import from Git".to_owned(),
+        lines: vec![
+            "An SSH remote, such as git@github.com:org/repo.git".to_owned(),
+            String::new(),
+            format!("> {text}_"),
+            String::new(),
+            "Fetched here with your SSH key, then you see the plan.".to_owned(),
+            "The key never enters the sandbox.".to_owned(),
+        ],
+        footer: Some("Enter fetches   Esc cancels".to_owned()),
+    }
+}
+
+/// Fetches a remote, adds it to the list, and proposes starting it, which
+/// shows the plan and waits for a yes like any other start.
+fn import(deps: &mut Deps, model: &mut Model, url: &str) -> Option<Pending> {
+    if url.is_empty() {
+        model.message = Some("Nothing was imported.".to_owned());
+        return None;
+    }
+    model.busy = Some("Fetching on this machine. Your SSH agent may ask you to approve.".to_owned());
+    draw(deps, model);
+    let request = Request::Fetch(proto::FetchArgs {
+        url: url.to_owned(),
+        git_ref: None,
+        fetch: true,
+        ssh_auth_sock: crate::git_cmd::agent_socket(deps),
+    });
+    let answer = deps.daemon.call(request, &mut |_, _| {});
+    model.busy = None;
+    let report = match answer {
+        Ok(Reply::Fetch(report)) => report,
+        Ok(_) => return None,
+        Err(error) => {
+            model.message = Some(logs::failure(&error).text);
+            return None;
+        }
+    };
+    load_projects(deps, model);
+    if let Some(index) = model.projects.iter().position(|row| row.path == report.project_path) {
+        model.selected = index;
+        show_selected(deps, model);
+    }
+    if !report.fetched {
+        model.message = Some("Already in a sandbox. Press g to pull newer commits.".to_owned());
+        return None;
+    }
+    propose_start(deps, model)
+}
+
+/// Pulls or pushes in the selected project and shows what Git said. Returns
+/// whether a box is now showing.
+fn git_on_selected(deps: &mut Deps, model: &mut Model, push: bool) -> bool {
+    let Some(row) = model.selected_row().cloned() else {
+        return false;
+    };
+    let verb = if push { "Pushing" } else { "Pulling" };
+    model.busy = Some(format!("{verb} {}. Your SSH agent may ask you to approve.", screen::cut(&row.name, 30)));
+    draw(deps, model);
+    let op = if push { proto::GitOp::Push } else { proto::GitOp::Pull };
+    let result = crate::git_cmd::call(std::path::Path::new(&row.path), op, deps);
+    model.busy = None;
+    let report = match result {
+        Ok(report) => report,
+        Err(message) => {
+            model.message = Some(message);
+            return false;
+        }
+    };
+    let mut lines: Vec<String> = report.output.lines().map(str::to_owned).collect();
+    if lines.len() > 10 {
+        lines.drain(..lines.len() - 10);
+    }
+    for update in &report.updates {
+        lines.push(format!("pushed {} {:.10} -> {:.10}", update.name, update.old, update.new));
+    }
+    if let Some(branch) = &report.branch {
+        lines.push(format!("on branch {branch}"));
+    }
+    let title = match (&report.refused, report.ok) {
+        (Some(_), _) => format!("{} refused", if push { "Push" } else { "Pull" }),
+        (None, true) => format!("{} done", if push { "Push" } else { "Pull" }),
+        (None, false) => format!("{} failed", if push { "Push" } else { "Pull" }),
+    };
+    if let Some(reason) = &report.refused {
+        lines.push(String::new());
+        lines.push(reason.clone());
+    }
+    model.dialog = Some(Dialog { title, lines, footer: Some("Press any key".to_owned()) });
+    true
+}
+
 fn propose_start(deps: &mut Deps, model: &mut Model) -> Option<Pending> {
     let row = model.selected_row().cloned()?;
     let plan = match deps.daemon.call(
@@ -489,6 +663,7 @@ fn propose_start(deps: &mut Deps, model: &mut Model) -> Option<Pending> {
     model.dialog = Some(Dialog {
         title: format!("Start {}", screen::cut(&row.name, 30)),
         lines: dialog_lines(&plan, &ports),
+        footer: None,
     });
     Some(Pending {
         name: row.name,
@@ -612,4 +787,40 @@ fn stop(deps: &mut Deps, model: &mut Model, destroy: bool) {
         Err(error) => logs::failure(&error).text,
     });
     load_projects(deps, model);
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+
+    #[test]
+    fn a_remote_is_typed_pasted_edited_and_submitted() {
+        let mut text = String::new();
+        assert_eq!(edit_line(&mut text, b"git@github.com:org/rep"), LineEdit::Typing);
+        assert_eq!(edit_line(&mut text, b"x\x7fo.git"), LineEdit::Typing);
+        assert_eq!(text, "git@github.com:org/repo.git");
+        assert_eq!(edit_line(&mut text, b"\r"), LineEdit::Submit);
+        assert_eq!(edit_line(&mut text, b"\x1b[D"), LineEdit::Typing, "arrows are ignored");
+        assert_eq!(text, "git@github.com:org/repo.git");
+    }
+
+    #[test]
+    fn control_and_wide_characters_never_reach_the_line() {
+        let mut text = String::new();
+        edit_line(&mut text, "a b\tc\u{1b}d\u{e9}".as_bytes());
+        assert!(text.chars().all(|c| c.is_ascii_graphic()), "{text:?}");
+        assert_eq!(edit_line(&mut text, b"\x1b"), LineEdit::Cancel);
+        assert_eq!(edit_line(&mut text, b"\x03"), LineEdit::Cancel);
+        let mut long = String::new();
+        edit_line(&mut long, &[b'a'; 1000]);
+        assert_eq!(long.len(), MAX_URL);
+    }
+
+    #[test]
+    fn the_import_box_says_where_the_key_stays_and_how_to_leave() {
+        let dialog = import_dialog("git@h:o/r.git");
+        assert!(dialog.lines.iter().any(|l| l.contains("> git@h:o/r.git_")));
+        assert!(dialog.lines.iter().any(|l| l.contains("never enters the sandbox")));
+        assert!(dialog.footer.as_deref().unwrap().contains("Esc"));
+    }
 }
