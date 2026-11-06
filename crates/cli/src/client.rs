@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn not_running_keeps_its_own_line_breaks_on_a_terminal() {
         let error = CallError::NotRunning {
-            socket: PathBuf::from("/tmp/odd\u{1b}[2J/secboxd.sock"),
+            socket: PathBuf::from(format!("/tmp/odd\u{1b}[2J/{}", brand::SOCKET_FILE)),
         };
         let text = error.for_terminal();
         assert_eq!(text.lines().count(), 3, "{text}");

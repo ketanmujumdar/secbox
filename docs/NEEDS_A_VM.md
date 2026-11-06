@@ -14,7 +14,7 @@ hand on a Mac. Nothing in `crates/daemon` or `crates/cli` was part of that run.
 | Gap | Effect |
 | --- | --- |
 | No `/dev/kvm`, no engine binary | Nothing can boot. Every VM path is unexercised |
-| git 2.43, and `gitbroker` requires 2.50 | Worked around on Nov 5, 2026 by building git 2.56.0 from the kernel.org tarball into `/usr/local` and linking `/usr/bin/git` to it. With that, every `gitbroker` test ran and passed, and so did the `diff` tests in `crates/daemon/tests/diff.rs`. A fresh container is back to 2.43 The SSH fetch test added later in `crates/gitbroker/src/remote.rs` has not run on that build; it passed once on 2.43 with the version check lowered for the run |
+| git 2.43, and `gitbroker` requires 2.50 | Worked around on Nov 5, 2026 by building git 2.56.0 from the kernel.org tarball into `/usr/local` and linking `/usr/bin/git` to it. With that, every `gitbroker` test ran and passed, and so did the `diff` tests in `crates/daemon/tests/diff.rs`. A fresh container is back to 2.43. The SSH fetch test added later in `crates/gitbroker/src/remote.rs` has not run on that build; it passed once on 2.43 with the version check lowered for the run |
 
 ## Logs and terminals: what ran on a real VM
 
