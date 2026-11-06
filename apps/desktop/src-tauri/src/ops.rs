@@ -159,6 +159,7 @@ pub struct StatusView {
     /// `None` when the daemon did not say, which is not zero.
     pub blocked_total: Option<u64>,
     pub blocked_domains: Option<u64>,
+    pub blocked_cut_off: bool,
     /// Which secret goes to which service, and every host it could be sent
     /// to. Empty when no secret is assigned. Escaped.
     pub exposure: Vec<String>,
@@ -228,6 +229,7 @@ pub fn status_view(report: &StatusReport) -> StatusView {
         resources: report.resources.as_ref().map(resources),
         blocked_total,
         blocked_domains,
+        blocked_cut_off: report.blocked.as_ref().is_some_and(|b| b.cut_off),
         exposure: report
             .exposure
             .as_ref()

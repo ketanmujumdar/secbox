@@ -116,7 +116,8 @@ In the [full-screen interface](terminal-ui.md), press `n` for the selected proje
 
 - **Hostnames only.** Raw IP, metadata and UDP attempts are blocked but not recorded. An empty list does not mean nothing was tried.
 - **Only sandboxes created recently record anything.** A sandbox's log level is fixed when it is created. An older sandbox says nothing is being recorded. To record, recreate it with `secbox down --destroy` and `secbox up`, which deletes its data.
-- **Events can be lost.** The engine keeps about 50 MB of log. On an idle sandbox that is about an hour. A busy or hostile sandbox can push events out within seconds. The output says when older events were cut off. `-f` sees events as they arrive, so it loses far fewer.
+- **The list lasts, but events can still be lost.** The engine keeps about 50 MB of log, about an hour on an idle sandbox, so the daemon collects names into its own file every 30 seconds while it runs. A name stays listed until you approve it or destroy the sandbox. A busy or hostile sandbox can still push events out faster than that, or while the daemon is not running, and the output says when older events were cut off. At most 1000 names are kept, the newest.
+- **The daemon's file holds names as they were looked up.** It is owner-only, in the project's state folder, and goes when the sandbox is destroyed. A name can carry a secret, and it is masked only when shown.
 - **Counts are refused queries.** One lookup is usually two queries, for IPv4 and IPv6.
 - **The guest chooses each name.** A name shows what was asked for and proves nothing else.
 - **Secret values are masked.** A secret cut into a hostname label shows as its name, such as `[API_KEY]`.

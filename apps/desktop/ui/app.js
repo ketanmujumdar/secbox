@@ -443,6 +443,7 @@
     const rows = recorded && state.blocked ? state.blocked.rows.slice(0, 3) : [];
     for (const event of rows) row(top, event.domain, String(event.count), 'mono', 'muted');
     if (rows.length === 0) emptyRow(top, 'Blocked hostnames only. Zero proves nothing.');
+    if (s && s.blocked_cut_off) emptyRow(top, 'Some older attempts were lost before they could be read.');
   }
 
   function renderChangesCard() {

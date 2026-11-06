@@ -240,6 +240,21 @@ impl Service {
 }
 
 impl Service {
+    /// Every project this machine has a record of. Makes no record.
+    pub(crate) fn known_projects(&self) -> Vec<Project> {
+        hoststate::known_projects(&self.paths)
+            .into_iter()
+            .filter_map(|(id, record)| {
+                Some(Project {
+                    dir: self.paths.project(&id),
+                    sandbox: sandbox_name(&id).ok()?,
+                    root: PathBuf::from(record.path),
+                    id,
+                })
+            })
+            .collect()
+    }
+
     /// Finds a project this machine already has a record of. Unlike `open`, it
     /// makes no record, and the project's folder need not exist any more.
     pub(crate) fn known(&self, path: &str) -> Result<Project, ApiError> {

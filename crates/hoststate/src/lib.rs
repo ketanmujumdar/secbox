@@ -180,7 +180,11 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let temp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    // Unique per call as well as per process, because the daemon's threads can
+    // write the same file at once. The last rename wins, and each is whole.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let call = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = path.with_file_name(format!(".{name}.{}.{call}.tmp", std::process::id()));
     let failure = |what: &str, e: std::io::Error| format!("cannot {what} {name}: {}", e.kind());
     let mut file = OpenOptions::new()
         .write(true)
@@ -430,6 +434,31 @@ fn now_unix() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn many_threads_can_write_the_same_file_at_once() {
+        let dir = std::env::temp_dir().join(format!("write-private-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("project.json");
+        let workers: Vec<_> = (0..16)
+            .map(|worker| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..50 {
+                        write_private(&path, format!("{worker}").as_bytes()).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        // Whole, from one writer, with no temporary file left behind.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.parse::<u32>().unwrap() < 16);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     use super::*;
 
     #[test]

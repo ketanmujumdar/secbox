@@ -2166,3 +2166,110 @@ fn a_kept_disk_goes_when_the_sandbox_is_destroyed_but_not_when_it_stops() {
     f.call(Request::Down(DownArgs { project: f.path(), destroy: true })).unwrap();
     assert!(!disk.exists());
 }
+
+fn listed(f: &Fixture) -> Vec<(String, u64)> {
+    blocked(f).unwrap().events.into_iter().map(|e| (e.domain, e.count)).collect()
+}
+
+/// Every log file gone, as the engine's rotation does to old ones.
+fn lose_the_logs(f: &Fixture, name: &engine::SandboxName) {
+    let logs = f.deps.engine.logs_dir(name).unwrap();
+    for entry in std::fs::read_dir(logs).unwrap() {
+        std::fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+}
+
+#[test]
+fn a_blocked_name_stays_listed_after_the_engine_has_dropped_its_log() {
+    let (f, _home, name) = recording_fixture();
+    f.deps.engine.deny_lookup(&name, "a.example.net").unwrap();
+    assert_eq!(listed(&f), [("a.example.net".to_owned(), 1)]);
+    lose_the_logs(&f, &name);
+    assert_eq!(listed(&f), [("a.example.net".to_owned(), 1)]);
+    let Reply::Status(status) = f.call(Request::Status(proto::ProjectArgs { project: f.path() })).unwrap() else {
+        panic!("expected a status")
+    };
+    let summary = status.blocked.unwrap();
+    assert_eq!((summary.domains, summary.total), (1, 1));
+}
+
+#[test]
+fn the_background_pass_catches_a_name_nobody_asked_about_before_its_log_goes() {
+    let (f, _home, name) = recording_fixture();
+    f.deps.engine.deny_lookup(&name, "a.example.net").unwrap();
+    daemon::blocked::collect_all(&f.service);
+    lose_the_logs(&f, &name);
+    assert_eq!(listed(&f), [("a.example.net".to_owned(), 1)]);
+}
+
+#[test]
+fn reading_the_list_again_does_not_count_anything_twice() {
+    let (f, _home, name) = recording_fixture();
+    f.deps.engine.deny_lookup(&name, "a.example.net").unwrap();
+    f.deps.engine.deny_lookup(&name, "a.example.net").unwrap();
+    for _ in 0..3 {
+        daemon::blocked::collect_all(&f.service);
+        assert_eq!(listed(&f), [("a.example.net".to_owned(), 2)]);
+    }
+    f.deps.engine.deny_lookup(&name, "a.example.net").unwrap();
+    assert_eq!(listed(&f), [("a.example.net".to_owned(), 3)]);
+    assert_eq!(blocked(&f).unwrap().total, 3);
+    assert!(!blocked(&f).unwrap().cut_off);
+}
+
+#[test]
+fn losing_the_log_before_it_was_read_is_called_out() {
+    let (f, _home, name) = recording_fixture();
+    f.deps.engine.deny_lookup(&name, "a.example.net").unwrap();
+    assert!(!blocked(&f).unwrap().cut_off);
+    lose_the_logs(&f, &name);
+    f.deps.engine.deny_lookup(&name, "b.example.net").unwrap();
+    let report = blocked(&f).unwrap();
+    assert!(report.cut_off, "the position in the old log has gone");
+    assert_eq!(report.events.len(), 2);
+}
+
+#[test]
+fn approving_a_host_takes_only_it_off_the_list_and_the_new_log_is_read_from_its_start() {
+    let (f, _home, name) = recording_fixture();
+    f.deps.engine.deny_lookup(&name, "a.example.net").unwrap();
+    f.deps.engine.deny_lookup(&name, "b.example.net").unwrap();
+    approve(&f, "a.example.net").unwrap();
+    assert_eq!(listed(&f), [("b.example.net".to_owned(), 1)]);
+    assert!(!blocked(&f).unwrap().cut_off, "a replacement loses nothing");
+    f.deps.engine.deny_lookup(&name, "c.example.net").unwrap();
+    assert_eq!(listed(&f).len(), 2);
+}
+
+#[test]
+fn a_name_the_log_had_not_given_up_yet_survives_the_replacement() {
+    let (f, _home, name) = recording_fixture();
+    f.deps.engine.deny_lookup(&name, "b.example.net").unwrap();
+    approve(&f, "a.example.net").unwrap();
+    assert_eq!(listed(&f), [("b.example.net".to_owned(), 1)]);
+}
+
+#[test]
+fn destroying_the_sandbox_clears_the_list_but_stopping_it_does_not() {
+    let (f, _home, name) = recording_fixture();
+    f.deps.engine.deny_lookup(&name, "a.example.net").unwrap();
+    assert_eq!(listed(&f).len(), 1);
+    f.call(Request::Down(DownArgs { project: f.path(), destroy: false })).unwrap();
+    assert_eq!(listed(&f).len(), 1);
+    f.call(Request::Down(DownArgs { project: f.path(), destroy: true })).unwrap();
+    assert!(!project_state(&f).join("blocked-seen.json").exists());
+    f.up(Vec::new()).unwrap();
+    assert!(listed(&f).is_empty());
+}
+
+#[test]
+fn a_damaged_record_is_not_a_failure_and_says_something_may_be_missing() {
+    let (f, _home, name) = recording_fixture();
+    f.deps.engine.deny_lookup(&name, "a.example.net").unwrap();
+    assert_eq!(listed(&f).len(), 1);
+    std::fs::write(project_state(&f).join("blocked-seen.json"), "not json").unwrap();
+    f.deps.engine.deny_lookup(&name, "b.example.net").unwrap();
+    let report = blocked(&f).unwrap();
+    assert!(report.cut_off);
+    assert_eq!(report.events.len(), 2, "it reads the log again from what is left");
+}

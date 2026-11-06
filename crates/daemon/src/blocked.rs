@@ -17,13 +17,23 @@
 //! The file is still treated as hostile. Each folder on the way to it is checked
 //! without following a link, and the file is opened so that a link or a pipe put
 //! in its place fails rather than being read.
+//!
+//! Because the log holds only about an hour even on an idle sandbox, what it says
+//! is collected into a file of the daemon's own, every [`WATCH_GAP`] and on every
+//! read, and the list is answered from that. So a name stays listed until it is
+//! approved or the sandbox is destroyed. The file is owner-only and holds names as
+//! they were looked up, because masking needs the keychain, which a background
+//! thread must not be asking for. They are masked as they leave the daemon.
 
 use std::collections::BTreeMap;
 use std::fs::{File, Metadata, OpenOptions};
 use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use engine::{argv, EngineLocation, SandboxName};
+use serde::{Deserialize, Serialize};
 use proto::{
     text, ApiError, BlockedArgs, BlockedCursor, BlockedEvent, BlockedRecording, BlockedReport,
     BlockedSummary, LogTrust, SandboxState,
@@ -44,6 +54,16 @@ const ENGINE_KEEPS_RENAMED: usize = 4;
 /// How far along the renamed files this looks, in case the engine keeps more.
 const MAX_RENAMED: usize = 9;
 const LOG_FILE: &str = "runtime.log";
+
+/// The daemon's own record of what the log has said.
+const SEEN_FILE: &str = "blocked-seen.json";
+/// A record larger than any this writes is not one it wrote.
+const MAX_SEEN_FILE_BYTES: u64 = 8 * 1024 * 1024;
+/// A quarter of what an idle sandbox's log holds, so that a pause of the daemon or
+/// a noisy spell still leaves room to catch up.
+const WATCH_GAP: Duration = Duration::from_secs(30);
+/// Only one collection at a time, or two would count the same lines.
+static COLLECTING: Mutex<()> = Mutex::new(());
 
 /// `2026-11-05T07:50:40.358660Z`, the only time format accepted.
 const TIME_BYTES: usize = 27;
@@ -406,6 +426,157 @@ fn same_folders(a: &[Metadata], b: &[Metadata]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(a, b)| hoststate::same_directory(a, b))
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeenHost {
+    time: String,
+    count: u64,
+}
+
+/// What the log has said so far, kept after the log itself has moved on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Seen {
+    /// By name in lowercase, as the engine wrote it. Escaped only on the way out.
+    hosts: BTreeMap<String, SeenHost>,
+    total: u64,
+    rejected: u64,
+    /// How many of the oldest names were dropped to keep to [`MAX_EVENTS`].
+    omitted: u64,
+    cut_off: bool,
+    /// How far the log has been read.
+    cursor: Option<BlockedCursor>,
+}
+
+impl Seen {
+    /// A record that cannot be read is not a reason to fail, but what it held is
+    /// gone, so the answer says something may be missing.
+    fn load(project: &Project) -> Self {
+        let path = project.dir.join(SEEN_FILE);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() && meta.len() <= MAX_SEEN_FILE_BYTES => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            _ => return Self { cut_off: true, ..Self::default() },
+        }
+        std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_else(|| Self { cut_off: true, ..Self::default() })
+    }
+
+    fn save(&self, project: &Project) -> Result<(), String> {
+        let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        hoststate::write_private(&project.dir.join(SEEN_FILE), &bytes)
+    }
+
+    fn take_in(&mut self, read: LogRead) {
+        self.total += read.groups.total;
+        self.rejected += read.groups.rejected;
+        self.cut_off |= read.cut_off;
+        self.cursor = read.next;
+        for (domain, (time, count)) in read.groups.by_domain {
+            let host = self.hosts.entry(domain).or_default();
+            host.count += count;
+            if time > host.time {
+                host.time = time;
+            }
+        }
+        if self.hosts.len() > MAX_EVENTS {
+            let mut by_age: Vec<(String, String)> =
+                self.hosts.iter().map(|(name, host)| (host.time.clone(), name.clone())).collect();
+            by_age.sort();
+            let extra = by_age.len() - MAX_EVENTS;
+            for (_, name) in by_age.into_iter().take(extra) {
+                self.hosts.remove(&name);
+                self.omitted += 1;
+            }
+        }
+    }
+
+    fn events(&self) -> Vec<BlockedEvent> {
+        let groups = Groups {
+            by_domain: self
+                .hosts
+                .iter()
+                .map(|(name, host)| (name.clone(), (host.time.clone(), host.count)))
+                .collect(),
+            ..Groups::default()
+        };
+        groups.into_events(MAX_EVENTS).0
+    }
+}
+
+/// Reads whatever the log has that the record does not, and returns the record.
+fn collect(project: &Project, dirs: &[PathBuf]) -> Result<(Seen, Option<String>), String> {
+    let _one_at_a_time = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+    let mut seen = Seen::load(project);
+    let read = read_log(dirs, seen.cursor, MAX_READ_BYTES)?;
+    let trust = read.trust.clone();
+    let before = seen.clone();
+    seen.take_in(read);
+    if seen != before {
+        seen.save(project)?;
+    }
+    Ok((seen, trust))
+}
+
+/// Collects for one project now, before its log is about to go.
+pub(crate) fn collect_now(service: &Service, project: &Project) {
+    if let Ok(dirs) = log_dirs(service, &project.sandbox) {
+        let _ = collect(project, &dirs);
+    }
+}
+
+/// A new sandbox has a new log. Names already listed stay, for a sandbox replaced
+/// to approve a host, and the position in the old log means nothing any more.
+pub(crate) fn new_log(project: &Project) {
+    let _one_at_a_time = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+    if project.dir.join(SEEN_FILE).exists() {
+        let mut seen = Seen::load(project);
+        seen.cursor = None;
+        seen.cut_off = false;
+        let _ = seen.save(project);
+    }
+}
+
+/// Takes one name off the list, once a person has approved it.
+pub(crate) fn forget_host(project: &Project, host: &str) {
+    let _one_at_a_time = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+    let mut seen = Seen::load(project);
+    if seen.hosts.remove(host).is_some() {
+        let _ = seen.save(project);
+    }
+}
+
+/// Removes the record, when the sandbox it describes is destroyed.
+pub(crate) fn forget_all(project: &Project) {
+    let _one_at_a_time = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = std::fs::remove_file(project.dir.join(SEEN_FILE));
+}
+
+/// One pass over every sandbox that records anything. A problem with one is left
+/// for the next read of it to report.
+pub fn collect_all(service: &Service) {
+    for project in service.known_projects() {
+        let records = SandboxRecord::load(&project.dir)
+            .ok()
+            .flatten()
+            .and_then(|record| record.log_level)
+            .is_some_and(|level| level_records(&level));
+        if records {
+            collect_now(service, &project);
+        }
+    }
+}
+
+/// Keeps collecting, so a name is caught even if nobody is looking.
+pub fn watch(service: Arc<Service>) {
+    loop {
+        std::thread::sleep(WATCH_GAP);
+        collect_all(&service);
+    }
+}
+
 /// Whether a level means the engine writes these lines. Measured: `debug` does,
 /// and the default writes none of them.
 fn level_records(level: &str) -> bool {
@@ -461,11 +632,19 @@ pub fn report(
         });
     }
     let dirs = log_dirs(service, &project.sandbox)?;
-    let read = read_log(&dirs, args.after, MAX_READ_BYTES)
-        .map_err(|reason| refused(format!("the engine's log was not read: {reason}")))?;
-    let total = read.groups.total;
-    let rejected_lines = read.groups.rejected;
-    let (mut events, omitted_domains) = read.groups.into_events(MAX_EVENTS);
+    let not_read = |reason| refused(format!("the engine's log was not read: {reason}"));
+    let (seen, trust) = collect(project, &dirs).map_err(not_read)?;
+    // Following asks for what is new since last time. Anything else gets the list.
+    let (mut events, total, cut_off, omitted_domains, rejected_lines, trust, next) = match args.after {
+        Some(after) => {
+            let read = read_log(&dirs, Some(after), MAX_READ_BYTES).map_err(not_read)?;
+            let (total, rejected, cut_off, trust, next) =
+                (read.groups.total, read.groups.rejected, read.cut_off, read.trust, read.next);
+            let (events, omitted) = read.groups.into_events(MAX_EVENTS);
+            (events, total, cut_off, omitted, rejected, trust, next)
+        }
+        None => (seen.events(), seen.total, seen.cut_off, seen.omitted, seen.rejected, trust, seen.cursor),
+    };
     // A thief can put a secret in the name it looks up, so the names are
     // masked like log text before they leave the daemon.
     let masker = crate::mask::Masker::for_project(service, project)?;
@@ -477,11 +656,11 @@ pub fn report(
         log_level,
         events,
         total,
-        cut_off: read.cut_off,
+        cut_off,
         omitted_domains,
         rejected_lines,
-        trust: read.trust.map_or(LogTrust::HostOnly, LogTrust::Doubtful),
-        next: read.next,
+        trust: trust.map_or(LogTrust::HostOnly, LogTrust::Doubtful),
+        next,
     })
 }
 
@@ -513,12 +692,12 @@ pub(crate) fn summary(service: &Service, project: &Project, state: SandboxState)
             return summary;
         }
     };
-    match read_log(&dirs, None, MAX_READ_BYTES) {
-        Ok(read) => {
-            summary.total = read.groups.total;
-            summary.domains = read.groups.by_domain.len() as u64;
-            summary.cut_off = read.cut_off;
-            summary.trust = read.trust.map_or(LogTrust::HostOnly, LogTrust::Doubtful);
+    match collect(project, &dirs) {
+        Ok((seen, trust)) => {
+            summary.total = seen.total;
+            summary.domains = seen.hosts.len() as u64 + seen.omitted;
+            summary.cut_off = seen.cut_off;
+            summary.trust = trust.map_or(LogTrust::HostOnly, LogTrust::Doubtful);
         }
         Err(reason) => summary.problem = Some(text::escape_short(&reason, 200)),
     }

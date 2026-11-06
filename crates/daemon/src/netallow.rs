@@ -154,6 +154,7 @@ pub fn approve(
         return Err(error);
     }
     keep_baseline(project, baseline)?;
+    crate::blocked::forget_host(project, &host);
 
     if was_stopped {
         service
@@ -184,6 +185,8 @@ fn retire(
     if matches!(state, SandboxState::Running) {
         run::down(service, project, false, progress)?;
     }
+    // The log goes with the sandbox.
+    crate::blocked::collect_now(service, project);
     let engine = service.deps().engine();
     progress.step("keeping its data", None);
     engine

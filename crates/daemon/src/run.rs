@@ -299,6 +299,7 @@ pub(crate) fn create(
         .create(&spec)
         .map_err(|e| engine_error(e.to_string()))?;
 
+    crate::blocked::new_log(project);
     SandboxRecord {
         version: 1,
         created_unix: service.deps().now_unix(),
@@ -613,6 +614,7 @@ pub fn down(
         SandboxRecord::remove(&project.dir).map_err(internal)?;
         crate::diff::forget_baseline(project);
         crate::netallow::forget_kept_disk(project);
+        crate::blocked::forget_all(project);
         service.record(
             audit::entry(service.deps().now_unix(), audit::Action::SandboxDestroyed)
                 .project(project.id.as_str()),

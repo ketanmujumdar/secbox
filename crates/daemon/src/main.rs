@@ -218,6 +218,8 @@ fn run() -> Result<(), String> {
         brand::DAEMON_BIN,
         server::socket_path(&paths.state).display()
     );
+    let watching = Arc::clone(&service);
+    std::thread::spawn(move || daemon::blocked::watch(watching));
     server::serve(service, &listener);
     Ok(())
 }
