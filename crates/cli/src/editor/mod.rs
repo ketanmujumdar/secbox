@@ -551,6 +551,7 @@ mod tests {
                 err: &mut err,
                 input: &mut input,
                 color: false,
+                terminal: false,
                 cwd: self.project.path().to_path_buf(),
                 env: &env,
                 store: &store,

@@ -173,6 +173,8 @@ pub struct Harness {
     pub vault: Vault,
     pub host: HostInfo,
     pub color: bool,
+    /// What commands are told about stdin and stdout being a terminal.
+    pub terminal: bool,
     /// Answers for the hidden prompt, in order.
     pub answers: Mutex<Vec<String>>,
     /// Where requests go. Without one, every command that needs the daemon
@@ -198,6 +200,7 @@ impl Harness {
             vault: Vault::default(),
             host: big_host(),
             color: false,
+            terminal: false,
             answers: Mutex::new(Vec::new()),
             daemon: None,
         }
@@ -243,6 +246,7 @@ impl Harness {
                 err: &mut err,
                 input: &mut input,
                 color: self.color,
+                terminal: self.terminal,
                 cwd: self.project.path().to_path_buf(),
                 env: &env,
                 store: &store,

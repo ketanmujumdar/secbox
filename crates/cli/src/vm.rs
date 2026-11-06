@@ -507,7 +507,7 @@ fn show_plan(plan: &PlanReport, deps: &mut Deps) {
     }
 }
 
-fn describe_resources(resources: &proto::ResourcePlan) -> String {
+pub(crate) fn describe_resources(resources: &proto::ResourcePlan) -> String {
     let build = if resources.build_memory_bytes != resources.memory_bytes {
         format!(", {} while building", human_bytes(resources.build_memory_bytes))
     } else {
@@ -552,26 +552,7 @@ fn choose_ports(plan: &PlanReport, args: &UpArgsCli, deps: &mut Deps) -> Result<
         return Ok(available);
     }
     if !args.ports.is_empty() {
-        let unknown: Vec<String> = args
-            .ports
-            .iter()
-            .filter(|p| !available.contains(p))
-            .map(u16::to_string)
-            .collect();
-        if !unknown.is_empty() {
-            tell!(
-                deps,
-                "up: this project does not publish {}. It publishes {}.",
-                unknown.join(", "),
-                available
-                    .iter()
-                    .map(u16::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            return Err(exit::USAGE);
-        }
-        return Ok(args.ports.clone());
+        return listed_ports(plan, &args.ports, "up", deps);
     }
 
     say!(deps);
@@ -597,11 +578,46 @@ fn choose_ports(plan: &PlanReport, args: &UpArgsCli, deps: &mut Deps) -> Result<
     }
 }
 
-/// Has the daemon fetch a remote project on this machine, and says what it
-/// got. Returns the folder the daemon keeps it in.
-fn fetch(url: &str, git_ref: Option<&str>, deps: &mut Deps) -> Option<PathBuf> {
+/// Ports a person named, checked against the plan. A port the plan does not
+/// list cannot be chosen at all.
+pub(crate) fn listed_ports(plan: &PlanReport, asked: &[u16], command: &str, deps: &mut Deps) -> Result<Vec<u16>, i32> {
+    let available: Vec<u16> = plan.ports.iter().map(|p| p.host_port).collect();
+    let unknown: Vec<String> = asked
+        .iter()
+        .filter(|p| !available.contains(p))
+        .map(u16::to_string)
+        .collect();
+    if !unknown.is_empty() {
+        let publishes = if available.is_empty() {
+            "nothing".to_owned()
+        } else {
+            available
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        tell!(
+            deps,
+            "{command}: this project does not publish {}. It publishes {publishes}.",
+            unknown.join(", ")
+        );
+        return Err(exit::USAGE);
+    }
+    Ok(asked.to_vec())
+}
+
+/// Asks the daemon to fetch a remote project on this machine, with this
+/// shell's SSH agent, and hands back what it reports. Prints only failures.
+pub(crate) fn fetch_report(
+    url: &str,
+    git_ref: Option<&str>,
+    command: &str,
+    deps: &mut Deps,
+    step: &mut dyn FnMut(&mut Deps, &str, Option<&str>),
+) -> Option<proto::FetchReport> {
     if url.starts_with("http://") || url.starts_with("https://") {
-        tell!(deps, "up: only SSH remotes can be fetched for now, such as git@github.com:org/repo.git.");
+        tell!(deps, "{command}: only SSH remotes can be fetched for now, such as git@github.com:org/repo.git.");
         return None;
     }
     // The agent this shell uses, which may be newer than the daemon's. It is
@@ -609,7 +625,7 @@ fn fetch(url: &str, git_ref: Option<&str>, deps: &mut Deps) -> Option<PathBuf> {
     let ssh_auth_sock = (deps.env)("SSH_AUTH_SOCK")
         .map(|path| path.to_string_lossy().into_owned())
         .filter(|path| !path.is_empty());
-    let answer = request(
+    let answer = call_daemon(
         deps,
         Request::Fetch(proto::FetchArgs {
             url: url.to_owned(),
@@ -617,16 +633,23 @@ fn fetch(url: &str, git_ref: Option<&str>, deps: &mut Deps) -> Option<PathBuf> {
             fetch: true,
             ssh_auth_sock,
         }),
-        "up",
+        command,
+        step,
     );
-    let report = match answer {
-        Ok(Reply::Fetch(report)) => report,
+    match answer {
+        Ok(Reply::Fetch(report)) => Some(report),
         Ok(_) => {
-            unexpected("up", deps);
-            return None;
+            unexpected(command, deps);
+            None
         }
-        Err(_) => return None,
-    };
+        Err(_) => None,
+    }
+}
+
+/// Has the daemon fetch a remote project on this machine, and says what it
+/// got. Returns the folder the daemon keeps it in.
+fn fetch(url: &str, git_ref: Option<&str>, deps: &mut Deps) -> Option<PathBuf> {
+    let report = fetch_report(url, git_ref, "up", deps, &mut dots)?;
     let commit = report.commit.as_deref().unwrap_or("an unknown commit");
     if report.fetched {
         say!(deps, "Fetched {} ({}) at {} on this machine, with your SSH key.", esc(&report.url), esc(&report.git_ref), esc(commit));
@@ -643,7 +666,7 @@ fn fetch(url: &str, git_ref: Option<&str>, deps: &mut Deps) -> Option<PathBuf> {
     Some(PathBuf::from(report.project_path))
 }
 
-fn resolve(path: Option<&std::path::Path>, command: &str, deps: &mut Deps) -> Option<PathBuf> {
+pub(crate) fn resolve(path: Option<&std::path::Path>, command: &str, deps: &mut Deps) -> Option<PathBuf> {
     match project_dir(path, deps) {
         Ok(root) => Some(root),
         Err(reason) => {
@@ -654,26 +677,39 @@ fn resolve(path: Option<&std::path::Path>, command: &str, deps: &mut Deps) -> Op
 }
 
 /// Sends one request, printing each step as it arrives.
+fn request(deps: &mut Deps, request: Request, command: &str) -> Result<Reply, i32> {
+    call_daemon(deps, request, command, &mut dots)
+}
+
+/// How `up` shows a step: dimmed dots and the daemon's own words.
+fn dots(deps: &mut Deps, step: &str, detail: Option<&str>) {
+    let line = match detail {
+        Some(detail) => format!("{step}: {detail}"),
+        None => step.to_owned(),
+    };
+    say!(deps, "{}  {}", paint(deps.color, Tone::Dim, "..."), esc(&line));
+}
+
+/// Sends one request, handing each step to `step` as it arrives. A failure
+/// is printed here, so the caller only has to return the exit code.
 ///
 /// The client reference is taken out of `deps` first, so that steps can be
 /// written to the output while the call is still running.
-fn request(deps: &mut Deps, request: Request, command: &str) -> Result<Reply, i32> {
+pub(crate) fn call_daemon(
+    deps: &mut Deps,
+    request: Request,
+    command: &str,
+    step: &mut dyn FnMut(&mut Deps, &str, Option<&str>),
+) -> Result<Reply, i32> {
     let client = deps.daemon;
-    let color = deps.color;
-    let result = client.call(request, &mut |step, detail| {
-        let line = match detail {
-            Some(detail) => format!("{step}: {detail}"),
-            None => step.to_owned(),
-        };
-        say!(deps, "{}  {}", paint(color, Tone::Dim, "..."), esc(&line));
-    });
+    let result = client.call(request, &mut |name, detail| step(deps, name, detail));
     result.map_err(|error| {
         tell!(deps, "{command}: {}", error.for_terminal());
         exit::FAILED
     })
 }
 
-fn unexpected(command: &str, deps: &mut Deps) -> i32 {
+pub(crate) fn unexpected(command: &str, deps: &mut Deps) -> i32 {
     tell!(deps, "{command}: the daemon answered something else.");
     exit::FAILED
 }
@@ -682,6 +718,6 @@ fn field(deps: &mut Deps, label: &str, value: &str) {
     say!(deps, "{}{value}", cell(deps.color, Tone::Strong, label, LABEL));
 }
 
-fn short(revision: &str) -> String {
+pub(crate) fn short(revision: &str) -> String {
     esc(revision.get(..12).unwrap_or(revision))
 }

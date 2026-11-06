@@ -13,6 +13,7 @@ mod git_cmd;
 pub mod host;
 mod mcp;
 mod net;
+mod new_cmd;
 mod resources;
 mod review;
 mod secret_cmd;
@@ -55,6 +56,9 @@ pub struct Deps<'a> {
     pub err: &'a mut dyn Write,
     pub input: &'a mut dyn BufRead,
     pub color: bool,
+    /// Both stdin and stdout are a terminal, so a person can be asked. A
+    /// command that needs a yes refuses without one rather than guess.
+    pub terminal: bool,
     pub cwd: PathBuf,
     pub env: &'a dyn Fn(&str) -> Option<OsString>,
     pub store: &'a dyn Fn(&ProjectId) -> Box<dyn SecretStore>,
@@ -99,6 +103,8 @@ enum Command {
     Net(net::NetArgs),
     /// Remove the state folder (needs --purge)
     Uninstall(uninstall::UninstallArgs),
+    /// Bring a project in from an SSH remote or a folder: review what it gets, then start it
+    New(new_cmd::NewArgsCli),
     /// Start a project in a sandbox
     Up(vm::UpArgsCli),
     /// Stop a project's sandbox, or destroy it
@@ -187,6 +193,7 @@ where
         Command::Secrets(args) => secret_cmd::run(args, deps),
         Command::Net(args) => net::run(&args, deps),
         Command::Uninstall(args) => uninstall::run(&args, deps),
+        Command::New(args) => new_cmd::run(&args, deps),
         Command::Up(args) => vm::up(&args, deps),
         Command::Down(args) => vm::down(&args, deps),
         Command::Remove(args) => vm::remove(&args, deps),
@@ -235,6 +242,7 @@ pub(crate) fn with_test_deps<R>(
         err: &mut err,
         input: &mut input,
         color: false,
+        terminal: false,
         cwd: cwd.to_path_buf(),
         env,
         store: &store,
@@ -346,6 +354,7 @@ pub fn real_main() -> i32 {
             err: &mut stderr.lock(),
             input: &mut stdin.lock(),
             color,
+            terminal: stdin.is_terminal() && stdout.is_terminal(),
             cwd,
             env: &env,
             store: &store,
