@@ -267,6 +267,20 @@ fn a_review_reaches_the_daemon_and_its_refusals_read_plainly() {
     assert!(error.message().contains("no bundle"), "{}", error.message());
 }
 
+#[test]
+fn an_import_sends_its_ref_and_the_daemon_checks_it_before_fetching() {
+    let d = daemon();
+    // An option-looking ref would reach git as a flag if it were not checked.
+    let error = ops::import_remote(
+        &d.client,
+        "git@github.com:org/repo.git",
+        Some("--upload-pack=touch /tmp/x".to_owned()),
+        None,
+    )
+    .unwrap_err();
+    assert!(error.message().contains("rejected ref name"), "{}", error.message());
+}
+
 /// The rule from the build plan: the product name appears in Rust only in the
 /// brand crate. The main workspace's guard does not look in here.
 #[test]
