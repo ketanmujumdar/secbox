@@ -1,4 +1,4 @@
-//! What the Projects panel shows about the selected project, worked out from
+//! What the Overview tab shows about the selected project, worked out from
 //! the daemon's status report.
 //!
 //! Services, their states and their health come from inside the sandbox, so
@@ -66,7 +66,19 @@ pub fn build(report: &StatusReport) -> Overview {
         }),
         blocked: blocked(report.blocked.as_ref()),
         blocked_alert: blocked_alert(report.blocked.as_ref()),
+        blocked_hosts: blocked_hosts(report.blocked.as_ref()),
     }
+}
+
+/// How many hostnames were refused, for the Network tab. Only a record that
+/// is being kept and holds something gives a number; anything else gives
+/// none, never a zero.
+fn blocked_hosts(summary: Option<&BlockedSummary>) -> Option<u64> {
+    let summary = summary?;
+    (summary.problem.is_none()
+        && summary.recording == BlockedRecording::Recording
+        && summary.total > 0)
+        .then_some(summary.domains)
 }
 
 /// Whether the Blocked box should catch the eye: something was refused, or
@@ -92,11 +104,11 @@ fn blocked(summary: Option<&BlockedSummary>) -> Vec<Entry> {
     let mut lines = match (&summary.problem, summary.recording) {
         (Some(_), _) => vec![
             Entry::new("Unknown: the log could not be read", "", Style::WindowAlert),
-            Entry::new("t to see why", "", Style::Window),
+            Entry::new("n to see why", "", Style::Window),
         ],
         (None, BlockedRecording::NotRecording) => vec![
             Entry::new("Nothing is being recorded", "", Style::WindowAlert),
-            Entry::new("t to see why", "", Style::Window),
+            Entry::new("n to see why", "", Style::Window),
         ],
         (None, BlockedRecording::NoSandbox) => {
             vec![Entry::new("Nothing recorded: no sandbox", "", Style::WindowDim)]
@@ -121,7 +133,7 @@ fn blocked(summary: Option<&BlockedSummary>) -> Vec<Entry> {
                 "",
                 Style::Window,
             ),
-            Entry::new("t to see them", "", Style::Window),
+            Entry::new("n to see them", "", Style::Window),
         ],
     };
     if let Some((Weight::Alert, _)) = trust_note(&summary.trust) {
@@ -223,6 +235,23 @@ mod tests {
         assert_eq!(build(&r).services.len(), MOST_SERVICES);
     }
 
+    /// The Network tab's count is the number of hostnames, and only a record
+    /// being kept that holds something gives one: never a zero.
+    #[test]
+    fn the_network_tab_counts_hostnames_only_when_something_was_recorded() {
+        assert_eq!(build(&report()).blocked_hosts, Some(3));
+        let mut none = report();
+        none.blocked.as_mut().unwrap().total = 0;
+        none.blocked.as_mut().unwrap().domains = 0;
+        assert_eq!(build(&none).blocked_hosts, None);
+        let mut off = report();
+        off.blocked.as_mut().unwrap().recording = BlockedRecording::NotRecording;
+        assert_eq!(build(&off).blocked_hosts, None);
+        let mut old = report();
+        old.blocked = None;
+        assert_eq!(build(&old).blocked_hosts, None);
+    }
+
     #[test]
     fn refused_lookups_are_counted_in_alert_colour_with_where_to_see_them() {
         let o = build(&report());
@@ -230,7 +259,7 @@ mod tests {
         assert_eq!(o.blocked[0].style, Style::WindowAlert);
         let text = texts(&o.blocked);
         assert!(text.contains("6 refused lookups \nof 3 hostnames"), "{text}");
-        assert!(text.contains("t to see them"), "{text}");
+        assert!(text.contains("n to see them"), "{text}");
         assert!(text.contains("Hostnames only"), "{text}");
     }
 

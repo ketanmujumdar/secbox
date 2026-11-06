@@ -1,4 +1,4 @@
-//! Comparing a sandbox with its snapshot, into the Review panel.
+//! Comparing a sandbox with its snapshot, into the Changes tab.
 //!
 //! The lines are the ones `diff` prints, from the same function. The call has
 //! a time limit, because the interface cannot draw or read a key while it
@@ -22,8 +22,12 @@ pub fn refresh(client: &dyn DaemonClient, panel: &mut ReviewPanel, path: &str) {
     panel.project = path.to_owned();
     panel.lines.clear();
     panel.scroll = 0;
+    panel.files = None;
+    panel.flags = 0;
     match crate::review::ask(client, path, COMPARE_LIMIT) {
         Ok(report) => {
+            panel.files = Some(report.files.len());
+            panel.flags = report.flags.len();
             panel.lines = crate::review::lines(&report)
                 .into_iter()
                 .map(|(weight, text)| {
@@ -87,6 +91,8 @@ mod tests {
             project: "/p".to_owned(),
             lines: vec![Line::plain("left over")],
             scroll: 4,
+            files: Some(9),
+            flags: 9,
         };
         refresh(&daemon, &mut panel, "/p");
         assert!(
@@ -132,6 +138,8 @@ mod tests {
             .unwrap();
         assert!(flag < file);
         assert_eq!(panel.lines[flag].style, Style::WindowAlert);
+        // The counts the Changes tab shows come from the same report.
+        assert_eq!((panel.files, panel.flags), (Some(1), 1));
     }
 
     #[test]
@@ -145,5 +153,7 @@ mod tests {
         assert_eq!(panel.lines.len(), 1);
         assert_eq!(panel.lines[0].style, Style::WindowAlert);
         assert!(panel.lines[0].text.contains("not running"));
+        // An old count is not left looking current.
+        assert_eq!((panel.files, panel.flags), (None, 0));
     }
 }

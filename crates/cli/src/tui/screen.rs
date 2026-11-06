@@ -1,7 +1,7 @@
 //! A grid of coloured characters, drawn into and then turned into lines.
 //!
-//! Drawing into a grid rather than building strings is what makes windows,
-//! shadows and dialogs that overlap each other simple, and it means the
+//! Drawing into a grid rather than building strings is what makes boxes
+//! and dialogs that overlap each other simple, and it means the
 //! width of a row is always exactly the width of the screen. Nothing here
 //! writes an escape sequence; styles stay as styles until the very end.
 
@@ -91,18 +91,7 @@ impl Screen {
         }
     }
 
-    /// Repaints an area's colour without touching its characters, which is
-    /// how a shadow falls across whatever is under it.
-    pub fn shade(&mut self, x: usize, y: usize, w: usize, h: usize, style: Style) {
-        for row in y..(y + h).min(self.height) {
-            for col in x..(x + w).min(self.width) {
-                let at = row * self.width + col;
-                self.cells[at].style = style;
-            }
-        }
-    }
-
-    /// A double-ruled box, the frame every window of the period had, with its
+    /// A double-ruled box, for what sits over everything else, with its
     /// title set into the top rule.
     pub fn frame(&mut self, at: Rect, style: Style, title: &str, title_style: Style) {
         let Rect { x, y, w, h } = at;
@@ -134,8 +123,8 @@ impl Screen {
         }
     }
 
-    /// A single-ruled box inside a window, with its title near the left of the
-    /// top rule, which is how the period grouped related things.
+    /// A single-ruled box, with its title near the left of the top rule,
+    /// which is how related things are grouped on the page.
     pub fn group_box(&mut self, at: Rect, style: Style, title: &str, title_style: Style) {
         let Rect { x, y, w, h } = at;
         if w < 2 || h < 2 {
@@ -160,23 +149,18 @@ impl Screen {
         }
     }
 
-    /// A single-ruled divider across the inside of a window.
+    /// A single-ruled line across part of the page.
     pub fn rule(&mut self, x: usize, y: usize, w: usize, style: Style) {
-        if w < 2 {
-            return;
-        }
-        self.put(x, y, '╟', style);
-        self.put(x + w - 1, y, '╢', style);
-        for col in x + 1..x + w - 1 {
+        for col in x..x + w {
             self.put(col, y, '─', style);
         }
     }
 
-    /// The strip of black a window casts down and to the right of itself.
-    pub fn shadow(&mut self, at: Rect) {
-        let Rect { x, y, w, h } = at;
-        self.shade(x + w, y + 1, 2, h.saturating_sub(1), Style::Shadow);
-        self.shade(x + 2, y + h, w, 1, Style::Shadow);
+    /// A single-ruled line down part of the page.
+    pub fn column_rule(&mut self, x: usize, y: usize, h: usize, style: Style) {
+        for row in y..y + h {
+            self.put(x, row, '│', style);
+        }
     }
 
     /// A scrollbar down the right-hand edge of a list.
@@ -208,7 +192,12 @@ impl Screen {
         let span = total.saturating_sub(shown).max(1);
         let at = (first * track.saturating_sub(size)) / span;
         for row in 0..size {
-            self.put(x, y + 1 + (at + row).min(track - 1), '█', Style::ScrollThumb);
+            self.put(
+                x,
+                y + 1 + (at + row).min(track - 1),
+                '█',
+                Style::ScrollThumb,
+            );
         }
     }
 
@@ -264,8 +253,13 @@ mod tests {
 
     #[test]
     fn a_row_is_always_exactly_the_width() {
-        let mut screen = Screen::new(20, 4, ' ', Style::Desktop);
-        screen.text(0, 0, "a very long line that does not fit at all", Style::Window);
+        let mut screen = Screen::new(20, 4, ' ', Style::Window);
+        screen.text(
+            0,
+            0,
+            "a very long line that does not fit at all",
+            Style::Window,
+        );
         for row in screen.rows() {
             let width: usize = row.iter().map(|s| s.text.chars().count()).sum();
             assert_eq!(width, 20);
@@ -275,14 +269,14 @@ mod tests {
 
     #[test]
     fn writing_past_the_edge_stops_rather_than_wrapping() {
-        let mut screen = Screen::new(6, 2, '.', Style::Desktop);
+        let mut screen = Screen::new(6, 2, '.', Style::Window);
         assert_eq!(screen.text(4, 0, "abcd", Style::Window), 2);
         assert_eq!(screen.plain().lines().next().unwrap(), "....ab");
     }
 
     #[test]
     fn runs_of_one_style_are_joined() {
-        let mut screen = Screen::new(6, 1, ' ', Style::Desktop);
+        let mut screen = Screen::new(6, 1, ' ', Style::Frame);
         screen.text(0, 0, "ab", Style::Window);
         screen.text(2, 0, "cd", Style::Window);
         let rows = screen.rows();
@@ -293,8 +287,13 @@ mod tests {
 
     #[test]
     fn a_frame_sets_its_title_into_the_top_rule() {
-        let mut screen = Screen::new(24, 4, ' ', Style::Desktop);
-        screen.frame(Rect::new(0, 0, 24, 4), Style::Frame, "Projects", Style::Title);
+        let mut screen = Screen::new(24, 4, ' ', Style::Window);
+        screen.frame(
+            Rect::new(0, 0, 24, 4),
+            Style::Frame,
+            "Projects",
+            Style::Title,
+        );
         let text = screen.plain();
         let first = text.lines().next().unwrap();
         assert!(first.starts_with('╔'), "{first}");
@@ -305,25 +304,21 @@ mod tests {
 
     #[test]
     fn a_title_too_long_for_its_frame_is_cut_not_overflowed() {
-        let mut screen = Screen::new(20, 3, ' ', Style::Desktop);
-        screen.frame(Rect::new(0, 0, 20, 3), Style::Frame, &"t".repeat(100), Style::Title);
+        let mut screen = Screen::new(20, 3, ' ', Style::Window);
+        screen.frame(
+            Rect::new(0, 0, 20, 3),
+            Style::Frame,
+            &"t".repeat(100),
+            Style::Title,
+        );
         let first = screen.plain().lines().next().unwrap().to_owned();
         assert_eq!(first.chars().count(), 20);
         assert!(first.starts_with('╔') && first.ends_with('╗'));
     }
 
     #[test]
-    fn a_shadow_recolours_without_changing_characters() {
-        let mut screen = Screen::new(10, 5, 'x', Style::Desktop);
-        screen.shadow(Rect::new(0, 0, 6, 3));
-        assert!(screen.plain().lines().all(|l| l.chars().all(|c| c == 'x')));
-        let rows = screen.rows();
-        assert!(rows[1].iter().any(|s| s.style == Style::Shadow));
-    }
-
-    #[test]
     fn a_scrollbar_shows_a_full_thumb_when_everything_fits() {
-        let mut screen = Screen::new(3, 6, ' ', Style::Desktop);
+        let mut screen = Screen::new(3, 6, ' ', Style::Window);
         screen.scrollbar(0, 0, 6, 0, 10, 10);
         let text = screen.plain();
         assert!(text.contains('▲') && text.contains('▼'));
@@ -332,9 +327,9 @@ mod tests {
 
     #[test]
     fn a_scrollbar_thumb_moves_with_the_list() {
-        let mut top = Screen::new(1, 8, ' ', Style::Desktop);
+        let mut top = Screen::new(1, 8, ' ', Style::Window);
         top.scrollbar(0, 0, 8, 0, 3, 30);
-        let mut bottom = Screen::new(1, 8, ' ', Style::Desktop);
+        let mut bottom = Screen::new(1, 8, ' ', Style::Window);
         bottom.scrollbar(0, 0, 8, 27, 3, 30);
         let at = |s: &Screen| s.plain().lines().position(|l| l.contains('█')).unwrap();
         assert!(at(&top) < at(&bottom), "the thumb did not move");
