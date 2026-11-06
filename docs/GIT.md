@@ -36,6 +36,8 @@ You don't need a clone on your machine. `up`:
 2. **Shows the plan** and waits for your yes, as for any project.
 3. **Clones into the new VM** at `/work` through the relay, at exactly the commit you approved. The VM gets the full history: `log`, `blame`, branches, tags, everything Git normally has.
 
+`secbox new REMOTE [--ref REF]` does the same three steps through the same requests. It shows the plan as what the project will be able to reach, open, get and use, and asks once, defaulting to no. Without a terminal it needs `--yes`. The fetch in step 1 happens before that question, so a remote is fetched onto your machine even if you then say no. Nothing from it runs. See the guide's page [Bringing a project in](../guide/src/guides/new.md).
+
 Every other command takes the remote in place of a folder, and only looks it up: `secbox status REMOTE`, `secbox shell --project REMOTE`, `secbox mcp setup claude FOLDER --project REMOTE`.
 
 **Accepted remotes:**
@@ -52,11 +54,11 @@ Inside the sandbox it's plain Git. `secbox shell --project REMOTE` gives you a s
 
 | What | Command line | Terminal UI | Desktop app | MCP tool |
 | --- | --- | --- | --- | --- |
-| Import | `secbox up REMOTE` | `i`, then paste the URL | Import box in the sidebar | none, a person imports |
-| Status | `secbox git status` | | Git tab, Status | `git_status` |
-| Pull | `secbox git pull` | `g` | Git tab, Pull | `git_pull` |
-| Commit | `secbox git commit -m MSG [PATHS]` | | Git tab, Commit | `git_commit` |
-| Push | `secbox git push` | `G` | Git tab, Push branch | `git_push` |
+| Import | `secbox new REMOTE` or `secbox up REMOTE` | `g` on the New project page (`+`), then paste the URL | New project, Clone from Git | none, a person imports |
+| Status | `secbox git status` | | Changes tab, Status | `git_status` |
+| Pull | `secbox git pull` | `p` on the Changes tab | Changes tab, Pull | `git_pull` |
+| Commit | `secbox git commit -m MSG [PATHS]` | | Changes tab, Commit all changes | `git_commit` |
+| Push | `secbox git push` | `P` on the Changes tab | Changes tab, Push branch | `git_push` |
 
 Add `--project REMOTE` (or a folder) to name the project from elsewhere.
 
@@ -162,7 +164,7 @@ On each import, pull and push, 1Password asks whether to allow the key. The requ
 | `crates/cli/src/git_cmd.rs` | `secbox git`, and reading your Git name |
 | `crates/cli/src/mcp/tools.rs` | `git_status`, `git_pull`, `git_commit`, `git_push` |
 | `crates/cli/src/tui/mod.rs` | Import, Pull and Push in the terminal UI |
-| `apps/desktop/` | The Import box and the Git tab |
+| `apps/desktop/` | Clone from Git, and the Git controls on a project's Changes tab |
 
 ## What has been tested
 
@@ -174,12 +176,12 @@ On each import, pull and push, 1Password asks whether to allow the key. The requ
   - A push to `main` is refused, `main` doesn't move, and the refusal is logged.
   - Pull brings in someone else's commit without making a new sandbox.
   - An agent commits and pushes over MCP, and is refused on `main`.
-- **The real binary:** the terminal UI's Import box, drawn at 80 columns.
+- **The real binary:** the terminal UI's New project page, drawn at 80 columns.
 
 **Not tested:**
 
 - A real VM, beyond the first clone. On msb 0.7.13, `msb exec` carries both directions at once and passes on the end of stdin, but reports the end of stdout only when the command ends. The relay script allows for that. Pull and push have not run on a real VM.
 - A real server.
 - 1Password or any agent prompt.
-- The desktop app's Import and Git tab clicked through. Its Rust side was type-checked.
+- The desktop app's Clone from Git and Changes tab clicked through in the real app. They have been clicked through in a browser against a stand-in for the app (`apps/desktop/ui-preview`), and its Rust side is built and tested against the daemon, including a ref the daemon refuses.
 - The host-side fetch in `crates/gitbroker` needs Git 2.50, like every Git test there.

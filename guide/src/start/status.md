@@ -26,6 +26,7 @@ secbox is an early build. This page says exactly which parts work, which are bui
 | `net check POLICY METHOD URL` | Works. Explains a policy decision. Nothing enforces it yet |
 | `net blocked` | Works, through the daemon, on a sandbox created recently enough. Hostnames only |
 | `uninstall --purge` | Works. Removes the state folder only |
+| `new REMOTE` or `new PATH` | Built, tested against a fake engine and a fake fetch only. **Never run on a real VM or server.** The same requests as `up`, with one review and one question that defaults to no |
 | `up`, `down`, `status` | Built, for Compose projects and projects with only a Dockerfile. Need the daemon |
 | `logs` | Works on a running sandbox, through the daemon. Removes terminal control codes, and replaces assigned secret values with their names |
 | `shell`, `exec` | Work on a running sandbox, on your real terminal. Their output is not masked |

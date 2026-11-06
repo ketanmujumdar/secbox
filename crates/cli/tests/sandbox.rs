@@ -1781,3 +1781,221 @@ fn removing_an_imported_project_takes_its_copy_and_leaves_the_remote() {
     let again = w.h.run(&["remove", REMOTE], "");
     assert_ne!(again.code, 0, "{}", again.all());
 }
+
+// ---- new: the same requests as up, put to the person as one review
+
+fn created(facts: &Facts) -> bool {
+    facts.engine.calls().iter().any(|call| matches!(call, FakeCall::Create(_)))
+}
+
+/// Panics naming the first needle that is missing or out of place.
+fn in_order(text: &str, needles: &[&str]) {
+    let mut from = 0;
+    for needle in needles {
+        match text[from..].find(needle) {
+            Some(at) => from += at + needle.len(),
+            None => panic!("{needle:?} missing or out of order in:\n{text}"),
+        }
+    }
+}
+
+#[test]
+fn new_on_a_folder_reviews_the_plan_then_starts_it_with_yes() {
+    let (h, facts) = harness_and_facts();
+    let done = h.run(&["new", ".", "--yes"], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    let text = done.out;
+    println!("{text}");
+    in_order(
+        &text,
+        &[
+            "✓ Took ",
+            "from its last commit (uncommitted changes stay out)",
+            "✓ Read compose.yaml: 2 services (nothing has run yet)",
+            "will be able to…",
+            "  open       127.0.0.1:3000 → web    127.0.0.1:8080 → api",
+            "  get        no secrets",
+            "  use        4.0 GB memory · 2 CPUs · 30.0 GB disk",
+            "plan ",
+            "up ",
+            "--plan-only shows all of it",
+            "Starting with this plan, because of --yes.",
+            "✓ Plan checked again",
+            "✓ Virtual machine started",
+            "✓ Last commit copied into the VM",
+            "✓ Docker running inside the VM",
+            "✓ No secrets to deliver",
+            "· Building images and starting services",
+            "✓ Images built and services started",
+            "✓ Opened 127.0.0.1:3000 → web",
+            "✓ Opened 127.0.0.1:8080 → api",
+            "What runs inside the sandbox is untrusted",
+            "Next: ",
+            "logs --project ",
+        ],
+    );
+    assert!(created(&facts));
+}
+
+#[test]
+fn new_groups_the_review_as_reach_open_get_use_then_warnings_then_the_digest() {
+    let (h, _facts) = harness_and_facts();
+    let text = h.run(&["new", "."], "").out;
+    let name = h.project.path().canonicalize().unwrap();
+    let name = name.file_name().unwrap().to_str().unwrap().to_owned();
+    in_order(
+        &text,
+        &[
+            &format!("{name} will be able to…"),
+            "\n  reach      ",
+            "\n  open       ",
+            "\n  get        ",
+            "\n  use        ",
+            "\n! ",
+            "\nplan ",
+        ],
+    );
+    // Only words the plan holds: build hosts stay open, as up says too.
+    assert!(text.contains("build hosts stay reachable after the build"), "{text}");
+    assert!(text.contains("while building, and after"), "{text}");
+}
+
+#[test]
+fn new_says_which_service_gets_each_secret_and_where_it_could_go() {
+    let (h, _facts) = harness_and_facts();
+    h.answer(&["sk-test-value", "sk-test-value"]);
+    let set = h.run(&["secrets", "set", "API_KEY", "--service", "api"], "");
+    assert_eq!(set.code, 0, "{}", set.all());
+    let text = h.run(&["new", "."], "").out;
+    println!("{text}");
+    in_order(
+        &text,
+        &[
+            "  get        API_KEY → api (in the environment)",
+            "  use        ",
+            "! API_KEY is given to api",
+            "! Code in those services could send them to any of these",
+            "\n  auth.docker.io,",
+            "\nplan ",
+        ],
+    );
+    assert!(!text.contains("sk-test-value"), "{text}");
+}
+
+#[test]
+fn new_starts_nothing_when_the_answer_is_the_default() {
+    for answer in ["\n", "n\n", "", "sure\n"] {
+        let (mut h, facts) = harness_and_facts();
+        h.terminal = true;
+        let done = h.run(&["new", "."], answer);
+        assert_eq!(done.code, cli::exit::FAILED, "{answer:?}: {}", done.all());
+        assert!(done.out.contains("Start with this plan? [y/N]"), "{}", done.out);
+        assert!(done.out.contains("Nothing was started."), "{}", done.out);
+        assert!(!created(&facts), "{answer:?} started something");
+    }
+}
+
+#[test]
+fn new_starts_on_a_terminal_when_the_answer_is_yes() {
+    let (mut h, facts) = harness_and_facts();
+    h.terminal = true;
+    let done = h.run(&["new", "."], "y\n");
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(done.out.contains("✓ Images built and services started"), "{}", done.out);
+    assert!(created(&facts));
+}
+
+#[test]
+fn new_without_a_terminal_prints_the_review_and_refuses_without_yes() {
+    let (h, facts) = harness_and_facts();
+    // An answer on stdin is not a person at a terminal.
+    let done = h.run(&["new", "."], "y\n");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(done.out.contains("will be able to…"), "{}", done.out);
+    assert!(done.out.contains("  open       "), "{}", done.out);
+    assert!(!done.out.contains("[y/N]"), "{}", done.out);
+    assert!(done.err.contains("needs --yes"), "{}", done.err);
+    assert!(!created(&facts));
+}
+
+#[test]
+fn new_opens_only_the_ports_asked_for_and_refuses_one_not_in_the_plan() {
+    let (h, facts) = harness_and_facts();
+    let done = h.run(&["new", ".", "--port", "5432", "--yes"], "");
+    assert_eq!(done.code, cli::exit::USAGE, "{}", done.all());
+    assert!(done.err.contains("does not publish 5432"), "{}", done.err);
+    assert!(!created(&facts));
+
+    let done = h.run(&["new", ".", "--port", "3000", "--yes"], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(done.out.contains("not opened (not chosen with --port): 127.0.0.1:8080 → api"), "{}", done.out);
+    assert!(done.out.contains("✓ Opened 127.0.0.1:3000 → web"), "{}", done.out);
+    assert!(!done.out.contains("✓ Opened 127.0.0.1:8080"), "{}", done.out);
+}
+
+#[test]
+fn new_stops_at_a_blocker_like_up() {
+    let (h, facts) = harness_and_facts();
+    std::fs::write(h.project.path().join(brand::CONFIG_FILE), "resources:\n  memory: 2G\n").unwrap();
+    let done = h.run(&["new", ".", "--yes"], "");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(done.out.contains("will be able to…"), "{}", done.out);
+    assert!(done.out.contains("This cannot be started yet"), "{}", done.out);
+    assert!(!created(&facts));
+}
+
+#[test]
+fn new_with_a_remote_fetches_reviews_and_clones_through_the_relay() {
+    let mut w = remote_setup();
+    w.h.terminal = true;
+    let head = test_git(&w.bare, &["rev-parse", "HEAD"]).trim().to_owned();
+    let done = w.h.run(&["new", REMOTE], "y\n");
+    assert_eq!(done.code, 0, "{}", done.all());
+    let text = done.out;
+    println!("{text}");
+    in_order(
+        &text,
+        &[
+            &format!("· Fetching {REMOTE} on this machine, with your SSH key"),
+            &format!("✓ Fetched the default branch @ {} with your SSH key (the key stays here)", &head[..7]),
+            "✓ Read compose.yaml: 1 service (nothing has run yet)",
+            "shop will be able to…",
+            &format!("up {REMOTE} --plan-only shows all of it, after fetching again"),
+            "✓ Cloned into the VM through the relay, with no key inside",
+            "✓ Images built and services started",
+            &format!("logs --project {REMOTE}"),
+        ],
+    );
+    assert_eq!(fetches(&w.facts), [(REMOTE.to_owned(), "HEAD".to_owned(), None)]);
+    assert_eq!(test_git(&w.work, &["rev-parse", "HEAD"]).trim(), head, "the sandbox was cloned at that commit");
+}
+
+#[test]
+fn new_with_a_remote_passes_on_the_ref_and_a_folder_refuses_one() {
+    let w = remote_setup();
+    let done = w.h.run(&["new", REMOTE, "--ref", "release/1.2", "--yes"], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(done.out.contains("✓ Fetched release/1.2 @ "), "{}", done.out);
+    assert_eq!(fetches(&w.facts)[0].1, "release/1.2");
+
+    let (h, facts) = harness_and_facts();
+    let done = h.run(&["new", ".", "--ref", "main"], "");
+    assert_eq!(done.code, cli::exit::USAGE, "{}", done.all());
+    assert!(!created(&facts));
+}
+
+#[test]
+fn new_with_a_remote_and_no_terminal_fetches_and_reviews_but_starts_nothing() {
+    let w = remote_setup();
+    let done = w.h.run(&["new", REMOTE], "");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(done.out.contains("✓ Fetched"), "{}", done.out);
+    assert!(done.out.contains("shop will be able to…"), "{}", done.out);
+    assert!(done.err.contains("needs --yes"), "{}", done.err);
+    assert!(!created(&w.facts));
+    assert!(w.facts.relayed.lock().unwrap().is_empty(), "nothing was cloned");
+    // The fetched copy is on this machine all the same, and remove takes it.
+    let removed = w.h.run(&["remove", REMOTE], "");
+    assert_eq!(removed.code, 0, "{}", removed.all());
+    assert!(removed.out.contains("The imported copy is gone"), "{}", removed.out);
+}

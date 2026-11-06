@@ -116,12 +116,12 @@ group = "Other"
 [[shot]]
 name = "tui-projects"
 args = []
-title = "The full-screen interface: Projects"
+title = "The full-screen interface: Overview"
 group = "Full-screen interface"
 daemon = true
 cols = 100
 rows = 30
-keys = ["p"]
+keys = ["o"]
 
 [[shot]]
 name = "tui-secrets"
@@ -136,19 +136,19 @@ keys = ["s"]
 [[shot]]
 name = "tui-traffic"
 args = []
-title = "The full-screen interface: Traffic"
+title = "The full-screen interface: Network"
 group = "Full-screen interface"
 daemon = true
 cols = 100
 rows = 30
-keys = ["t"]
+keys = ["n"]
 
 [[shot]]
 name = "tui-review"
 args = []
-title = "The full-screen interface: Review, before comparing"
+title = "The full-screen interface: Changes, before comparing"
 group = "Full-screen interface"
 daemon = true
 cols = 100
 rows = 30
-keys = ["r"]
+keys = ["c"]

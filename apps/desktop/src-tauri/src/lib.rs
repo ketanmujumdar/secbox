@@ -174,10 +174,16 @@ async fn daemon_state(state: State<'_, Arc<AppState>>) -> Result<DaemonState, St
     blocking(move || Ok(daemon_state_of(&state))).await
 }
 
+/// Starts the daemon when nothing answers. With `restart`, stops the one that
+/// is answering and starts it again, as the menu bar icon's item does.
 #[tauri::command]
-async fn start_daemon(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<String, String> {
+async fn start_daemon(
+    app: AppHandle,
+    restart: Option<bool>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
     let state = Arc::clone(&state);
-    let result = blocking(move || state.start_daemon(false)).await;
+    let result = blocking(move || state.start_daemon(restart.unwrap_or(false))).await;
     refresh_tray(&app);
     result
 }
@@ -231,14 +237,20 @@ async fn add_project(path: String, state: State<'_, Arc<AppState>>) -> Result<St
 }
 
 #[tauri::command]
-async fn import_remote(url: String, state: State<'_, Arc<AppState>>) -> Result<ops::ImportView, String> {
+async fn import_remote(
+    url: String,
+    git_ref: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<ops::ImportView, String> {
     let state = Arc::clone(&state);
     blocking(move || {
         let url = url.trim().to_owned();
         if url.is_empty() {
             return Err("Give an SSH remote, such as git@github.com:org/repo.git.".to_owned());
         }
-        ops::import_remote(&state.client, &url, ops::agent_socket()).map_err(message)
+        // An empty field means the remote's default branch.
+        let git_ref = git_ref.map(|r| r.trim().to_owned()).filter(|r| !r.is_empty());
+        ops::import_remote(&state.client, &url, git_ref, ops::agent_socket()).map_err(message)
     })
     .await
 }

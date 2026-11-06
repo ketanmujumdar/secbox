@@ -22,6 +22,7 @@ Where a command takes `[PATH]` or `--project PATH`, the default is the current f
 | [`secrets`](#secrets) | No | Manage per-project secrets in the OS keychain |
 | [`net`](#net) | `blocked` only | Explain network policy decisions, and show blocked hostnames |
 | [`uninstall`](#uninstall) | No | Remove the state folder |
+| [`new`](#new) | Yes | Bring a project in from an SSH remote or a folder: review what it gets, then start it |
 | [`up`](#up) | Yes | Start a project in a sandbox |
 | [`down`](#down) | Yes | Stop a project's sandbox, or destroy it |
 | [`status`](#status) | Yes | Show a project's sandbox |
@@ -148,6 +149,23 @@ secbox uninstall [--purge] [--yes]
 | `--yes` | Do not ask for the name to be typed |
 
 See [Uninstall](../uninstall.md).
+
+## new
+
+```text
+secbox new [OPTIONS] <GIT-URL | PATH>
+```
+
+Fetches an SSH remote on this machine, or takes a folder's last commit, then shows what the project will be able to reach, open, get and use, and asks `Start with this plan? [y/N]`. It sends the same requests as `up`.
+
+| Option | |
+| --- | --- |
+| `--ref REF` | With an SSH remote: the branch, tag or full commit id to fetch. Default: the remote's default branch |
+| `--port PORT` | Open only this port on `127.0.0.1`. Repeat for more. Only ports the plan lists. Default: every port the plan lists |
+| `--no-ports` | Open no ports |
+| `--yes` | Start without asking. Needed when stdin or stdout is not a terminal. The review is printed either way |
+
+Exits 1 when the answer is not `y`, when there is no terminal and no `--yes`, or when something blocks the start. See [Bringing a project in](../guides/new.md).
 
 ## up
 

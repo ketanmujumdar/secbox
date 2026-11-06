@@ -33,6 +33,7 @@ any of it can be called working.
 | `net check <policy> <METHOD> <url>` | Works. Explains a policy decision, but nothing enforces it yet |
 | `net blocked [--project PATH] [-f]` | Works, through the daemon, on a sandbox created since this was added. Blocked hostnames only. See [Blocked hostnames](#blocked-hostnames) |
 | `uninstall --purge` | Works. Removes the state folder only |
+| `new <git-url \| path> [--ref REF] [--port P] [--no-ports] [--yes]` | Built, tested against a fake engine and a fake fetch only: **never run on a real VM or server**. Brings a project in from an SSH remote or a folder. It sends the same requests as `up`, shows the plan as what the project will be able to reach, open, get and use, and asks once, defaulting to no. Without a terminal it needs `--yes`. See [Bringing a project in](guide/src/guides/new.md) |
 | `up`, `down`, `status` | Built, for Compose projects and projects with only a Dockerfile. They need the daemon |
 | `up git@host:org/repo.git [--ref REF]` | Built, never run on a real VM or server. Clones the remote into the sandbox with its history, through a relay that uses your SSH key on this machine. See [docs/GIT.md](docs/GIT.md) |
 | `git status\|pull\|commit\|push [--project P]` | Built, never run on a real VM or server. Pull and push go through the same relay; a push to `main` or `master`, a delete or a tag is refused before anything is sent |
@@ -42,9 +43,9 @@ any of it can be called working.
 | `mcp setup claude FOLDER`, `mcp setup codex` | Works. Makes a folder for Claude Code with its own host tools denied, or prints how to add the server to Codex |
 | `diff [PATH]` | Built, through the daemon, and tested against a fake engine only: **never run on a real VM**. Lists what changed in a running sandbox since its snapshot, with files that could act on your machine flagged first. Copies nothing out. See [Reviewing changes](#reviewing-changes-in-a-sandbox) |
 | `export` | Not built |
-| Desktop app (`apps/desktop`) | Early first cut. A menu bar icon that keeps the daemon running, and a window for status, start with plan approval, stop, destroy, logs, blocked hostnames, Import from an SSH remote, and a Git tab for pull, commit and push. Same daemon, same powers as the CLI. Run on Linux under Xvfb only; macOS untested. See [its README](apps/desktop/README.md) |
+| Desktop app (`apps/desktop`) | Early first cut. A menu bar icon that keeps the daemon running, and a window that brings a project in (clone from an SSH remote, or add a folder), shows its plan before it starts, and gives each project Overview, Logs, Network (blocked hostnames), Changes (compare, then commit, pull and push), Secrets and Settings tabs, with stop and destroy. Same daemon, same powers as the CLI. Run on Linux under Xvfb only; macOS untested. See [its README](apps/desktop/README.md) |
 
-`up`, `down`, `status`, `logs`, `net blocked`, `shell`, `exec` and `diff` send requests to a daemon,
+`new`, `up`, `down`, `status`, `logs`, `net blocked`, `shell`, `exec` and `diff` send requests to a daemon,
 `secboxd`, which holds the secrets, the policy and the approvals. With no daemon
 running they say so.
 
@@ -70,7 +71,7 @@ secbox exec --service api -- env
 
 Add `--project PATH` to name a project from another folder. None of these starts a stopped sandbox: they refuse and tell you how to start it.
 
-In the full-screen interface, the Logs panel follows new lines by itself. Scrolling up pauses it, and `f` or End follows again. Press `e` on Projects or Logs to open the same shell as `secbox shell`, in the service chosen on Logs if there is one. The interface steps aside while the shell runs and comes back when you leave it. The bar along the bottom lists only the keys that work on the panel showing, and `1` or `?` explains them. Starting, stopping and destroying (`2`, `3`, `x`) work only on Projects. The red tag at the right of the menu bar, saying this is an early build, never goes away. The Secrets panel (`s`) lists the selected project's secret names, how each was stored and which services it goes to, read from the same metadata as `secbox secrets list`. It never shows a value or opens the keychain, and it changes nothing: use the `secrets` commands for that.
+In the full-screen interface (`secbox` with no arguments), with no project yet, the page offers two ways in: `g` clones from Git and `f` adds a folder, offering the one you started it in if that looks like a project. Either way you see the plan before anything starts. Once there are projects, they are listed down the left, `+` (or `N`) offers the same two ways again, and the selected project has five tabs, each opened by the letter shown on it: `o` Overview, `l` Logs, `n` Network, `c` Changes and `s` Secrets. Up and down choose a project on Overview and Secrets, and scroll on the others. The Logs tab follows new lines by itself. Scrolling up pauses it, and `f` or End follows again. Press `e` on Overview or Logs to open the same shell as `secbox shell`, in the service chosen on Logs if there is one. The interface steps aside while the shell runs and comes back when you leave it. Starting, stopping and destroying (`u`, `S`, `x`) work only on Overview, and only the ones the project's state allows. `r` reads again, `?` explains the keys, and `q` quits. The bar along the bottom lists only the keys that work on the tab showing, and the red tag at the right of the top bar, saying this is an early build, never goes away. The Secrets tab lists the selected project's secret names, how each was stored and which services it goes to, read from the same metadata as `secbox secrets list`. It never shows a value or opens the keychain, and it changes nothing: use the `secrets` commands for that.
 
 There is no SSH server and no open port in the VM. For `shell` and `exec` the daemon checks the sandbox is running and tells the CLI where the engine is, and the CLI runs the engine with a cleared environment. Anything you paste into that shell is inside the sandbox.
 
@@ -107,7 +108,7 @@ How it works:
 
 Limits: files the project's `.gitignore` leaves out are not shown, and would not be in an export either. A sandbox created before this was added has nothing to compare with, and `diff` says to recreate it. The sandbox must be running. `export` is not built, so nothing reviewed here can leave the sandbox yet.
 
-The Review panel in the full-screen interface (`r`) shows the same lines, flags first in red. Press `5` to compare: it runs inside the sandbox, so it never runs by itself. Up, down, PgUp and PgDn scroll. The desktop app's Git review page shows the same, with a Compare button.
+The Changes tab in the full-screen interface (`c`) shows the same lines, flags first in red. Press `r` to compare: it runs inside the sandbox, so it never runs by itself. Up, down, PgUp and PgDn scroll. The desktop app's Changes tab shows the same, with a Compare button.
 
 ## Starting from a Git remote
 
@@ -122,7 +123,7 @@ secbox git pull --project git@github.com:org/shop.git
 
 You don't need a clone on your machine. The sandbox gets a real clone with its whole history, and **your SSH key never goes into it**. Pull and push go through a relay in the daemon: Git in the VM speaks through it, and the daemon runs the real `ssh` on your Mac, with your `~/.ssh/config` and your agent, to the project's own repository only. 1Password's SSH agent works and asks you to approve each time. Before a push leaves, the daemon reads its branch list and refuses `main`, `master`, deletes and tags. A `git push` typed inside the VM fails, because there is nothing there to authenticate with.
 
-The terminal UI imports with `i` and pulls and pushes with `g` and `G`. The desktop app has an Import box and a Git tab. AI agents get `git_status`, `git_pull`, `git_commit` and `git_push` over MCP, with the same checks. [docs/GIT.md](docs/GIT.md) explains all of it, including what the relay can't see.
+The terminal UI clones a remote with `g` on its New project page, and pulls and pushes with `p` and `P` on a project's Changes tab. The desktop app clones from *New project*, with an optional branch, tag or commit, and pulls, commits and pushes from a project's Changes tab. AI agents get `git_status`, `git_pull`, `git_commit` and `git_push` over MCP, with the same checks. [docs/GIT.md](docs/GIT.md) explains all of it, including what the relay can't see.
 
 ## AI agents (Claude Code, Codex)
 
@@ -146,7 +147,7 @@ secbox net blocked -f           # keep checking; Ctrl-C stops
 secbox status                   # includes a count
 ```
 
-The Traffic panel in the full-screen interface shows the same list. Press `t` to open it, `5` to read again, and up, down, PgUp and PgDn to scroll. The Projects panel shows the count in a Blocked box beside the selected project's services, ports and resources, in red when anything was refused.
+The Network tab in the full-screen interface shows the same list. Press `n` to open it, `r` to read again, and up, down, PgUp and PgDn to scroll. The tab's name carries the number of hostnames refused, and the Overview tab shows the count in a Blocked box beside the selected project's services, ports and resources, in red when anything was refused.
 
 Read this before relying on the list:
 

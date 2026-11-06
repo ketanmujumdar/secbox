@@ -16,6 +16,7 @@
 # Guides
 
 - [Checking a project](guides/checking-a-project.md)
+- [Bringing a project in](guides/new.md)
 - [Running a project in a sandbox](guides/running-a-project.md)
 - [Logs, shell and exec](guides/inspecting.md)
 - [Reviewing changes](guides/reviewing-changes.md)
