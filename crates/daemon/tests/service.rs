@@ -273,6 +273,7 @@ fn starting_follows_the_sequence_the_engine_spike_found_works() {
             FakeCall::Start(_) => "start",
             FakeCall::Stop(_) => "stop",
             FakeCall::Destroy(_) => "destroy",
+            FakeCall::KeepRootDisk(..) => "keep-disk",
             FakeCall::Status(_) => "status",
             FakeCall::Exec(..) => "exec",
             FakeCall::ExecStream(..) => "exec-stream",
@@ -2003,4 +2004,165 @@ fn removing_an_unknown_project_changes_nothing_and_makes_no_record() {
     assert!(remove(&f).is_err());
     assert!(known_paths(&f).is_empty());
     assert!(f.project.path().join("compose.yaml").is_file());
+}
+
+fn approve(f: &Fixture, host: &str) -> Result<proto::ApproveHostReport, proto::ApiError> {
+    match f.call(Request::ApproveHost(proto::ApproveHostArgs {
+        project: f.path(),
+        host: host.to_owned(),
+    }))? {
+        Reply::ApproveHost(report) => Ok(report),
+        other => panic!("expected an approval, got {other:?}"),
+    }
+}
+
+/// The one project's folder in the state folder.
+fn project_state(f: &Fixture) -> std::path::PathBuf {
+    let projects = f._state.path().join(brand::STATE_DIR).join("projects");
+    std::fs::read_dir(projects).unwrap().next().unwrap().unwrap().path()
+}
+
+fn plan_hosts(f: &Fixture) -> Vec<String> {
+    let Reply::Plan(plan) = f
+        .call(Request::Plan(proto::PlanArgs {
+            project: f.path(),
+            source: proto::Source::Commit { revision: "HEAD".to_owned() },
+        }))
+        .unwrap()
+    else {
+        panic!("expected a plan")
+    };
+    plan.network.run_hosts.clone()
+}
+
+#[test]
+fn approving_a_host_replaces_the_sandbox_with_the_data_kept_and_the_new_rule() {
+    let f = fixture();
+    f.up(vec![3000]).unwrap();
+    let before = f.deps.engine.calls().len();
+
+    let report = approve(&f, "API.Example.com.").unwrap();
+    assert_eq!(report.host, "api.example.com");
+    assert!(report.applied);
+    assert!(!report.already_allowed);
+    assert_eq!(report.sandbox, SandboxState::Running);
+    assert_eq!(plan_hosts(&f), ["api.example.com"]);
+
+    let calls = f.deps.engine.calls();
+    let after = &calls[before..];
+    let at = |test: &dyn Fn(&FakeCall) -> bool| after.iter().position(test).unwrap();
+    let stop = at(&|c| matches!(c, FakeCall::Stop(_)));
+    let keep = at(&|c| matches!(c, FakeCall::KeepRootDisk(..)));
+    let destroy = at(&|c| matches!(c, FakeCall::Destroy(_)));
+    let create = at(&|c| matches!(c, FakeCall::Create(_)));
+    let copy = at(&|c| matches!(c, FakeCall::Exec(_, r) if r.command.iter().any(|w| w == "copy-data")));
+    let compose = at(&|c| {
+        matches!(c, FakeCall::ExecStream(_, r) | FakeCall::Exec(_, r) if r.command.iter().any(|w| w == "up"))
+    });
+    // The disk is safe before anything is removed, and the services come last.
+    assert!(stop < keep && keep < destroy && destroy < create && create < copy && copy < compose, "{after:?}");
+
+    let FakeCall::Create(spec) = &after[create] else { unreachable!() };
+    assert_eq!(spec.ports.len(), 1, "the approved port is kept");
+    assert!(spec.previous_disk.as_ref().unwrap().is_file());
+    let engine::NetworkPolicy::AllowHosts { hosts, .. } = &spec.network else {
+        panic!("the sandbox must stay deny by default: {:?}", spec.network)
+    };
+    assert!(hosts.iter().any(|h| h == "api.example.com"), "{hosts:?}");
+}
+
+#[test]
+fn approving_a_second_host_keeps_the_first() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    approve(&f, "one.example.com").unwrap();
+    approve(&f, "two.example.com").unwrap();
+    assert_eq!(plan_hosts(&f), ["one.example.com", "two.example.com"]);
+}
+
+#[test]
+fn approving_with_no_sandbox_only_saves_it_for_the_next_start() {
+    let f = fixture();
+    let report = approve(&f, "api.example.com").unwrap();
+    assert!(!report.applied);
+    assert_eq!(report.sandbox, SandboxState::None);
+    assert_eq!(plan_hosts(&f), ["api.example.com"]);
+    assert!(!f.deps.engine.calls().iter().any(|c| matches!(c, FakeCall::Create(_))));
+}
+
+#[test]
+fn a_stopped_sandbox_stays_stopped_after_an_approval() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    f.call(Request::Down(DownArgs { project: f.path(), destroy: false })).unwrap();
+    let report = approve(&f, "api.example.com").unwrap();
+    assert!(report.applied);
+    assert_eq!(report.sandbox, SandboxState::Stopped);
+}
+
+#[test]
+fn approving_a_host_already_allowed_touches_nothing() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    approve(&f, "api.example.com").unwrap();
+    let before = f.deps.engine.calls().len();
+    let report = approve(&f, "api.example.com").unwrap();
+    assert!(report.already_allowed);
+    let calls = f.deps.engine.calls();
+    assert!(!calls[before..].iter().any(|c| matches!(c, FakeCall::Destroy(_) | FakeCall::Create(_))));
+}
+
+#[test]
+fn only_one_plain_hostname_can_be_approved() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    for bad in [
+        "*.example.com",
+        "example.com,allow@evil.example",
+        "allow@evil.example",
+        "evil.example:443",
+        "localhost",
+        "",
+        "a b.example.com",
+    ] {
+        assert!(approve(&f, bad).is_err(), "{bad:?}");
+    }
+    assert!(plan_hosts(&f).is_empty());
+    assert!(!f.deps.engine.calls().iter().any(|c| matches!(c, FakeCall::Destroy(_))));
+}
+
+#[test]
+fn a_failed_copy_keeps_the_disk_and_a_second_try_uses_it_rather_than_an_empty_sandbox() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    // The first command stops the services, and the second is the copy.
+    f.deps.engine.push_exec_result(engine::ExecOutput::default());
+    f.deps.engine.push_exec_result(engine::ExecOutput {
+        code: 1,
+        stdout: String::new(),
+        stderr: "no space".to_owned(),
+    });
+    assert!(approve(&f, "api.example.com").is_err());
+    assert!(project_state(&f).join("previous-root.raw").is_file());
+
+    let before = f.deps.engine.calls().len();
+    let report = approve(&f, "api.example.com").unwrap();
+    assert!(report.applied);
+    let calls = f.deps.engine.calls();
+    assert!(
+        !calls[before..].iter().any(|c| matches!(c, FakeCall::KeepRootDisk(..))),
+        "a second try must not take the disk of the empty sandbox"
+    );
+}
+
+#[test]
+fn a_kept_disk_goes_when_the_sandbox_is_destroyed_but_not_when_it_stops() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    approve(&f, "api.example.com").unwrap();
+    let disk = project_state(&f).join("previous-root.raw");
+    f.call(Request::Down(DownArgs { project: f.path(), destroy: false })).unwrap();
+    assert!(disk.is_file(), "the engine needs it for the next start");
+    f.call(Request::Down(DownArgs { project: f.path(), destroy: true })).unwrap();
+    assert!(!disk.exists());
 }

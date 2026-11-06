@@ -31,7 +31,7 @@ fn validate_image(image: &str) -> Result<()> {
 
 /// Network rule tokens are comma-separated and use `@` and `:`, so a hostname with
 /// those characters could add rules of its own. Only plain DNS names pass.
-fn validate_host(host: &str) -> Result<()> {
+pub fn validate_host(host: &str) -> Result<()> {
     let label_ok = |l: &str| {
         !l.is_empty()
             && !l.starts_with('-')
@@ -83,6 +83,9 @@ pub fn doctor() -> Vec<String> {
 pub fn status(name: &SandboxName) -> Vec<String> {
     strings(["status", name.as_str(), "--format", "json"])
 }
+
+/// Where a kept disk appears in a sandbox made to take over from an earlier one.
+pub const PREVIOUS_DISK: &str = "/previous-disk";
 
 pub fn create(spec: &CreateSpec) -> Result<Vec<String>> {
     validate_image(&spec.image)?;
@@ -146,6 +149,15 @@ pub fn create(spec: &CreateSpec) -> Result<Vec<String>> {
         }
         args.push("--secret".to_owned());
         args.push(format!("{}@{}", secret.env, secret.hosts.join(",")));
+    }
+    if let Some(disk) = &spec.previous_disk {
+        // The mount is `SOURCE:DEST`, so a colon in the path would change its meaning.
+        let disk = disk.to_str().filter(|d| !d.contains(':')).ok_or(EngineError::InvalidInput {
+            field: "previous disk",
+            reason: "the path must be text with no colon".to_owned(),
+        })?;
+        args.push("--mount-disk".to_owned());
+        args.push(format!("{disk}:{PREVIOUS_DISK}"));
     }
     for port in &spec.ports {
         if port.0 == 0 {
@@ -324,6 +336,7 @@ mod tests {
             network: NetworkPolicy::DenyAll,
             secrets: vec![],
             ports: vec![HostPort(3000)],
+            previous_disk: None,
         }
     }
 

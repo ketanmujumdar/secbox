@@ -29,6 +29,7 @@ fn styled(weight: Weight, text: String) -> Line {
 /// cannot leave an old list looking current.
 pub fn refresh(client: &dyn DaemonClient, panel: &mut TrafficPanel, path: &str) {
     panel.rows.clear();
+    panel.hosts.clear();
     panel.notes.clear();
     panel.scroll = 0;
     match blocked::ask(client, path, None, READ_LIMIT) {
@@ -46,6 +47,7 @@ pub fn refresh(client: &dyn DaemonClient, panel: &mut TrafficPanel, path: &str) 
                         .push(Line::plain("No blocked hostnames are recorded so far."));
                 }
                 panel.rows = report.events.iter().map(blocked::row).collect();
+                panel.hosts = report.events.iter().map(|event| event.domain.clone()).collect();
             }
         }
         Err(error) => panel.notes.push(failure(&error)),

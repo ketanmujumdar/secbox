@@ -20,6 +20,7 @@
     "allow-import-remote",
     "allow-git",
     "allow-diff",
-    "allow-remove-project"
+    "allow-remove-project",
+    "allow-approve-host"
   ]
 }

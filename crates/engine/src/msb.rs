@@ -454,6 +454,26 @@ impl Engine for MsbEngine {
             })
     }
 
+    fn keep_root_disk(&self, name: &SandboxName, dest: &Path) -> Result<()> {
+        // Named here because the CLI has no command for it. On a Mac this copy
+        // shares its blocks with the original, so it is instant and costs little.
+        let disk = self.home.join("sandboxes").join(name.as_str()).join("rootfs.raw");
+        let spawn_error = |e: std::io::Error| EngineError::Spawn {
+            operation: "keep the sandbox's disk".to_owned(),
+            reason: e.kind().to_string(),
+        };
+        let meta = std::fs::symlink_metadata(&disk).map_err(spawn_error)?;
+        if !meta.is_file() {
+            return Err(EngineError::InvalidInput {
+                field: "root disk",
+                reason: "the sandbox has no plain disk file to keep".to_owned(),
+            });
+        }
+        let _ = std::fs::remove_file(dest);
+        std::fs::copy(&disk, dest).map_err(spawn_error)?;
+        Ok(())
+    }
+
     fn exec_detached(&self, name: &SandboxName, request: &ExecRequest) -> Result<String> {
         let args = argv::exec_detached(name, request)?;
         self.require_running(name)?;
@@ -740,6 +760,7 @@ mod tests {
             network: NetworkPolicy::DenyAll,
             secrets: vec![],
             ports: vec![],
+            previous_disk: None,
         }
     }
 

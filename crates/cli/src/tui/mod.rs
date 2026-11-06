@@ -78,6 +78,8 @@ pub fn run(deps: &mut Deps) -> i32 {
     let mut model = Model::default();
     let mut pending: Option<Pending> = None;
     let mut confirming: Option<bool> = None;
+    // A blocked hostname waiting to be approved.
+    let mut approving: Option<String> = None;
     // A box that only reports, closed by any key.
     let mut notice = false;
     // The log being followed, if the Logs tab is showing one.
@@ -107,7 +109,7 @@ pub fn run(deps: &mut Deps) -> i32 {
         }
         // A question is answered by a key pressed after it was seen, never by
         // one already on its way, such as from a paste.
-        if confirming.is_some() || pending.is_some() || notice {
+        if confirming.is_some() || approving.is_some() || pending.is_some() || notice {
             queued.clear();
         }
         if queued.is_empty() {
@@ -155,7 +157,7 @@ pub fn run(deps: &mut Deps) -> i32 {
             continue;
         }
 
-        if confirming.is_some() || pending.is_some() {
+        if confirming.is_some() || approving.is_some() || pending.is_some() {
             match view::answer(&bytes) {
                 Answer::Yes if model.dialog.as_ref().is_some_and(|d| !d.seen_all) => {
                     model.message = Some("Read all of it first: down shows the rest.".to_owned());
@@ -164,6 +166,8 @@ pub fn run(deps: &mut Deps) -> i32 {
                     model.dialog = None;
                     if let Some(destroy) = confirming.take() {
                         stop(deps, &mut model, destroy);
+                    } else if let Some(host) = approving.take() {
+                        approve(deps, &mut model, &host);
                     } else if let Some(waiting) = pending.take() {
                         start(deps, &mut model, waiting);
                     }
@@ -180,6 +184,7 @@ pub fn run(deps: &mut Deps) -> i32 {
                         .to_owned(),
                     );
                     confirming = None;
+                    approving = None;
                 }
                 moved @ (Answer::Up | Answer::Down | Answer::PageUp | Answer::PageDown) => {
                     let delta = match moved {
@@ -300,10 +305,31 @@ pub fn run(deps: &mut Deps) -> i32 {
                 model.message = None;
                 model.new_project = Some(new_project_page(deps));
             }
+            Key::Approve if tab == Tab::Network => {
+                // The newest is last, and the scroll counts back from it.
+                let shown = model.traffic.hosts.len().checked_sub(1 + model.traffic.scroll);
+                if let Some(host) = shown.and_then(|at| model.traffic.hosts.get(at)).cloned() {
+                    model.dialog = Some(Dialog::question(
+                        "Let the sandbox reach this host?",
+                        vec![
+                            Line::plain(crate::ui::esc(&host)),
+                            Line::plain(""),
+                            Line::styled("Everything in the sandbox can then reach it,", Style::WindowAlert),
+                            Line::styled("including any service holding a secret.", Style::WindowAlert),
+                            Line::plain("What runs inside chooses which names it looks up, so a name can"),
+                            Line::plain("itself be data trying to get out. Approve only one you recognise."),
+                            Line::plain(""),
+                            Line::plain("Its data is kept. Its services restart."),
+                        ],
+                    ));
+                    approving = Some(host);
+                }
+            }
             Key::Help => model.message = Some(view::help_for(&model).to_owned()),
             Key::PageUp
             | Key::PageDown
             | Key::Follow
+            | Key::Approve
             | Key::PreviousService
             | Key::NextService
             | Key::Start
@@ -949,6 +975,32 @@ fn start(deps: &mut Deps, model: &mut Model, pending: Pending) {
     let said = model.message.take();
     load_projects(deps, model);
     model.message = said;
+}
+
+fn approve(deps: &mut Deps, model: &mut Model, host: &str) {
+    let Some(row) = model.selected_row().cloned() else {
+        return;
+    };
+    model.busy = Some("Approving it. Its services are restarting.".to_owned());
+    draw(deps, model);
+    let result = deps.daemon.call(
+        Request::ApproveHost(proto::ApproveHostArgs {
+            project: row.path,
+            host: host.to_owned(),
+        }),
+        &mut |_, _| {},
+    );
+    model.busy = None;
+    model.message = Some(match result {
+        Ok(Reply::ApproveHost(report)) if report.already_allowed => "It was already allowed. Nothing changed.".to_owned(),
+        Ok(Reply::ApproveHost(report)) if report.applied => {
+            format!("Allowed now. Its data was kept, and its services restarted in {}s.", report.seconds)
+        }
+        Ok(Reply::ApproveHost(_)) => "Approved. It applies when this project starts.".to_owned(),
+        Ok(_) => "The daemon answered something else.".to_owned(),
+        Err(error) => logs::failure(&error).text,
+    });
+    load_projects(deps, model);
 }
 
 fn stop(deps: &mut Deps, model: &mut Model, destroy: bool) {

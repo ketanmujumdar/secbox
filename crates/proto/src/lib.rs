@@ -75,6 +75,10 @@ pub enum Request {
     /// Remove a project from this machine: its sandbox, its records and, for an
     /// imported project, the daemon's copy. Never a folder of the person's own.
     Remove(ProjectArgs),
+    /// Let a project's sandbox reach one more hostname, because a person said so.
+    /// A sandbox has no way to send this: the socket is on the host, and no agent
+    /// tool reaches it.
+    ApproveHost(ApproveHostArgs),
     /// Report on a project's sandbox.
     Status(ProjectArgs),
     /// Read what a project's services have logged. Never starts anything.
@@ -326,6 +330,13 @@ pub struct DownArgs {
     pub destroy: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApproveHostArgs {
+    pub project: String,
+    pub host: String,
+}
+
 /// What the daemon writes back, in order, until [`Frame::Done`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "frame", rename_all = "snake_case", deny_unknown_fields)]
@@ -362,6 +373,7 @@ pub enum Reply {
     Up(UpReport),
     Down(DownReport),
     Remove(RemoveReport),
+    ApproveHost(ApproveHostReport),
     Status(StatusReport),
     Logs(LogsReport),
     Terminal(TerminalReport),
@@ -756,6 +768,21 @@ pub struct DownReport {
     pub project_id: String,
     pub sandbox: SandboxState,
     pub destroyed: bool,
+}
+
+/// A hostname a person approved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApproveHostReport {
+    /// As stored: lowercase, with no trailing dot.
+    pub host: String,
+    /// What the sandbox is now.
+    pub sandbox: SandboxState,
+    /// The sandbox was replaced, so the host is reachable now. If not, there is
+    /// no sandbox yet, or the host was already allowed.
+    pub applied: bool,
+    pub already_allowed: bool,
+    pub seconds: u64,
 }
 
 /// What removing a project took with it.

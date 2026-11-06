@@ -147,6 +147,9 @@ pub struct CreateSpec {
     pub network: NetworkPolicy,
     pub secrets: Vec<SecretRule>,
     pub ports: Vec<HostPort>,
+    /// A disk kept from an earlier sandbox, mounted at [`crate::argv::PREVIOUS_DISK`]
+    /// so its data can be copied in. It must stay in place for the sandbox's life.
+    pub previous_disk: Option<std::path::PathBuf>,
 }
 
 /// Sandbox state as far as the engine can tell.

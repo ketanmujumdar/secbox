@@ -1999,3 +1999,16 @@ fn new_with_a_remote_and_no_terminal_fetches_and_reviews_but_starts_nothing() {
     assert_eq!(removed.code, 0, "{}", removed.all());
     assert!(removed.out.contains("The imported copy is gone"), "{}", removed.out);
 }
+
+#[test]
+fn net_allow_replaces_the_sandbox_and_says_the_data_was_kept() {
+    let w = relay_world();
+    let done = w.h.run(&["net", "allow", "api.example.com", "--project", REMOTE], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(done.all().contains("api.example.com is allowed now"), "{}", done.all());
+    assert!(done.all().contains("with its data kept"), "{}", done.all());
+    let again = w.h.run(&["net", "allow", "api.example.com", "--project", REMOTE], "");
+    assert!(again.all().contains("already allowed"), "{}", again.all());
+    let bad = w.h.run(&["net", "allow", "*.example.com", "--project", REMOTE], "");
+    assert_ne!(bad.code, 0, "{}", bad.all());
+}

@@ -472,6 +472,27 @@ pub fn up(
     }
 }
 
+pub fn approve_host(client: &Client, path: &str, host: &str) -> Result<String, CallError> {
+    let reply = client.call(
+        Request::ApproveHost(proto::ApproveHostArgs {
+            project: path.to_owned(),
+            host: host.to_owned(),
+        }),
+        None,
+    )?;
+    let Reply::ApproveHost(report) = reply else {
+        return Err(wrong_reply());
+    };
+    let host = text::escape(&report.host);
+    Ok(if report.already_allowed {
+        format!("{host} was already allowed. Nothing changed.")
+    } else if report.applied {
+        format!("{host} is allowed now. Its data was kept, and its services restarted in {}s.", report.seconds)
+    } else {
+        format!("{host} is approved, and applies when this project starts.")
+    })
+}
+
 pub fn remove(client: &Client, path: &str) -> Result<String, CallError> {
     let reply = client.call(
         Request::Remove(ProjectArgs {

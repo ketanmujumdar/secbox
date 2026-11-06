@@ -20,6 +20,7 @@ pub enum FakeCall {
     Start(SandboxName),
     Stop(SandboxName),
     Destroy(SandboxName),
+    KeepRootDisk(SandboxName, PathBuf),
     Status(SandboxName),
     Exec(SandboxName, ExecRequest),
     ExecStream(SandboxName, ExecRequest),
@@ -310,6 +311,21 @@ impl Engine for FakeEngine {
         Ok(())
     }
 
+    fn keep_root_disk(&self, name: &SandboxName, dest: &Path) -> Result<()> {
+        let state = self.begin(FakeCall::KeepRootDisk(name.clone(), dest.to_path_buf()))?;
+        let sandbox = state.boxes.get(name).ok_or_else(|| not_found(name))?;
+        if sandbox.running {
+            return Err(EngineError::InvalidInput {
+                field: "root disk",
+                reason: "a running sandbox's disk cannot be kept".to_owned(),
+            });
+        }
+        std::fs::write(dest, b"fake disk").map_err(|e| EngineError::Spawn {
+            operation: "fake keep".to_owned(),
+            reason: e.kind().to_string(),
+        })
+    }
+
     fn destroy(&self, name: &SandboxName) -> Result<()> {
         let mut state = self.begin(FakeCall::Destroy(name.clone()))?;
         state.boxes.remove(name).ok_or_else(|| not_found(name))?;
@@ -557,6 +573,7 @@ mod tests {
             network: NetworkPolicy::DenyAll,
             secrets: vec![],
             ports: vec![],
+            previous_disk: None,
         }
     }
 

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-approve-host"
+description = "Enables the approve_host command without any pre-configured scope."
+commands.allow = ["approve_host"]
+
+[[permission]]
+identifier = "deny-approve-host"
+description = "Denies the approve_host command without any pre-configured scope."
+commands.deny = ["approve_host"]

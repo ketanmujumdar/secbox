@@ -1047,9 +1047,44 @@
       tr.appendChild(el('td', event.time, 'mono muted'));
       tr.appendChild(el('td', event.count, 'num'));
       tr.appendChild(el('td', event.domain, 'mono'));
+      const cell = el('td', '', 'num');
+      const approve = el('button', 'Approve', 'small');
+      approve.disabled = state.busy;
+      approve.addEventListener('click', () => approveHost(event.domain));
+      cell.appendChild(approve);
+      tr.appendChild(cell);
       rows.appendChild(tr);
     }
     renderBlockedCard();
+  }
+
+  async function approveHost(host) {
+    const row = selectedRow();
+    if (!row) return;
+    const agreed = await ask({
+      title: 'Let ' + row.name + ' reach this host?',
+      okText: 'Approve',
+      build: (body) => {
+        body.appendChild(el('p', host, 'mono'));
+        body.appendChild(el('p', 'Everything in the sandbox will be able to reach it, including any service holding a secret. What runs inside chooses which names it looks up, so a name can itself be data trying to get out. Approve only a name you recognise.', 'alert'));
+        body.appendChild(el('p', 'Its data is kept. Its services restart, which takes a moment.', 'muted'));
+      },
+    });
+    if (!agreed) {
+      banner('Nothing was changed.', 'info');
+      return;
+    }
+    stopLogs();
+    busy('Approving ' + host + '. Its services are restarting.');
+    try {
+      banner(await invoke('approve_host', { project: row.path, host }), 'ok');
+    } catch (error) {
+      banner('Could not approve it: ' + errorText(error));
+    }
+    busy('');
+    await refreshProjects();
+    await loadStatus();
+    await readTraffic();
   }
 
   $('traffic-read').addEventListener('click', readTraffic);

@@ -106,7 +106,7 @@ pub fn up(
     progress.step("sandbox", None);
     let fresh = matches!(state, SandboxState::None);
     match state {
-        SandboxState::None => create(service, project, &plan, &ports, args)?,
+        SandboxState::None => create(service, project, &plan, &ports, args, None)?,
         SandboxState::Stopped => {
             service
                 .deps()
@@ -241,12 +241,13 @@ fn approved_ports(
     Ok(approved)
 }
 
-fn create(
+pub(crate) fn create(
     service: &Service,
     project: &Project,
     plan: &PlanReport,
     ports: &[u16],
     args: &UpArgs,
+    previous_disk: Option<std::path::PathBuf>,
 ) -> Result<(), ApiError> {
     // One policy has to cover the sandbox's whole life: the spike did not
     // establish that it can change between build and run, so the build hosts
@@ -290,6 +291,7 @@ fn create(
         // while that question is open, so nothing is bound here yet.
         secrets: Vec::new(),
         ports: ports.iter().map(|p| HostPort(*p)).collect(),
+        previous_disk,
     };
     service
         .deps()
@@ -435,7 +437,7 @@ pub(crate) fn tempdir_in_state(service: &Service) -> Result<tempfile::TempDir, A
 }
 
 /// Starts the Docker daemon inside the guest and waits for it to answer.
-fn start_docker(service: &Service, project: &Project) -> Result<(), ApiError> {
+pub(crate) fn start_docker(service: &Service, project: &Project) -> Result<(), ApiError> {
     let engine = service.deps().engine();
     if docker_ready(service, project) {
         return Ok(());
@@ -493,7 +495,7 @@ pub(crate) fn compose_command(plan: &PlanReport, delivered: &Delivered) -> Vec<S
     args
 }
 
-fn compose_up(
+pub(crate) fn compose_up(
     service: &Service,
     project: &Project,
     plan: &PlanReport,
@@ -534,7 +536,7 @@ fn compose_up(
 
 /// Asks Compose what is running. The answer comes from inside the sandbox, so
 /// it is shown and never believed.
-fn compose_services(service: &Service, project: &Project) -> Result<Vec<ServiceState>, ApiError> {
+pub(crate) fn compose_services(service: &Service, project: &Project) -> Result<Vec<ServiceState>, ApiError> {
     let mut request = ExecRequest::new(["docker", "compose", "ps", "-a", "--format", "json"]);
     request.workdir = Some(GuestPath::new(WORK_DIR).map_err(|e| internal(e.to_string()))?);
     let Ok(out) = service.deps().engine().exec(&project.sandbox, &request) else {
@@ -610,6 +612,7 @@ pub fn down(
             .map_err(|e| engine_error(e.to_string()))?;
         SandboxRecord::remove(&project.dir).map_err(internal)?;
         crate::diff::forget_baseline(project);
+        crate::netallow::forget_kept_disk(project);
         service.record(
             audit::entry(service.deps().now_unix(), audit::Action::SandboxDestroyed)
                 .project(project.id.as_str()),

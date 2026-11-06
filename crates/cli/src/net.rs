@@ -24,6 +24,8 @@ enum NetCommand {
     Check(CheckArgs),
     /// Show blocked hostnames recorded for a project. Raw IP, metadata and UDP attempts are not recorded
     Blocked(crate::blocked::BlockedArgsCli),
+    /// Let a project's sandbox reach one more hostname. Its data is kept, and its services restart
+    Allow(crate::vm::AllowArgsCli),
 }
 
 #[derive(Args)]
@@ -40,6 +42,7 @@ pub fn run(args: &NetArgs, deps: &mut Deps) -> i32 {
     match &args.command {
         NetCommand::Check(args) => check(args, deps),
         NetCommand::Blocked(args) => crate::blocked::run(args, deps),
+        NetCommand::Allow(args) => crate::vm::allow(args, deps),
     }
 }
 

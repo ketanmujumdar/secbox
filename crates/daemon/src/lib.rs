@@ -20,6 +20,7 @@ pub mod debug;
 pub mod diff;
 pub mod gitref;
 pub mod gitrelay;
+pub mod netallow;
 pub mod mask;
 pub mod plan;
 pub mod remote;
@@ -169,6 +170,10 @@ impl Service {
             Request::Remove(args) => {
                 let project = self.known(&args.project)?;
                 run::remove(self, &project, progress).map(Reply::Remove)
+            }
+            Request::ApproveHost(args) => {
+                let project = self.open(&args.project)?;
+                netallow::approve(self, &project, &args.host, progress).map(Reply::ApproveHost)
             }
             Request::Status(args) => {
                 let project = self.open(&args.project)?;

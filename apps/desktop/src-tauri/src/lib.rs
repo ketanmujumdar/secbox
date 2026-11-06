@@ -363,6 +363,19 @@ async fn destroy(app: AppHandle, project: String, state: State<'_, Arc<AppState>
 }
 
 #[tauri::command]
+async fn approve_host(
+    app: AppHandle,
+    project: String,
+    host: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let state = Arc::clone(&state);
+    let result = blocking(move || ops::approve_host(&state.client, &project, &host).map_err(message)).await;
+    refresh_tray(&app);
+    result
+}
+
+#[tauri::command]
 async fn remove_project(app: AppHandle, project: String, state: State<'_, Arc<AppState>>) -> Result<String, String> {
     let state = Arc::clone(&state);
     let result = blocking(move || ops::remove(&state.client, &project).map_err(message)).await;
@@ -631,6 +644,7 @@ pub fn run() {
             down,
             destroy,
             remove_project,
+            approve_host,
             logs,
             logs_stop,
             blocked,

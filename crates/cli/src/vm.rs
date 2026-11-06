@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use clap::Args;
 use proto::{
-    BlockedRecording, DownArgs, PlanArgs, PlanReport, ProjectArgs, Reply, Request, SandboxState, Source, UpArgs,
+    ApproveHostArgs, BlockedRecording, DownArgs, PlanArgs, PlanReport, ProjectArgs, Reply, Request, SandboxState, Source, UpArgs,
 };
 
 use crate::ui::{cell, esc, human_bytes, paint, Tone};
@@ -48,6 +48,15 @@ pub struct DownArgsCli {
     /// Remove the sandbox and everything in it, rather than stopping it
     #[arg(long)]
     destroy: bool,
+}
+
+#[derive(Args)]
+pub struct AllowArgsCli {
+    /// The exact hostname, such as api.example.com. No patterns
+    host: String,
+    /// Project folder or SSH remote [default: the current folder]
+    #[arg(long)]
+    project: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -245,6 +254,34 @@ pub fn down(args: &DownArgsCli, deps: &mut Deps) -> i32 {
                 "Stopping is abrupt for what runs inside, so a database may recover on the next start."
             );
         }
+    }
+    exit::OK
+}
+
+pub fn allow(args: &AllowArgsCli, deps: &mut Deps) -> i32 {
+    let Some(root) = resolve(args.project.as_deref(), "net allow", deps) else {
+        return exit::FAILED;
+    };
+    let report = match request(
+        deps,
+        Request::ApproveHost(ApproveHostArgs {
+            project: root.to_string_lossy().into_owned(),
+            host: args.host.clone(),
+        }),
+        "net allow",
+    ) {
+        Ok(Reply::ApproveHost(report)) => report,
+        Ok(_) => return unexpected("net allow", deps),
+        Err(code) => return code,
+    };
+    let host = esc(&report.host);
+    if report.already_allowed {
+        say!(deps, "{host} was already allowed. Nothing changed.");
+    } else if report.applied {
+        say!(deps, "{host} is allowed now. The sandbox was replaced in {}s, with its data kept.", report.seconds);
+        say!(deps, "Everything in the sandbox can reach it, including any service holding a secret.");
+    } else {
+        say!(deps, "{host} is approved, and applies when this project starts.");
     }
     exit::OK
 }

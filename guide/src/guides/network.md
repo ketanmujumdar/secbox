@@ -2,6 +2,26 @@
 
 A sandbox's network is deny-by-default. Today the only rule on real traffic is the engine's **hostname allowlist**. secbox can also explain a fuller policy, with HTTP methods, ports and paths, but nothing enforces that policy yet.
 
+## Approving a host
+
+```sh
+secbox net blocked                 # what was refused
+secbox net allow api.example.com   # let the sandbox reach it
+```
+
+In the desktop app, press **Approve** on a row of Blocked traffic. In the terminal interface, press `n` for Network, then `a` for the bottom row.
+
+Name one exact host, with no patterns. The approval is stored on your machine, never in the project, and the sandbox has no way to ask for it itself.
+
+**Everything in the sandbox can then reach that host**, including any service holding a secret. What runs inside chooses which names it looks up, so a name can itself be data trying to get out. Approve only names you recognise.
+
+The engine cannot change the rules of an existing sandbox, so secbox replaces it: it stops the services, keeps the disk, creates a new sandbox with the new rules, copies the data across and starts the services again. This takes about half a minute on the small project it was measured on.
+
+- **Kept:** `/work`, Docker's images, containers and volumes, and `/root`, `/home`, `/opt`, `/srv` and `/usr/local`.
+- **Not kept:** anything in memory, or packages installed in the VM itself. Services restart.
+- If a step fails, the data stays in the kept disk, and approving again carries on from it.
+- The kept disk stays in the project's state folder until the sandbox is destroyed.
+
 ## What is enforced today
 
 When the daemon creates a sandbox, it gives the engine the list of hostnames the project may reach. Lookups for any other name are refused. Raw IP addresses, the cloud metadata address (`169.254.169.254`) and UDP were also blocked when tested.
@@ -107,4 +127,3 @@ The record is the engine's log, read on the host by the daemon. In testing the g
 
 - A gateway that enforces the policy above, including methods and paths, and records every decision on the host.
 - `secbox net log`, to show allowed requests too.
-- `secbox net allow`, to add a host with an approval prompt the sandbox cannot click.

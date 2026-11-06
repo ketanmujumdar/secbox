@@ -86,6 +86,7 @@ fn full_lifecycle_against_a_real_vm() {
         network: NetworkPolicy::DenyAll,
         secrets: vec![],
         ports: vec![],
+        previous_disk: None,
     })
     .unwrap();
     assert_eq!(e.status(&name).unwrap(), SandboxStatus::Running);

@@ -71,6 +71,16 @@ pub trait Engine: Send + Sync {
             reason: "this engine cannot relay a command's input and output",
         })
     }
+    /// Copies a stopped sandbox's root disk to a host file, so a new sandbox can
+    /// read it. The file is only ever copied on the host, never parsed. It is what
+    /// lets a sandbox's network rules change, because the engine cannot change them
+    /// on an existing sandbox, and its restore cannot set everything `create` sets.
+    fn keep_root_disk(&self, _name: &SandboxName, _dest: &Path) -> Result<()> {
+        Err(EngineError::NotSupported {
+            operation: "keep_root_disk",
+            reason: "this engine cannot keep a sandbox's disk",
+        })
+    }
     /// Starts a command that keeps running, and returns its job ID.
     fn exec_detached(&self, name: &SandboxName, request: &ExecRequest) -> Result<String>;
     /// Copies a host file or directory into a running sandbox.

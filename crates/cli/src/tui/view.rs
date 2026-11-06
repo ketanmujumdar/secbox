@@ -462,6 +462,8 @@ pub struct TrafficPanel {
     pub notes: Vec<Line>,
     /// One blocked hostname per row, the newest last.
     pub rows: Vec<String>,
+    /// The hostname on each row, unformatted, for approving one.
+    pub hosts: Vec<String>,
     /// How many rows back from the newest the view has been scrolled.
     pub scroll: usize,
 }
@@ -672,7 +674,13 @@ pub fn keys_for(model: &Model) -> Vec<KeyLabel> {
             }
             keys.push(("r", "Refresh"));
         }
-        Tab::Network => keys.extend([("↑↓", "Scroll"), ("r", "Refresh")]),
+        Tab::Network => {
+            keys.push(("↑↓", "Scroll"));
+            if !model.traffic.hosts.is_empty() {
+                keys.push(("a", "Approve"));
+            }
+            keys.push(("r", "Refresh"));
+        }
         Tab::Changes => keys.extend([
             ("↑↓", "Scroll"),
             ("r", "Compare"),
@@ -693,7 +701,7 @@ pub fn help_for(model: &Model) -> &'static str {
     match model.tab {
         Tab::Overview => "Up and down choose a project. u starts it after showing the plan, S stops and x destroys after asking, e opens a shell, r reads again. Letters on the tabs open them, Tab moves on, + or N adds a project, q quits.",
         Tab::Logs => "New lines follow by themselves. Left and right choose a service or All. Up and PgUp scroll back and pause; f or End follows again. e opens a shell in the chosen service. r reads again.",
-        Tab::Network => "Hostnames this sandbox was refused. Up, down, PgUp and PgDn scroll. r reads the newest.",
+        Tab::Network => "Hostnames this sandbox was refused. Up, down, PgUp and PgDn scroll. a approves the bottom row's hostname, keeping the sandbox's data. r reads the newest.",
         Tab::Changes => "r compares the sandbox's files with the snapshot it started from, inside the running sandbox. Flags come first, in red. Up, down, PgUp and PgDn scroll. p pulls and P pushes the current branch, with your SSH key on this machine. Nothing is copied out.",
         Tab::Secrets => "Names and where they go, never values. Up and down choose the project, r reads again. Change them with the secrets command.",
     }
@@ -1987,6 +1995,7 @@ pub enum Key {
     Start,
     Stop,
     Destroy,
+    Approve,
     Help,
     PreviousService,
     NextService,
@@ -2028,6 +2037,7 @@ pub fn key(bytes: &[u8]) -> Key {
         b"u" | b"\x1bOQ" => Key::Start,
         b"S" | b"\x1bOR" => Key::Stop,
         b"x" | b"X" => Key::Destroy,
+        b"a" => Key::Approve,
         b"e" | b"E" => Key::Shell,
         b"p" => Key::Pull,
         b"P" => Key::Push,
