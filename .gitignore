@@ -4,3 +4,6 @@ target/
 .DS_Store
 .env
 guide/book/
+
+# Screenshots written by the desktop UI preview harness
+apps/desktop/ui-preview/ui-shots/
