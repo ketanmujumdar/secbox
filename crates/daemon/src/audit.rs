@@ -44,6 +44,9 @@ pub enum Action {
     RemoteFetched,
     /// A pull ran through the relay.
     GitPulled,
+    /// A Git command typed by a person or an agent ran in a sandbox. The
+    /// command's name only, never its arguments, which can hold a message.
+    GitRan,
     /// A push changed this branch, from one commit to another.
     GitPushed,
     /// A push was stopped before anything was sent, and why.

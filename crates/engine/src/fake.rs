@@ -539,6 +539,7 @@ fn run_locally(root: &Path, request: &ExecRequest, input: &[u8]) -> Result<ExecO
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root)
+        .envs(request.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .current_dir(root)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

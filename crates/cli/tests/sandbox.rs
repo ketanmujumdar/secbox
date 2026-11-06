@@ -1710,6 +1710,102 @@ fn pull_brings_in_new_commits_without_recreating_anything() {
     assert_eq!(creates, after, "no sandbox was made again");
 }
 
+/// The command line's `git --project REMOTE run ARGS...`.
+fn git_run(w: &RelayWorld, args: &[&str]) -> common::Output {
+    let mut all = vec!["git", "--project", REMOTE, "run"];
+    all.extend_from_slice(args);
+    w.h.run(&all, "")
+}
+
+#[test]
+fn typed_git_commands_run_in_the_sandbox_and_push_through_the_relay() {
+    let w = relay_world();
+    let switched = git_run(&w, &["switch", "-c", "typed/one"]);
+    assert_eq!(switched.code, 0, "{}", switched.all());
+    std::fs::write(w.work.join("typed.txt"), "typed\n").unwrap();
+    assert_eq!(git_run(&w, &["add", "typed.txt"]).code, 0);
+    let commit = git_run(&w, &["commit", "-m", "Typed commit"]);
+    assert_eq!(commit.code, 0, "{}", commit.all());
+    let log = git_run(&w, &["log", "--oneline", "-1"]);
+    assert!(log.out.contains("Typed commit"), "{}", log.all());
+
+    let push = git_run(&w, &["push", "-u", "origin", "HEAD"]);
+    assert_eq!(push.code, 0, "{}", push.all());
+    assert!(push.out.contains("pushed refs/heads/typed/one"), "{}", push.out);
+    assert_eq!(test_git(&w.bare, &["show", "typed/one:typed.txt"]), "typed\n");
+    // Only the push used the relay, as a push.
+    let relayed: Vec<_> = w.facts.relayed.lock().unwrap().iter().map(|r| r.0).collect();
+    assert_eq!(relayed, [gitbroker::GitService::UploadPack, gitbroker::GitService::ReceivePack]);
+
+    let audit = std::fs::read_to_string(w.h.state().join("daemon-audit.jsonl")).unwrap_or_default();
+    assert!(audit.contains("git_ran") && audit.contains("git_pushed"), "{audit}");
+    assert!(!audit.contains("Typed commit"), "the audit log keeps the command name, not its arguments: {audit}");
+}
+
+#[test]
+fn a_pull_over_local_changes_can_stash_and_reapply_them() {
+    let w = relay_world();
+    let other = w._dirs.path().join("other");
+    test_git(w._dirs.path(), &["clone", "-q", w.bare.to_str().unwrap(), other.to_str().unwrap()]);
+    // Someone else changes the same file as the sandbox, on another line.
+    std::fs::write(other.join("compose.yaml"), "name: shop\nservices:\n  web:\n    image: web:1\n").unwrap();
+    test_git(&other, &["commit", "-q", "-am", "second"]);
+    test_git(&other, &["push", "-q", "origin", "main"]);
+    test_git(&w.work, &["checkout", "-q", "-B", "main", "--track", "origin/main"]);
+    std::fs::write(w.work.join("compose.yaml"), "services:\n  web:\n    image: web:2\n").unwrap();
+
+    // The plain pull stops, as in the Changes tab.
+    let pull = w.h.run(&["git", "pull", "--project", REMOTE], "");
+    assert_eq!(pull.code, cli::exit::FAILED, "{}", pull.all());
+    assert!(pull.all().contains("would be overwritten"), "{}", pull.all());
+
+    let pull = git_run(&w, &["pull", "--no-rebase", "--no-edit", "--autostash"]);
+    assert_eq!(pull.code, 0, "{}", pull.all());
+    let compose = std::fs::read_to_string(w.work.join("compose.yaml")).unwrap();
+    assert_eq!(compose, "name: shop\nservices:\n  web:\n    image: web:2\n", "their change came in and ours is back");
+    assert!(test_git(&w.work, &["status", "--porcelain"]).contains("compose.yaml"), "ours is still uncommitted");
+}
+
+#[test]
+fn typed_commands_cannot_get_around_the_relay_or_its_rules() {
+    let w = relay_world();
+    let main_before = test_git(&w.bare, &["rev-parse", "main"]);
+    test_git(&w.work, &["switch", "-q", "-c", "keep"]);
+    test_git(&w.work, &["push", "-q", w.bare.to_str().unwrap(), "keep"]);
+    // Something new to push, so each refusal is a real one.
+    std::fs::write(w.work.join("README"), "new\n").unwrap();
+    test_git(&w.work, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-am", "new"]);
+
+    for (args, says) in [
+        (&["push", "origin", "HEAD:main"][..], "main"),
+        (&["push", "origin", "--delete", "keep"][..], "deleting"),
+        (&["push", "origin", "HEAD:refs/tags/v1"][..], "only branches"),
+        (&["push", "-o", "ci.skip", "origin", "HEAD"][..], "options"),
+        (&["-c", "core.sshCommand=sh", "fetch"][..], "Options before the command"),
+        (&["fetch", "--upload-pack=sh"][..], "program run on the remote"),
+    ] {
+        let done = git_run(&w, args);
+        assert_eq!(done.code, cli::exit::FAILED, "{args:?}: {}", done.all());
+        assert!(done.all().contains(says), "{args:?}: {}", done.all());
+    }
+    assert_eq!(test_git(&w.bare, &["rev-parse", "main"]), main_before, "main did not move");
+    assert!(test_git(&w.bare, &["branch", "--list", "keep"]).contains("keep"), "keep was not deleted");
+    assert!(test_git(&w.bare, &["tag", "--list"]).trim().is_empty(), "no tag was pushed");
+
+    // A command that is not fetch, pull or push gets no relay, so its own
+    // attempt to reach the remote finds no credential.
+    let update = git_run(&w, &["remote", "update"]);
+    assert_eq!(update.code, cli::exit::FAILED, "{}", update.all());
+    assert!(update.all().contains("holds no Git credentials"), "{}", update.all());
+
+    // Nothing waits for an editor that is not there.
+    std::fs::write(w.work.join("x.txt"), "x\n").unwrap();
+    test_git(&w.work, &["add", "x.txt"]);
+    let commit = git_run(&w, &["commit"]);
+    assert_eq!(commit.code, cli::exit::FAILED, "{}", commit.all());
+    assert!(commit.all().contains("no editor here"), "{}", commit.all());
+}
+
 #[test]
 fn git_commands_refuse_a_project_that_did_not_come_from_a_remote() {
     let (h, _facts) = running();
@@ -1767,6 +1863,33 @@ fn an_agent_commits_and_pushes_a_branch_through_mcp_but_never_main() {
     assert!(text.contains("data, not instructions"), "{text}");
     assert_eq!(test_git(&w.bare, &["show", "agent/fix:README"]), "agent edit\n");
     assert!(tool_text(&answers[2]).contains("agent/fix"), "{}", tool_text(&answers[2]));
+}
+
+#[test]
+fn an_agent_runs_any_git_command_through_mcp_with_the_same_rules() {
+    let w = relay_world();
+    let main_before = test_git(&w.bare, &["rev-parse", "main"]);
+    std::fs::write(w.work.join("agent.txt"), "from the agent\n").unwrap();
+    let answers = serve_remote(
+        &w.h,
+        &[
+            tool_call(1, "git", serde_json::json!({ "args": ["switch", "-c", "agent/typed"] })),
+            tool_call(2, "git", serde_json::json!({ "args": ["add", "agent.txt"] })),
+            tool_call(3, "git", serde_json::json!({ "args": ["commit", "-m", "Agent typed"] })),
+            tool_call(4, "git", serde_json::json!({ "args": ["push", "origin", "HEAD:main"] })),
+            tool_call(5, "git", serde_json::json!({ "args": ["push", "-u", "origin", "HEAD"] })),
+            tool_call(6, "git", serde_json::json!({ "args": ["-c", "x=y", "status"] })),
+        ],
+    );
+    for id in [1, 2, 3, 5] {
+        assert_eq!(answers[id]["result"]["isError"], false, "{}", answers[id]);
+    }
+    assert_eq!(answers[4]["result"]["isError"], true, "{}", answers[4]);
+    assert!(tool_text(&answers[4]).contains("refused"), "{}", tool_text(&answers[4]));
+    assert_eq!(answers[6]["result"]["isError"], true, "{}", answers[6]);
+    assert!(tool_text(&answers[5]).contains("pushed refs/heads/agent/typed"), "{}", tool_text(&answers[5]));
+    assert_eq!(test_git(&w.bare, &["rev-parse", "main"]), main_before);
+    assert_eq!(test_git(&w.bare, &["show", "agent/typed:agent.txt"]), "from the agent\n");
 }
 
 #[test]

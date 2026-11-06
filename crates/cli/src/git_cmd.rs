@@ -39,6 +39,13 @@ enum GitOpCli {
     },
     /// Push the current branch to the remote, with your SSH key on this machine. Never main or master
     Push,
+    /// Run any Git command in the sandbox's clone, such as: run stash, run switch -c fix, run log --oneline.
+    /// fetch, pull and push use your SSH key on this machine through the relay; nothing else reaches the remote
+    Run {
+        /// The command and its arguments, without the leading git
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true, value_name = "GIT_ARGS")]
+        args: Vec<String>,
+    },
 }
 
 pub fn run(args: &GitArgsCli, deps: &mut Deps) -> i32 {
@@ -57,6 +64,7 @@ pub fn run(args: &GitArgsCli, deps: &mut Deps) -> i32 {
             message: message.clone(),
             paths: paths.clone(),
         },
+        GitOpCli::Run { args } => GitOp::Run { args: args.clone() },
     };
     match call(&project, op, deps) {
         Ok(report) => {

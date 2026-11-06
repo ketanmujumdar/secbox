@@ -48,9 +48,9 @@ Every other command takes the remote in place of a folder, and only looks it up:
 
 A clone holds everything ever committed. Unlike the snapshot of a folder project, which leaves `.env` and other likely secrets out, a clone includes any secret committed to the repository at any point in its history. That is what having the real history means.
 
-## Pull, commit and push
+## Pull, commit, push and any other command
 
-Inside the sandbox it's plain Git. `secbox shell --project REMOTE` gives you a shell in `/work`, where `git switch -c`, `commit`, `merge`, `rebase`, `stash` and the rest work as usual. Only talking to the remote goes through secbox:
+Inside the sandbox it's plain Git. `secbox shell --project REMOTE` gives you a shell in `/work`, where `git switch -c`, `commit`, `merge`, `rebase`, `stash` and the rest work as usual. The same commands can be run without a shell, from every client (see [Any Git command](#any-git-command)). Only talking to the remote goes through secbox:
 
 | What | Command line | Terminal UI | Desktop app | MCP tool |
 | --- | --- | --- | --- | --- |
@@ -59,6 +59,7 @@ Inside the sandbox it's plain Git. `secbox shell --project REMOTE` gives you a s
 | Pull | `secbox git pull` | `p` on the Changes tab | Changes tab, Pull | `git_pull` |
 | Commit | `secbox git commit -m MSG [PATHS]` | | Changes tab, Commit all changes | `git_commit` |
 | Push | `secbox git push` | `P` on the Changes tab | Changes tab, Push branch | `git_push` |
+| Any command | `secbox git run ARGS...` | | Changes tab, Git command | `git` |
 
 Add `--project REMOTE` (or a folder) to name the project from elsewhere.
 
@@ -68,6 +69,29 @@ Add `--project REMOTE` (or a folder) to name the project from elsewhere.
 - **Your name on commits:** the command line, the desktop app and MCP read `user.name` and `user.email` from your global Git settings, and only those. `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` override them. Without either, commits say `Sandbox <sandbox@localhost.invalid>`. Commits you make by hand in the shell use whatever the VM's Git is set to.
 - **A `git push` typed inside the VM fails** with a message saying how to push through secbox. The clone's `core.sshCommand` points at that message, and there is no credential in the VM to use.
 
+### Any Git command
+
+`secbox git run`, the Changes tab's **Git command** box and the MCP tool `git` take any Git command, as its arguments without the leading `git` (`GitOp::Run` on the wire). The daemon runs it in `/work` inside the sandbox, with the person's name added as `-c user.name=… -c user.email=…`, and decides which way it goes (`crates/daemon/src/gitrun.rs`):
+
+| Command | Relay | Checked |
+| --- | --- | --- |
+| `fetch`, `pull`, `ls-remote` | Yes, as a fetch: only `git-upload-pack` | The service Git asks for |
+| `push` | Yes, as a push: only `git-receive-pack` | The service, then the branch list, as below |
+| Anything else | None | Nothing reaches the remote: `core.sshCommand` prints a message and there is no credential |
+
+Before anything runs, the arguments are checked:
+
+- **The first argument is a subcommand:** lowercase letters, digits and dashes. Nothing can come before it, so `-c`, `-C`, `--git-dir`, `--exec-path` and `--config-env` are refused. A setting belongs in the clone's own config, which only the sandbox reads.
+- **A networked command can't name the remote program,** so `--upload-pack`, `--receive-pack`, `--exec`, and `ls-remote -u` are refused. The relay never uses that program anyway: it starts `ssh` for the project's URL and a fixed service.
+- **No options for the server:** `-o`, `--push-option` and `--server-option` are refused, and a push whose branch list announces the `push-options` capability is refused by the relay too, since a setting such as `push.pushOption` in the clone could add them.
+- **At most 64 arguments of 16 KiB each,** with no control character but newline and tab.
+
+There is no terminal, so nothing waits for one. `GIT_EDITOR` and `GIT_SEQUENCE_EDITOR` point at a command that fails with a message, `GIT_MERGE_AUTOEDIT=no` lets merges finish, pagers are `cat`, and `GIT_TERMINAL_PROMPT=0`. A command that stays in the sandbox may run for 5 minutes, and one through the relay for 15.
+
+The audit log gets a `git_ran` entry for each command, with its name and whether it worked. The arguments are left out, because a commit message can hold anything. A push also gets the usual `git_pushed` or `git_push_refused` entries.
+
+When a pull stops because uncommitted changes would be overwritten, the desktop app offers **Stash, pull, reapply**, which runs `pull --no-rebase --no-edit --autostash`.
+
 ### What a push may change
 
 Before a push sends anything, Git lists which branches it will change and from which commit to which. The daemon reads that list and refuses the whole push, sending the remote nothing at all, if any line:
@@ -76,6 +100,8 @@ Before a push sends anything, Git lists which branches it will change and from w
 - deletes a branch,
 - touches anything other than a branch, such as a tag or a note,
 - or isn't in Git's normal form.
+
+It also refuses a push that carries push options, which the remote would act on.
 
 What the daemon can't tell: a force-push that rewrites a feature branch looks the same as a normal push, because telling them apart means reading the pack, and the host never parses data from the VM. Turn on branch protection on GitHub to stop those. Every push and every refusal is in the audit log, with the branch and both commit ids.
 
@@ -156,13 +182,14 @@ On each import, pull and push, 1Password asks whether to allow the key. The requ
 
 | File | What it holds |
 | --- | --- |
-| `crates/daemon/src/gitrelay.rs` | The relay script, the relay itself, the push checks, status, commit, pull and push |
+| `crates/daemon/src/gitrelay.rs` | The relay script, the relay itself, the push checks, status, commit, pull, push and typed commands |
+| `crates/daemon/src/gitrun.rs` | Which way a typed command goes, and the checks on its arguments |
 | `crates/daemon/src/remote.rs` | Import: the mirror, the export for the plan, the remote's record |
 | `crates/daemon/src/run.rs` | Cloning into a new sandbox instead of copying files |
 | `crates/gitbroker/src/remote.rs` | URL checks, the fixed `ssh` command, starting `ssh` for one Git service |
 | `crates/engine/src/lib.rs`, `msb.rs` | The piped exec the relay runs over |
 | `crates/cli/src/git_cmd.rs` | `secbox git`, and reading your Git name |
-| `crates/cli/src/mcp/tools.rs` | `git_status`, `git_pull`, `git_commit`, `git_push` |
+| `crates/cli/src/mcp/tools.rs` | `git`, `git_status`, `git_pull`, `git_commit`, `git_push` |
 | `crates/cli/src/tui/mod.rs` | Import, Pull and Push in the terminal UI |
 | `apps/desktop/` | Clone from Git, and the Git controls on a project's Changes tab |
 
@@ -176,6 +203,8 @@ On each import, pull and push, 1Password asks whether to allow the key. The requ
   - A push to `main` is refused, `main` doesn't move, and the refusal is logged.
   - Pull brings in someone else's commit without making a new sandbox.
   - An agent commits and pushes over MCP, and is refused on `main`.
+  - Typed commands (`git run`, MCP `git`): switch, commit, log and push land, and only the push used the relay. A pull over local changes stops, and `pull --autostash` brings the remote's change in and puts the local one back. Pushes to `main`, deletes, tags and push options are refused with nothing sent; `-c` before the command and `--upload-pack` are refused before anything runs; `remote update` gets no relay and finds no credential; `commit` with no message fails at once instead of waiting for an editor.
+- **Unit tests for typed commands** (`crates/daemon/src/gitrun.rs`): routing, options before the command, remote programs, server options, `--`, hidden characters and size limits.
 - **The real binary:** the terminal UI's New project page, drawn at 80 columns.
 
 **Not tested:**

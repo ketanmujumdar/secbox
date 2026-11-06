@@ -118,6 +118,7 @@ Configure a stdio server whose command is the absolute path of `secbox`, with th
 | `git_pull` | none | Fetches and merges the current branch's upstream through the Git relay, with the person's SSH key on their machine | 15 min |
 | `git_commit` | `message` (required), `paths` | Stages and commits, under the person's own Git name | 60 s |
 | `git_push` | none | Pushes the current branch through the relay. `main`, `master`, deletes and tags are refused before anything is sent | 15 min |
+| `git` | `args` (required): the command without the leading `git` | Any Git command in the clone, inside the sandbox. Only `fetch`, `pull`, `ls-remote` and `push` get the relay, with the same checks. See `docs/GIT.md`, "Any Git command" | 64 arguments; 5 min, or 15 min with the relay |
 
 Notes on the tools:
 

@@ -111,6 +111,17 @@ async function run(browser, scheme) {
   await p.click('#git-status');
   await p.waitForTimeout(200);
   await shot(p, scheme, '08-changes');
+  // A pull stopped by uncommitted changes offers to stash them.
+  await p.fill('#git-run', 'pull');
+  await p.click('#git-run-go');
+  await p.waitForSelector('#git-stuck:not(.hidden)');
+  await shot(p, scheme, '08b-changes-pull-stuck');
+  await p.click('#git-autostash');
+  await p.waitForSelector('#git-stuck.hidden', { state: 'attached' });
+  await p.fill('#git-run', 'log --oneline');
+  await p.click('#git-run-go');
+  await p.waitForFunction(() => document.getElementById('git-output').textContent.includes('Fix the refund total'));
+  await shot(p, scheme, '08c-changes-git-command');
   await p.click('.tab[data-tab=secrets]');
   await shot(p, scheme, '09a-secrets');
   await p.click('.tab[data-tab=settings]');

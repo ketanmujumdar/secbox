@@ -20,6 +20,7 @@ pub mod debug;
 pub mod diff;
 pub mod gitref;
 pub mod gitrelay;
+pub mod gitrun;
 pub mod netallow;
 pub mod mask;
 pub mod plan;

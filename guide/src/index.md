@@ -30,6 +30,7 @@ Everything inside the VM is treated as compromised. When you are done, or if you
 | Try it in five minutes | [Quick start](start/quickstart.md) |
 | Understand what it protects against | [Security model](concepts/security-model.md) |
 | See what a sandbox changed | [Reviewing changes](guides/reviewing-changes.md) |
+| Use Git, and let an agent use it, without exposing your keys | [Git without handing over your keys](guides/git.md) |
 | Use Claude Code or Codex with a sandbox | [AI agents over MCP](guides/ai-agents.md) |
 | Look up a command | [Command line](reference/cli.md) |
 | Feed these docs to an AI assistant | [Using these docs with an AI](for-ai.md) |

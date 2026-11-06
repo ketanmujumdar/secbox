@@ -221,6 +221,19 @@
         await later(100);
         return diff;
       case 'git':
+        if (args.op === 'run') {
+          const pullStuck = args.args[0] === 'pull' && !args.args.includes('--autostash');
+          return {
+            ok: !pullStuck,
+            title: 'git ' + args.args[0] + (pullStuck ? ' failed' : ' done'),
+            output: pullStuck
+              ? ['Updating 9a96291..4e04d53', 'error: Your local changes to the following files would be overwritten by merge:', '\tcompose.yaml', 'Please commit your changes or stash them before you merge.', 'Aborting']
+              : args.args[0] === 'log' ? ['4f2c1a9 Fix the refund total', '9a96291 Add refunds'] : [],
+            updates: [],
+            branch: 'refunds',
+            refused: null,
+          };
+        }
         return {
           ok: true,
           title: { status: 'Status', pull: 'Pull', commit: 'Commit', push: 'Push' }[args.op] + ' done',

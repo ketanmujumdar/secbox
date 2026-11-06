@@ -127,7 +127,17 @@ pub enum GitOp {
     Commit { message: String, paths: Vec<String> },
     /// Push the current branch to the same name on the remote.
     Push,
+    /// Any Git command, as its arguments after `git`, such as
+    /// `["switch", "-c", "fix"]`. It runs inside the sandbox. `fetch`, `pull`
+    /// and `ls-remote` go through the relay as a fetch, `push` as a push with
+    /// the usual checks, and every other command gets no relay at all.
+    Run { args: Vec<String> },
 }
+
+/// The most arguments one [`GitOp::Run`] may have.
+pub const MAX_GIT_ARGS: usize = 64;
+/// The longest one argument may be. Room for a commit message given with `-m`.
+pub const MAX_GIT_ARG_BYTES: usize = MAX_COMMIT_MESSAGE_BYTES;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1060,7 +1070,7 @@ mod tests {
             let back: Frame = read_frame(&mut buffer.as_slice()).unwrap().unwrap();
             assert_eq!(back, frame);
         }
-        for op in [GitOp::Status, GitOp::Pull, GitOp::Push] {
+        for op in [GitOp::Status, GitOp::Pull, GitOp::Push, GitOp::Run { args: vec!["log".to_owned(), "--oneline".to_owned()] }] {
             round_trip(Request::Git(GitArgs { project: "/p".to_owned(), action: op, identity: None, ssh_auth_sock: None }));
         }
     }
