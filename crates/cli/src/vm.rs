@@ -51,6 +51,12 @@ pub struct DownArgsCli {
 }
 
 #[derive(Args)]
+pub struct RemoveArgsCli {
+    /// Project folder, even one that no longer exists, or an SSH remote [default: the current folder]
+    path: Option<PathBuf>,
+}
+
+#[derive(Args)]
 pub struct StatusArgsCli {
     /// Project folder [default: the current folder]
     path: Option<PathBuf>,
@@ -240,6 +246,40 @@ pub fn down(args: &DownArgsCli, deps: &mut Deps) -> i32 {
             );
         }
     }
+    exit::OK
+}
+
+pub fn remove(args: &RemoveArgsCli, deps: &mut Deps) -> i32 {
+    let root = match (project_dir(args.path.as_deref(), deps), args.path.as_deref()) {
+        (Ok(root), _) => root,
+        // A folder that has gone can still be removed: the daemon only looks it up.
+        (Err(_), Some(path)) if !path.exists() => deps.cwd.join(path),
+        (Err(reason), _) => {
+            tell!(deps, "remove: {reason}");
+            return exit::FAILED;
+        }
+    };
+    let report = match request(
+        deps,
+        Request::Remove(ProjectArgs {
+            project: root.to_string_lossy().into_owned(),
+        }),
+        "remove",
+    ) {
+        Ok(Reply::Remove(report)) => report,
+        Ok(_) => return unexpected("remove", deps),
+        Err(code) => return code,
+    };
+    say!(deps, "Removed the project from this machine.");
+    if report.removed_copy {
+        say!(deps, "The imported copy is gone. The remote itself was not touched.");
+    } else {
+        say!(deps, "Its folder was not touched.");
+    }
+    if report.sandbox_destroyed {
+        say!(deps, "Its sandbox was destroyed. Rotate every secret it was given.");
+    }
+    say!(deps, "Any secrets you stored for it stay in your keychain.");
     exit::OK
 }
 

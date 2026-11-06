@@ -201,6 +201,7 @@
     await loadStatus();
     // Fills the overview card as well as the Blocked traffic tab.
     await readTraffic();
+    if (state.tab === 'logs') await readLogs();
   }
 
   function renderHeader() {
@@ -236,8 +237,11 @@
     // A button is off only when the known state makes it pointless. With no
     // state at all, the daemon is left to decide, as the terminal does.
     $('btn-start').disabled = !has || (!!s && s.state === 'running');
+    $('btn-restart').disabled = !has || !s || s.state !== 'running';
     $('btn-stop').disabled = !canEnd || (!startingThis && !!s && s.state !== 'running');
-    $('btn-destroy').disabled = !canEnd || (!startingThis && !!s && s.state === 'none');
+    // Destroy is always on: the daemon says so if there is nothing to destroy.
+    $('btn-destroy').disabled = !canEnd;
+    $('btn-remove').disabled = !has;
   }
 
   // ---------- overview ----------
@@ -322,9 +326,12 @@
 
   // ---------- start, stop, destroy ----------
 
-  async function startProject() {
+  // A restart asks about the plan before stopping anything, so saying no leaves
+  // the sandbox running. Its data is kept, as with Stop and then Start.
+  async function startProject(restart) {
     const row = selectedRow();
     if (!row) return;
+    const verb = restart ? 'restarted' : 'started';
     busy('Working out what starting it would do.');
     let plan;
     try {
@@ -337,19 +344,19 @@
     busy('');
     if (plan.blockers.length > 0) {
       await ask({
-        title: 'This cannot be started yet',
+        title: 'This cannot be ' + verb + ' yet',
         okHidden: true,
         build: (body) => {
           for (const b of plan.blockers) body.appendChild(el('p', b, 'alert'));
         },
       });
-      banner('Nothing was started.', 'info');
+      banner('Nothing was ' + verb + '.', 'info');
       return;
     }
     const ports = plan.ports.map((p) => p.host_port);
     const agreed = await ask({
-      title: 'Start ' + row.name,
-      okText: 'Start with this plan',
+      title: (restart ? 'Restart ' : 'Start ') + row.name,
+      okText: restart ? 'Restart with this plan' : 'Start with this plan',
       build: (body) => {
         for (const line of plan.summary) body.appendChild(el('p', line));
         section(body, 'Services', plan.services, 'None.');
@@ -374,10 +381,23 @@
       },
     });
     if (!agreed) {
-      banner('Nothing was started.', 'info');
+      banner('Nothing was ' + verb + '.', 'info');
       return;
     }
     state.starting = row.path;
+    if (restart) {
+      stopLogs();
+      busy('Stopping, to restart it.');
+      try {
+        await invoke('down', { project: row.path });
+      } catch (error) {
+        banner('Could not stop it to restart it: ' + errorText(error));
+        state.starting = null;
+        busy('');
+        await loadStatus();
+        return;
+      }
+    }
     busy('Starting. A first build can take minutes.');
     const progress = new Channel();
     progress.onmessage = (event) => {
@@ -392,6 +412,7 @@
     busy('');
     await refreshProjects();
     await loadStatus();
+    if (state.tab === 'logs') await readLogs();
   }
 
   async function stopProject(destroy) {
@@ -429,7 +450,50 @@
     await loadStatus();
   }
 
-  $('btn-start').addEventListener('click', startProject);
+  async function removeProject() {
+    const row = selectedRow();
+    if (!row) return;
+    const agreed = await ask({
+      title: 'Remove ' + row.name,
+      okText: 'Remove it',
+      danger: true,
+      build: (body) => {
+        body.appendChild(el('p', 'This destroys its sandbox and everything in it, and removes the project from this list, with its approved ports and hosts.', 'alert'));
+        body.appendChild(el('p', 'A project imported from a remote also loses the copy on this machine. The remote is not touched.'));
+        body.appendChild(el('p', 'A folder of your own is not touched: ' + row.path, 'mono'));
+        body.appendChild(el('p', 'Any secrets you stored for it stay in your keychain.', 'muted'));
+      },
+    });
+    if (!agreed) {
+      banner('Nothing was changed.', 'info');
+      return;
+    }
+    stopLogs();
+    busy('Removing.');
+    let removed = false;
+    try {
+      banner(await invoke('remove_project', { project: row.path }), 'ok');
+      removed = true;
+    } catch (error) {
+      banner('Could not remove it: ' + errorText(error));
+    }
+    busy('');
+    if (removed) {
+      // Asking about it again would make a new record of it.
+      state.selected = null;
+      state.status = null;
+      clear($('log-text'));
+      clearReview();
+    }
+    await refreshProjects();
+    if (state.selected) await loadStatus();
+    else renderHeader();
+    updateButtons();
+  }
+
+  $('btn-remove').addEventListener('click', removeProject);
+  $('btn-start').addEventListener('click', () => startProject(false));
+  $('btn-restart').addEventListener('click', () => startProject(true));
   $('btn-stop').addEventListener('click', () => stopProject(false));
   $('btn-destroy').addEventListener('click', () => stopProject(true));
 
@@ -519,7 +583,8 @@
     stopLogs();
     $('log-note').textContent = 'Stopped following.';
   });
-  $('log-service').addEventListener('change', () => { if (state.logId !== null) readLogs(); });
+  $('log-service').addEventListener('change', readLogs);
+  $('log-follow').addEventListener('change', readLogs);
 
   // ---------- blocked traffic ----------
 
@@ -624,8 +689,12 @@
     for (const panel of document.querySelectorAll('.panel')) {
       show(panel, panel.dataset.panel === tab);
     }
+    if (tab !== 'logs') stopLogs();
     if (tab === 'traffic') await readTraffic();
-    if (tab === 'logs' && state.selected) await loadStatus();
+    if (tab === 'logs' && state.selected) {
+      await loadStatus();
+      await readLogs();
+    }
   }
   for (const button of document.querySelectorAll('.tab')) {
     button.addEventListener('click', () => openTab(button.dataset.tab));

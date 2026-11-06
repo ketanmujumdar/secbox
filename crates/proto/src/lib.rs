@@ -72,6 +72,9 @@ pub enum Request {
     Up(UpArgs),
     /// Stop a project, or remove it and everything in it.
     Down(DownArgs),
+    /// Remove a project from this machine: its sandbox, its records and, for an
+    /// imported project, the daemon's copy. Never a folder of the person's own.
+    Remove(ProjectArgs),
     /// Report on a project's sandbox.
     Status(ProjectArgs),
     /// Read what a project's services have logged. Never starts anything.
@@ -358,6 +361,7 @@ pub enum Reply {
     Plan(Box<PlanReport>),
     Up(UpReport),
     Down(DownReport),
+    Remove(RemoveReport),
     Status(StatusReport),
     Logs(LogsReport),
     Terminal(TerminalReport),
@@ -752,6 +756,17 @@ pub struct DownReport {
     pub project_id: String,
     pub sandbox: SandboxState,
     pub destroyed: bool,
+}
+
+/// What removing a project took with it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveReport {
+    pub project_id: String,
+    /// There was a sandbox, and it is gone.
+    pub sandbox_destroyed: bool,
+    /// The project was imported, and the daemon's copy is gone.
+    pub removed_copy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

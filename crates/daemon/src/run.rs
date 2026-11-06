@@ -19,7 +19,7 @@ use engine::{
     CreateSpec, ExecRequest, GuestPath, HostPort, NetworkPolicy, Resources, SandboxStatus, TlsMode,
 };
 use proto::{
-    text, ApiError, DownReport, PlanReport, SandboxState, ServiceState, StatusReport, TlsPlan,
+    text, ApiError, DownReport, PlanReport, RemoveReport, SandboxState, ServiceState, StatusReport, TlsPlan,
     UpArgs, UpReport,
 };
 
@@ -633,6 +633,37 @@ pub fn down(
         project_id: project.id.as_str().to_owned(),
         sandbox: SandboxState::Stopped,
         destroyed: false,
+    })
+}
+
+/// Removes a project from this machine. The records go last, so if anything
+/// before them fails the project is still listed and this can be tried again.
+///
+/// `project.root` itself is never removed: only the daemon's own copy of an
+/// imported project, which `imported_folder` names. Secrets stay in the keychain,
+/// which cannot be asked what it holds for a project.
+pub fn remove(
+    service: &Service,
+    project: &Project,
+    progress: &mut dyn Progress,
+) -> Result<RemoveReport, ApiError> {
+    let imported = crate::remote::imported_folder(service, project);
+    let sandbox_destroyed = down(service, project, true, progress)?.destroyed;
+    if let Some(folder) = &imported {
+        progress.step("removing the imported copy", None);
+        std::fs::remove_dir_all(folder)
+            .map_err(|e| internal(format!("cannot remove the imported copy: {}", e.kind())))?;
+    }
+    progress.step("removing the project's records", None);
+    std::fs::remove_dir_all(&project.dir)
+        .map_err(|e| internal(format!("cannot remove the project's records: {}", e.kind())))?;
+    service.record(
+        audit::entry(service.deps().now_unix(), audit::Action::ProjectRemoved).project(project.id.as_str()),
+    );
+    Ok(RemoveReport {
+        project_id: project.id.as_str().to_owned(),
+        sandbox_destroyed,
+        removed_copy: imported.is_some(),
     })
 }
 

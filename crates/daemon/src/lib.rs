@@ -166,6 +166,10 @@ impl Service {
                 let project = self.open(&args.project)?;
                 run::down(self, &project, args.destroy, progress).map(Reply::Down)
             }
+            Request::Remove(args) => {
+                let project = self.known(&args.project)?;
+                run::remove(self, &project, progress).map(Reply::Remove)
+            }
             Request::Status(args) => {
                 let project = self.open(&args.project)?;
                 run::status(self, &project).map(Reply::Status)
@@ -224,6 +228,36 @@ impl Service {
         Ok(Project {
             id,
             root,
+            dir,
+            sandbox,
+        })
+    }
+}
+
+impl Service {
+    /// Finds a project this machine already has a record of. Unlike `open`, it
+    /// makes no record, and the project's folder need not exist any more.
+    pub(crate) fn known(&self, path: &str) -> Result<Project, ApiError> {
+        if path.is_empty() {
+            return Err(bad("no project path was given"));
+        }
+        if !Path::new(path).is_absolute() {
+            return Err(bad("the project path must be absolute"));
+        }
+        let canonical = std::fs::canonicalize(path)
+            .ok()
+            .map(|real| real.to_string_lossy().into_owned());
+        let found = hoststate::known_projects(&self.paths)
+            .into_iter()
+            .find(|(_, record)| record.path == path || canonical.as_deref() == Some(record.path.as_str()));
+        let Some((id, record)) = found else {
+            return Err(not_found("this machine has no record of that project"));
+        };
+        let dir = self.paths.project(&id);
+        let sandbox = sandbox_name(&id)?;
+        Ok(Project {
+            id,
+            root: PathBuf::from(record.path),
             dir,
             sandbox,
         })

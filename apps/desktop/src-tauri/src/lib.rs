@@ -350,6 +350,14 @@ async fn destroy(app: AppHandle, project: String, state: State<'_, Arc<AppState>
     result
 }
 
+#[tauri::command]
+async fn remove_project(app: AppHandle, project: String, state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let state = Arc::clone(&state);
+    let result = blocking(move || ops::remove(&state.client, &project).map_err(message)).await;
+    refresh_tray(&app);
+    result
+}
+
 #[derive(Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum LogEvent {
@@ -610,6 +618,7 @@ pub fn run() {
             up,
             down,
             destroy,
+            remove_project,
             logs,
             logs_stop,
             blocked,

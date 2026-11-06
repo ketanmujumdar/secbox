@@ -35,6 +35,7 @@ pub const HOSTNAMES_ONLY: &str = "This shows blocked hostnames only. Raw IP, met
 pub const FROM_THE_SANDBOX: &str = "These came from inside the sandbox, so they can be wrong.";
 pub const DESTROYED: &str = "Destroyed. Rotate every secret it was given.";
 pub const STOPPED: &str = "Stopped. Its data is kept for the next start.";
+pub const NO_SANDBOX: &str = "This project has no sandbox, so nothing was changed.";
 
 fn wrong_reply() -> CallError {
     CallError::Transport("The daemon answered something else.".to_owned())
@@ -471,6 +472,28 @@ pub fn up(
     }
 }
 
+pub fn remove(client: &Client, path: &str) -> Result<String, CallError> {
+    let reply = client.call(
+        Request::Remove(ProjectArgs {
+            project: path.to_owned(),
+        }),
+        None,
+    )?;
+    let Reply::Remove(report) = reply else {
+        return Err(wrong_reply());
+    };
+    let mut text = if report.removed_copy {
+        "Removed, with its imported copy. The remote itself was not touched.".to_owned()
+    } else {
+        "Removed from this list. Its folder was not touched.".to_owned()
+    };
+    if report.sandbox_destroyed {
+        text.push_str(" Its sandbox was destroyed: rotate every secret it was given.");
+    }
+    text.push_str(" Any secrets you stored for it stay in your keychain.");
+    Ok(text)
+}
+
 pub fn down(client: &Client, path: &str, destroy: bool) -> Result<String, CallError> {
     match client.call(
         Request::Down(DownArgs {
@@ -480,6 +503,7 @@ pub fn down(client: &Client, path: &str, destroy: bool) -> Result<String, CallEr
         None,
     )? {
         Reply::Down(report) if report.destroyed => Ok(DESTROYED.to_owned()),
+        Reply::Down(report) if matches!(report.sandbox, SandboxState::None) => Ok(NO_SANDBOX.to_owned()),
         Reply::Down(_) => Ok(STOPPED.to_owned()),
         _ => Err(wrong_reply()),
     }

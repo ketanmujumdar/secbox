@@ -54,8 +54,10 @@
         </div>
         <div class="actions">
           <button id="btn-start" disabled>Start</button>
+          <button id="btn-restart" disabled>Restart</button>
           <button id="btn-stop" disabled>Stop</button>
           <button id="btn-destroy" class="danger" disabled>Destroy</button>
+          <button id="btn-remove" class="danger" disabled>Remove project</button>
         </div>
       </header>
       <div class="path" id="project-path"></div>
@@ -98,8 +100,8 @@
           <label>Service
             <select id="log-service"><option value="">All services</option></select>
           </label>
-          <label class="check"><input type="checkbox" id="log-follow"> Follow</label>
-          <button class="small" id="log-read">Read</button>
+          <label class="check"><input type="checkbox" id="log-follow" checked> Follow</label>
+          <button class="small" id="log-read">Reload</button>
           <button class="small" id="log-stop" disabled>Stop following</button>
         </div>
         <p class="muted small-text">Logs are written inside the sandbox and could be faked by it. Terminal control codes are removed. Secret values are not masked.</p>

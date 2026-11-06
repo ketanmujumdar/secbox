@@ -185,6 +185,13 @@ fn start_needs_the_plan_that_was_shown_then_stop_and_destroy_work() {
 
     assert_eq!(ops::down(&d.client, &path, false).unwrap(), ops::STOPPED);
     assert_eq!(ops::down(&d.client, &path, true).unwrap(), ops::DESTROYED);
+    // Destroy is always on in the window, so it must say when nothing was there.
+    assert_eq!(ops::down(&d.client, &path, true).unwrap(), ops::NO_SANDBOX);
+
+    let removed = ops::remove(&d.client, &path).unwrap();
+    assert!(removed.contains("Its folder was not touched"), "{removed}");
+    assert!(std::path::Path::new(&path).is_dir());
+    assert!(ops::remove(&d.client, &path).is_err());
 }
 
 #[test]

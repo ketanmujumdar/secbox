@@ -13,6 +13,7 @@ const COMMANDS: &[&str] = &[
     "up",
     "down",
     "destroy",
+    "remove_project",
     "logs",
     "logs_stop",
     "blocked",

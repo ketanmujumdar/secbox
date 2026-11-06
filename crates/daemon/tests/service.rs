@@ -1945,3 +1945,62 @@ fn logs_for_a_project_with_no_secrets_are_passed_through_unchanged() {
     let (_, kept) = f.logs(Some("web")).unwrap();
     assert_eq!(kept.text(OutputStream::Stdout), "web  | ready\n");
 }
+
+fn remove(f: &Fixture) -> Result<proto::RemoveReport, proto::ApiError> {
+    match f.call(Request::Remove(proto::ProjectArgs { project: f.path() }))? {
+        Reply::Remove(report) => Ok(report),
+        other => panic!("expected a removal, got {other:?}"),
+    }
+}
+
+fn known_paths(f: &Fixture) -> Vec<String> {
+    let paths = StatePaths {
+        state: f._state.path().join(brand::STATE_DIR),
+        overridden: true,
+    };
+    hoststate::known_projects(&paths).into_iter().map(|(_, record)| record.path).collect()
+}
+
+#[test]
+fn removing_a_project_destroys_its_sandbox_and_records_but_never_its_folder() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    assert_eq!(known_paths(&f).len(), 1);
+
+    let report = remove(&f).unwrap();
+    assert!(report.sandbox_destroyed);
+    assert!(!report.removed_copy);
+    assert!(known_paths(&f).is_empty());
+    assert!(f.project.path().join("compose.yaml").is_file());
+    assert!(f.project.path().join("web/Dockerfile").is_file());
+}
+
+#[test]
+fn a_project_with_no_sandbox_can_be_removed() {
+    let f = fixture();
+    f.call(Request::Status(proto::ProjectArgs { project: f.path() })).unwrap();
+    let report = remove(&f).unwrap();
+    assert!(!report.sandbox_destroyed);
+    assert!(known_paths(&f).is_empty());
+}
+
+#[test]
+fn a_project_whose_folder_has_gone_can_be_removed() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    let path = known_paths(&f).remove(0);
+    std::fs::remove_dir_all(&path).unwrap();
+    let report = f
+        .call(Request::Remove(proto::ProjectArgs { project: path }))
+        .unwrap();
+    assert!(matches!(report, Reply::Remove(r) if r.sandbox_destroyed));
+    assert!(known_paths(&f).is_empty());
+}
+
+#[test]
+fn removing_an_unknown_project_changes_nothing_and_makes_no_record() {
+    let f = fixture();
+    assert!(remove(&f).is_err());
+    assert!(known_paths(&f).is_empty());
+    assert!(f.project.path().join("compose.yaml").is_file());
+}

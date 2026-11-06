@@ -19,6 +19,7 @@
     "allow-blocked",
     "allow-import-remote",
     "allow-git",
-    "allow-diff"
+    "allow-diff",
+    "allow-remove-project"
   ]
 }

@@ -162,6 +162,14 @@ pub fn remote_of(service: &Service, project: &crate::Project) -> Option<Remote> 
     Some(record)
 }
 
+/// The folder holding the daemon's own copy of an imported project: its files
+/// and its mirror. `None` for any other project, so a folder of the person's own
+/// is never named here.
+pub fn imported_folder(service: &Service, project: &crate::Project) -> Option<PathBuf> {
+    remote_of(service, project)?;
+    project.root.parent().map(Path::to_path_buf)
+}
+
 /// The host's mirror of a remote project, which holds the commit its sandbox
 /// was cloned at. `diff` reviews against it, as it does against the baseline
 /// store of a project copied from a folder.

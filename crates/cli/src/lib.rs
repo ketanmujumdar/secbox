@@ -103,6 +103,8 @@ enum Command {
     Up(vm::UpArgsCli),
     /// Stop a project's sandbox, or destroy it
     Down(vm::DownArgsCli),
+    /// Remove a project from this machine: its sandbox, records and any imported copy. Your own folder is kept
+    Remove(vm::RemoveArgsCli),
     /// Show a project's sandbox
     Status(vm::StatusArgsCli),
     /// Show what a project's services have logged, with control codes removed
@@ -187,6 +189,7 @@ where
         Command::Uninstall(args) => uninstall::run(&args, deps),
         Command::Up(args) => vm::up(&args, deps),
         Command::Down(args) => vm::down(&args, deps),
+        Command::Remove(args) => vm::remove(&args, deps),
         Command::Status(args) => vm::status(&args, deps),
         Command::Logs(args) => debug::logs(&args, deps),
         Command::Shell(args) => debug::shell(&args, deps),

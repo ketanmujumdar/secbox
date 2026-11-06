@@ -25,6 +25,7 @@ any of it can be called working.
 | Command | State |
 | --- | --- |
 | `doctor` | Works. Checks the host, without needing Docker |
+| `remove [path]` | Built, tested against a fake engine only. Removes a project from this machine: its sandbox, its records and any imported copy. Never a folder of your own. Secrets stay in the keychain |
 | `check [path]` | Works. Reads a project's Compose file as data and reports what it asks for. For a project with only a Dockerfile, reads its `EXPOSE` lines |
 | `open`, `checks` | Works. Editor safety checks, and the gate before launching an editor |
 | `resources [path]` | Works. Shows requested and resolved limits, but nothing applies them yet |

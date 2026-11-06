@@ -27,6 +27,8 @@ pub enum Action {
     SandboxStarted,
     SandboxStopped,
     SandboxDestroyed,
+    /// A project and its records were removed from this machine.
+    ProjectRemoved,
     /// A port was forwarded to `127.0.0.1` after a person approved it.
     PortForwarded,
     /// A port the project asked for was not forwarded.

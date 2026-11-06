@@ -114,6 +114,17 @@ secbox down --destroy
 
 Removes the VM and everything in it: the copy of the project, images, build caches, data volumes and any changes made inside. The host's baseline commit for [`diff`](reviewing-changes.md) goes too. **Rotate every secret the sandbox was given** if you suspect it was compromised.
 
+## Remove a project
+
+```sh
+secbox remove              # the project in the current folder
+secbox remove ~/code/myapp # another folder, even one that no longer exists
+```
+
+`down --destroy` removes the sandbox but keeps the project listed, with its approved ports and hosts. `remove` does that and also deletes those records, so the project leaves the list. In the desktop app this is **Remove project**.
+
+For a project imported from a remote, the copy on your machine goes too. The remote is not touched. **A folder of your own is never deleted.** Secrets stay in your keychain.
+
 ## Projects with only a Dockerfile
 
 If the project has a `Dockerfile` at its root and no Compose file, the daemon writes a one-service Compose file for it:

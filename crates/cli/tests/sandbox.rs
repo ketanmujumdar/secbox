@@ -1768,3 +1768,16 @@ fn an_agent_commits_and_pushes_a_branch_through_mcp_but_never_main() {
     assert_eq!(test_git(&w.bare, &["show", "agent/fix:README"]), "agent edit\n");
     assert!(tool_text(&answers[2]).contains("agent/fix"), "{}", tool_text(&answers[2]));
 }
+
+#[test]
+fn removing_an_imported_project_takes_its_copy_and_leaves_the_remote() {
+    let w = relay_world();
+    let before = test_git(&w.bare, &["rev-parse", "HEAD"]);
+    let done = w.h.run(&["remove", REMOTE], "");
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(done.all().contains("The imported copy is gone"), "{}", done.all());
+    assert_eq!(test_git(&w.bare, &["rev-parse", "HEAD"]), before);
+    // Gone from the machine, so naming it again finds nothing.
+    let again = w.h.run(&["remove", REMOTE], "");
+    assert_ne!(again.code, 0, "{}", again.all());
+}
