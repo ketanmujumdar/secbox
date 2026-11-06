@@ -5,176 +5,379 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <!-- The same policy Tauri enforces, here too so the page never relies on one. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>Desktop</title>
+  <title>secbox</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="app">
-    <aside class="sidebar">
-      <div class="brand" id="brand">&nbsp;</div>
-      <nav class="tabs" aria-label="Sections">
-        <button class="tab active" data-tab="overview">Overview</button>
-        <button class="tab" data-tab="logs">Logs</button>
-        <button class="tab" data-tab="traffic">Blocked traffic</button>
-        <button class="tab" data-tab="secrets">Secrets</button>
-        <button class="tab" data-tab="review">Git</button>
-        <button class="tab" data-tab="about">Terminal &amp; about</button>
-      </nav>
-      <div class="side-heading">
+  <header class="topbar">
+    <div class="brand" id="brand">&nbsp;</div>
+    <div class="early" role="note" title="It has not been shown to contain anything, so don't rely on it.">Early build · not protecting anything yet</div>
+  </header>
+
+  <div class="app" id="app">
+    <aside class="rail hidden" id="rail">
+      <button class="primary wide" id="btn-new">+ New project</button>
+      <div class="rail-heading">
         <span>Projects</span>
-        <button class="link" id="refresh" title="Read the list again">Refresh</button>
+        <button class="link small-text" id="refresh" title="Read the list again">Refresh</button>
       </div>
       <ul class="projects" id="projects"></ul>
-      <form class="add" id="import-form" autocomplete="off">
-        <input id="import-url" type="text" spellcheck="false" placeholder="git@github.com:org/repo.git" aria-label="SSH remote to import">
-        <button type="submit" class="small">Import</button>
-      </form>
-      <p class="muted small-text import-note">Fetched here with your SSH key. The key never enters the sandbox.</p>
-      <form class="add" id="add-form" autocomplete="off">
-        <input id="add-path" type="text" spellcheck="false" placeholder="/full/path/to/project" aria-label="Project folder">
-        <button type="submit" class="small">Add</button>
-      </form>
-      <div class="daemon" id="daemon">
-        <span class="dot" id="daemon-dot"></span>
-        <span id="daemon-text">Checking the daemon</span>
+      <div class="rail-foot">
+        <div class="daemon">
+          <span class="dot" id="daemon-dot"></span>
+          <span id="daemon-text">Checking the daemon</span>
+          <button class="link small-text hidden" id="daemon-action"></button>
+        </div>
+        <button class="link small-text" id="btn-about">About</button>
       </div>
     </aside>
 
-    <main class="main">
-      <div class="early" role="note">
-        Early build. It has not been shown to contain anything, so don't rely on it.
+    <main class="content" id="content">
+      <div class="messages">
+        <div class="notice hidden" id="notice"></div>
+        <div class="banner hidden" id="banner"></div>
+        <div class="busy hidden" id="busy"></div>
       </div>
-      <div class="notice hidden" id="notice"></div>
-      <div class="banner hidden" id="banner"></div>
 
-      <header class="head">
-        <div class="title">
-          <h1 id="project-name">No project selected</h1>
-          <span class="pill hidden" id="project-state"></span>
-        </div>
-        <div class="actions">
-          <button id="btn-start" disabled>Start</button>
-          <button id="btn-restart" disabled>Restart</button>
-          <button id="btn-stop" disabled>Stop</button>
-          <button id="btn-destroy" class="danger" disabled>Destroy</button>
-          <button id="btn-remove" class="danger" disabled>Remove project</button>
-        </div>
-      </header>
-      <div class="path" id="project-path"></div>
-      <div class="busy hidden" id="busy"></div>
-
-      <section class="panel" data-panel="overview">
-        <div class="empty hidden" id="overview-empty"></div>
-        <div class="grid" id="overview-grid">
-          <div class="card">
-            <h2>Resources</h2>
-            <dl class="kv" id="resources"></dl>
-            <p class="muted small-text" id="resources-note"></p>
+      <!-- First run, and + New project: the two ways in. -->
+      <section class="page hidden" data-page="choose">
+        <div class="center">
+          <div class="hero">
+            <h1>Bring a project into a sandbox</h1>
+            <p>It runs in its own small virtual machine. Your SSH keys, secrets and files stay on this computer unless you hand them over.</p>
           </div>
-          <div class="card">
-            <h2>Services</h2>
-            <ul class="rows" id="services"></ul>
-            <p class="muted small-text" id="services-note"></p>
+          <div class="choices">
+            <button class="choice recommended" id="choose-git">
+              <span class="choice-top">
+                <svg class="icon accent" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"></circle><circle cx="6" cy="18" r="2.5"></circle><circle cx="18" cy="9" r="2.5"></circle><path d="M6 8.5v7"></path><path d="M18 11.5c0 3-3 4.5-9.5 5"></path></svg>
+                <span class="tag accent">Recommended</span>
+              </span>
+              <span class="choice-title">Clone from Git</span>
+              <span class="choice-text">Paste an SSH URL. It's fetched with your key on this computer; the key never enters the sandbox.</span>
+              <span class="choice-sample mono">git@github.com:org/repo.git</span>
+            </button>
+            <button class="choice" id="choose-folder">
+              <span class="choice-top">
+                <svg class="icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><path d="M12 10v6"></path><path d="M9 13h6"></path></svg>
+              </span>
+              <span class="choice-title">Add a folder</span>
+              <span class="choice-text">Already have it on disk? Give its path. Only committed files go in. Your folder isn't changed.</span>
+              <span class="choice-sample dashed">Type the folder's full path</span>
+            </button>
           </div>
-          <div class="card">
-            <h2>Ports (this computer only)</h2>
-            <ul class="rows" id="ports"></ul>
+          <div class="hero-foot">
+            <span class="daemon-line"><span class="dot" id="choose-dot"></span><span id="choose-daemon">Checking the daemon</span></span>
+            <span>Prefer the terminal? <span class="mono strong" id="choose-cli"></span></span>
           </div>
-          <div class="card alert-card">
-            <h2>Blocked traffic</h2>
-            <div class="count" id="blocked-count"></div>
-            <ul class="rows" id="blocked-top"></ul>
-            <p class="muted small-text" id="blocked-note"></p>
-            <button class="small" id="btn-traffic">Show all</button>
-          </div>
-          <div class="card hidden" id="exposure-card">
-            <h2>Where your secrets could go</h2>
-            <ul class="rows mono" id="exposure"></ul>
-          </div>
-        </div>
-        <ul class="notes" id="status-notes"></ul>
-      </section>
-
-      <section class="panel hidden" data-panel="logs">
-        <div class="toolbar">
-          <label>Service
-            <select id="log-service"><option value="">All services</option></select>
-          </label>
-          <label class="check"><input type="checkbox" id="log-follow" checked> Follow</label>
-          <button class="small" id="log-read">Reload</button>
-          <button class="small" id="log-stop" disabled>Stop following</button>
-        </div>
-        <p class="muted small-text">Logs are written inside the sandbox and could be faked by it. Terminal control codes are removed. Secret values are not masked.</p>
-        <pre class="logs" id="log-text"></pre>
-        <p class="note" id="log-note"></p>
-      </section>
-
-      <section class="panel hidden" data-panel="traffic">
-        <div class="toolbar">
-          <button class="small" id="traffic-read">Read again</button>
-          <span class="muted" id="traffic-total"></span>
-        </div>
-        <ul class="notes" id="traffic-notes"></ul>
-        <table class="table">
-          <thead><tr><th>Time (UTC)</th><th class="num">Count</th><th>Hostname</th></tr></thead>
-          <tbody id="traffic-rows"></tbody>
-        </table>
-      </section>
-
-      <section class="panel hidden" data-panel="secrets">
-        <div class="card wide">
-          <h2>Secrets</h2>
-          <p>Secrets are stored, and assigned ones are delivered on each start.</p>
-          <p>Use the secrets command to add and assign them. A service can read what it is given. A secret held by the proxy also needs the gateway to terminate TLS, which is not settled, so a plan with one is refused.</p>
-          <p class="muted">Managing secrets from this window is not built yet. Values are never shown here.</p>
-          <pre class="cmd" id="secrets-cmd"></pre>
+          <button class="link hidden" id="choose-cancel">Cancel</button>
         </div>
       </section>
 
-      <section class="panel hidden" data-panel="review">
-        <div class="card wide">
-          <h2>Git</h2>
-          <p class="muted">For a project imported from an SSH remote. The sandbox holds a real clone. Pull and push use your SSH key on this machine; your SSH agent, such as 1Password, may ask you to approve. A push to main or master, a branch delete and tags are refused before anything is sent.</p>
-          <div class="toolbar">
-            <button class="small" id="git-status">Status</button>
-            <button class="small" id="git-pull">Pull</button>
-            <button class="small" id="git-push">Push branch</button>
-            <span class="muted" id="git-branch"></span>
-          </div>
-          <form class="toolbar" id="git-commit-form" autocomplete="off">
-            <input id="git-message" type="text" spellcheck="false" placeholder="Commit message" aria-label="Commit message">
-            <button type="submit" class="small">Commit all changes</button>
+      <!-- Step 1, from Git. -->
+      <section class="page hidden" data-page="git">
+        <div class="column">
+          <div class="crumbs"><button class="link back" data-back>← Back</button><span>Step 1 of 3 · Where is it</span></div>
+          <h1>Clone from Git</h1>
+          <form class="card form" id="git-form" autocomplete="off">
+            <label class="field">
+              <span class="label">SSH URL</span>
+              <input id="git-url" class="mono big" type="text" spellcheck="false" placeholder="git@github.com:org/repo.git">
+            </label>
+            <label class="field">
+              <span class="label">Branch, tag or commit <span class="muted">(optional)</span></span>
+              <input id="git-ref" class="mono" type="text" spellcheck="false" placeholder="The remote's default branch">
+            </label>
+            <p class="hint lock">Fetched here with your SSH key. Your SSH agent (1Password, ssh-agent) may ask you to approve. The key never enters the sandbox.</p>
           </form>
-          <h3 id="git-title" class="hidden"></h3>
-          <ul class="notes" id="git-updates"></ul>
-          <pre class="logs" id="git-output"></pre>
-          <p class="note">Make a branch before pushing, in Terminal &amp; about's shell: <code>git switch -c my-branch</code>.</p>
+          <div class="page-actions">
+            <button type="button" data-back>Cancel</button>
+            <button type="submit" class="primary" form="git-form" id="git-go">Fetch and review →</button>
+          </div>
         </div>
-        <div class="toolbar">
-          <button class="small" id="review-read">Compare with the snapshot</button>
-          <span class="muted" id="review-base"></span>
-        </div>
-        <p class="muted" id="review-intro">Compares the files in the running sandbox with the snapshot it started from. The comparison runs inside the sandbox; the host reviews the result and runs nothing from it. Nothing is copied out.</p>
-        <ul class="notes" id="review-notes"></ul>
-        <table class="table">
-          <thead><tr><th>Flag</th><th>Path</th><th>Why it matters</th></tr></thead>
-          <tbody id="review-flags"></tbody>
-        </table>
-        <table class="table">
-          <thead><tr><th>Change</th><th>Path</th></tr></thead>
-          <tbody id="review-files"></tbody>
-        </table>
       </section>
 
-      <section class="panel hidden" data-panel="about">
-        <div class="card wide">
-          <h2>Using the terminal</h2>
-          <p>The command line tool and this window are two clients of the same daemon, with the same powers. Use either.</p>
-          <div id="cli-install"></div>
+      <!-- Step 1, from a folder. -->
+      <section class="page hidden" data-page="folder">
+        <div class="column">
+          <div class="crumbs"><button class="link back" data-back>← Back</button><span>Step 1 of 3 · Where is it</span></div>
+          <h1>Add a folder</h1>
+          <form class="card form" id="folder-form" autocomplete="off">
+            <label class="field">
+              <span class="label">Folder</span>
+              <input id="folder-path" class="mono big" type="text" spellcheck="false" placeholder="/full/path/to/project">
+            </label>
+            <p class="hint">Give the full path, starting with /. Only committed files go in. Your folder isn't changed.</p>
+          </form>
+          <div class="page-actions">
+            <button type="button" data-back>Cancel</button>
+            <button type="submit" class="primary" form="folder-form" id="folder-go">Review what it will do →</button>
+          </div>
         </div>
-        <div class="card wide">
-          <h2>About</h2>
-          <dl class="kv" id="about"></dl>
+      </section>
+
+      <!-- Step 2: the plan. -->
+      <section class="page hidden" data-page="review">
+        <div class="column wide-column">
+          <div class="crumbs"><button class="link back" id="review-back">← Back</button><span id="review-step">Step 2 of 3 · Review</span></div>
+          <h1 id="review-title"></h1>
+          <div class="subtitle" id="review-summary"></div>
+          <div class="alert-box hidden" id="review-blockers"></div>
+          <div class="grid2" id="review-grid">
+            <div class="card">
+              <h2>Reach these sites</h2>
+              <h4>While building</h4>
+              <div class="chips" id="review-build-hosts"></div>
+              <h4>While running</h4>
+              <div class="chips" id="review-run-hosts"></div>
+            </div>
+            <div class="card">
+              <h2>Open ports on this computer only</h2>
+              <ul class="checks" id="review-ports"></ul>
+              <p class="hint" id="review-ports-note"></p>
+            </div>
+            <div class="card">
+              <h2>Get these secrets</h2>
+              <ul class="rows" id="review-secrets"></ul>
+              <ul class="exposure" id="review-exposure"></ul>
+            </div>
+            <div class="card">
+              <h2>Use up to</h2>
+              <div class="figures" id="review-resources"></div>
+              <p class="hint" id="review-resources-note"></p>
+            </div>
+          </div>
+          <div class="warn-box hidden" id="review-findings"></div>
+          <details class="card more hidden" id="review-more">
+            <summary>Show the full plan</summary>
+            <div id="review-more-body"></div>
+          </details>
+          <div class="page-actions spread">
+            <span class="digest mono" id="review-digest"></span>
+            <span class="buttons">
+              <button type="button" id="review-cancel">Cancel</button>
+              <button type="button" class="primary" id="review-start">Start with this plan</button>
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 3: starting. -->
+      <section class="page hidden" data-page="starting">
+        <div class="column">
+          <div class="crumbs"><span id="starting-step">Step 3 of 3 · Starting</span></div>
+          <h1 id="starting-title"></h1>
+          <div class="card steps-card">
+            <ol class="steps" id="starting-steps"></ol>
+          </div>
+          <div class="alert-box hidden" id="starting-error"></div>
+          <div class="ok-box hidden" id="starting-done"></div>
+          <div class="page-actions spread">
+            <span class="hint" id="starting-note">You can leave this page; it keeps going and shows up on the left.</span>
+            <button type="button" id="starting-open">Open project</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- One project. -->
+      <section class="page hidden" data-page="project">
+        <header class="project-head">
+          <div class="project-title">
+            <div class="title-line">
+              <h1 id="project-name"></h1>
+              <span class="pill" id="project-state"></span>
+            </div>
+            <div class="source mono" id="project-source"></div>
+          </div>
+          <div class="actions">
+            <button id="btn-start" class="primary">Start</button>
+            <button id="btn-stop">Stop</button>
+            <div class="menu-wrap">
+              <button id="btn-more" class="more-btn" aria-haspopup="true" aria-expanded="false" title="More">•••</button>
+              <div class="menu hidden" id="more-menu" role="menu">
+                <button role="menuitem" id="menu-restart">Restart with a new plan</button>
+                <button role="menuitem" class="danger-text" id="menu-destroy">Destroy sandbox…</button>
+                <button role="menuitem" class="danger-text" id="menu-remove">Remove from list…</button>
+              </div>
+            </div>
+          </div>
+        </header>
+        <nav class="tabs" aria-label="Project">
+          <button class="tab active" data-tab="overview">Overview</button>
+          <button class="tab" data-tab="logs">Logs</button>
+          <button class="tab" data-tab="network">Network <span class="badge bad hidden" id="badge-network"></span></button>
+          <button class="tab" data-tab="changes">Changes <span class="badge hidden" id="badge-changes"></span></button>
+          <button class="tab" data-tab="secrets">Secrets</button>
+          <button class="tab" data-tab="settings">Settings</button>
+        </nav>
+
+        <div class="tab-body">
+          <section class="panel" data-panel="overview">
+            <div class="empty hidden" id="overview-empty"></div>
+            <div class="overview" id="overview-grid">
+              <div class="card span2">
+                <h2>Services</h2>
+                <ul class="rows services" id="services"></ul>
+              </div>
+              <div class="card">
+                <h2>Limits</h2>
+                <dl class="kv" id="resources"></dl>
+                <p class="hint" id="resources-note"></p>
+              </div>
+              <div class="card" id="blocked-card">
+                <div class="card-head"><h2>Blocked</h2><span class="count" id="blocked-count"></span></div>
+                <ul class="rows mono-rows" id="blocked-top"></ul>
+                <button class="link" id="btn-traffic">Review in Network →</button>
+              </div>
+              <div class="card">
+                <div class="card-head"><h2>Changes</h2><span class="muted small-text" id="changes-when"></span></div>
+                <div class="big-number" id="changes-count"></div>
+                <p class="small-text" id="changes-flagged"></p>
+                <button class="link" id="btn-changes">Compare in Changes →</button>
+              </div>
+              <div class="card">
+                <h2>Ports on this computer</h2>
+                <ul class="rows mono-rows" id="ports"></ul>
+                <p class="hint">On 127.0.0.1 only. Anything on this machine can reach them.</p>
+              </div>
+              <div class="card span3 hidden" id="exposure-card">
+                <h2>Where your secrets could go</h2>
+                <ul class="exposure" id="exposure"></ul>
+              </div>
+            </div>
+            <ul class="notes" id="status-notes"></ul>
+          </section>
+
+          <section class="panel hidden" data-panel="logs">
+            <div class="toolbar">
+              <div class="chips-select" id="log-services" role="group" aria-label="Service"></div>
+              <span class="spacer"></span>
+              <label class="check"><input type="checkbox" id="log-follow" checked> Follow</label>
+              <button class="small" id="log-read">Reload</button>
+              <button class="small" id="log-stop" disabled>Stop following</button>
+              <span class="following hidden" id="log-following"><span class="dot on"></span>Following</span>
+            </div>
+            <pre class="logs" id="log-text"></pre>
+            <p class="hint" id="log-note"></p>
+            <p class="hint">Written inside the sandbox, so it could be faked. Control codes are removed, and assigned secret values are shown as their names.</p>
+          </section>
+
+          <section class="panel hidden" data-panel="network">
+            <div class="card">
+              <div class="card-head">
+                <h2>Blocked hostnames</h2>
+                <span class="buttons"><span class="muted small-text" id="traffic-total"></span><button class="small" id="traffic-read">Read again</button></span>
+              </div>
+              <ul class="notes" id="traffic-notes"></ul>
+              <table class="table">
+                <thead><tr><th>Time (UTC)</th><th class="num">Count</th><th>Hostname</th></tr></thead>
+                <tbody id="traffic-rows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel hidden" data-panel="changes">
+            <div class="changes">
+              <div class="card changes-main">
+                <div class="card-head">
+                  <h2 id="review-heading">Changed since it started</h2>
+                  <span class="buttons"><span class="muted small-text" id="review-when"></span><button class="small" id="review-read">Compare with the snapshot</button></span>
+                </div>
+                <p class="hint" id="review-intro">Compares the files in the running sandbox with the snapshot it started from. The comparison runs inside the sandbox; the host reviews the result and runs nothing from it. Nothing is copied out.</p>
+                <ul class="notes" id="review-notes"></ul>
+                <h4 class="bad-text hidden" id="review-flags-head">Look at these first</h4>
+                <ul class="flags" id="review-flags"></ul>
+                <h4 class="hidden" id="review-files-head"></h4>
+                <ul class="files" id="review-files"></ul>
+              </div>
+              <div class="side-cards">
+                <div class="card" id="git-card">
+                  <h2>Commit</h2>
+                  <p class="hint" id="git-branch">Press Status to see the branch.</p>
+                  <form id="git-commit-form" class="form tight" autocomplete="off">
+                    <label class="field">
+                      <span class="label">Message</span>
+                      <textarea id="git-message" rows="3" spellcheck="false" placeholder="What changed"></textarea>
+                    </label>
+                    <button type="submit" class="primary wide">Commit all changes</button>
+                  </form>
+                  <p class="hint">Commits every change in the sandbox's clone. Make a branch first in a shell: <code>git switch -c my-branch</code>.</p>
+                </div>
+                <div class="card">
+                  <h2>Pull and push</h2>
+                  <p class="hint">Sent from this computer with your key; your SSH agent may ask you to approve. Pushing to main or master, deleting branches and tags are refused before anything is sent.</p>
+                  <div class="button-row">
+                    <button id="git-status">Status</button>
+                    <button id="git-pull">Pull</button>
+                    <button id="git-push">Push branch</button>
+                  </div>
+                  <h3 id="git-title" class="hidden"></h3>
+                  <ul class="notes" id="git-updates"></ul>
+                  <pre class="logs short hidden" id="git-output"></pre>
+                </div>
+                <p class="hint hidden" id="git-not-remote">Commit, pull and push are for a project cloned from Git. A folder you added stays yours: commit in it as usual, then Destroy and Start to bring the new commit in.</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel hidden" data-panel="secrets">
+            <div class="card">
+              <h2>Secrets</h2>
+              <p>Secrets are stored in your keychain, and assigned ones are delivered on each start. Values are never shown here.</p>
+              <h4>Where this project's secrets could go</h4>
+              <ul class="exposure" id="secrets-exposure"></ul>
+              <p class="hint">A service can read what it is given. A secret held by the proxy also needs the gateway to terminate TLS, which is not settled, so a plan with one is refused.</p>
+            </div>
+            <div class="card">
+              <h2>Adding and assigning</h2>
+              <p class="muted">Managing secrets from this window is not built yet. Use the terminal:</p>
+              <pre class="cmd" id="secrets-cmd"></pre>
+            </div>
+          </section>
+
+          <section class="panel hidden" data-panel="settings">
+            <div class="card">
+              <h2>This project</h2>
+              <dl class="kv" id="settings-kv"></dl>
+            </div>
+            <div class="card">
+              <h2>Limits</h2>
+              <dl class="kv" id="settings-resources"></dl>
+              <p class="hint" id="settings-resources-note"></p>
+            </div>
+            <div class="card danger-card">
+              <h2>Remove</h2>
+              <div class="danger-row">
+                <div>
+                  <div class="strong">Destroy the sandbox</div>
+                  <div class="hint">Removes the sandbox and everything in it. The project stays in the list.</div>
+                </div>
+                <button class="danger" id="settings-destroy">Destroy…</button>
+              </div>
+              <div class="danger-row">
+                <div>
+                  <div class="strong">Remove from list</div>
+                  <div class="hint">Destroys its sandbox and forgets the project. A folder of your own is not touched.</div>
+                </div>
+                <button class="danger" id="settings-remove">Remove…</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <!-- The app itself. -->
+      <section class="page hidden" data-page="about">
+        <div class="column">
+          <div class="crumbs"><button class="link back" data-back>← Back</button></div>
+          <h1>Using the terminal</h1>
+          <div class="card">
+            <p>The command line tool and this window are two clients of the same daemon, with the same powers. Use either.</p>
+            <div id="cli-install"></div>
+          </div>
+          <div class="card">
+            <h2>About</h2>
+            <dl class="kv" id="about"></dl>
+          </div>
         </div>
       </section>
     </main>

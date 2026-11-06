@@ -32,20 +32,37 @@
   function errorText(error) {
     return typeof error === 'string' ? error : 'Something went wrong: ' + String(error);
   }
+  function plural(n, one, many) {
+    return n + ' ' + (n === 1 ? one : many);
+  }
+  function lastSegment(path) {
+    const parts = String(path).split('/').filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : String(path);
+  }
 
   const state = {
     info: null,
     projects: [],
     selected: null,
     status: null,
+    statusFailure: null,
+    page: null,
     tab: 'overview',
     busy: false,
+    // The path of the project being started, while `up` runs.
     starting: null,
     daemonRunning: false,
     logId: null,
+    logService: '',
+    // The plan on the Review page, and how it was reached.
+    review: null,
+    // Comparisons made in this window, by project path. Never guessed.
+    diffs: new Map(),
+    // The newest blocked hostnames, for the overview card.
+    blocked: null,
   };
 
-  // ---------- banner, notice and busy line ----------
+  // ---------- messages ----------
 
   // kind is 'ok', 'info' or anything else for a failure.
   function banner(text, kind) {
@@ -66,6 +83,7 @@
 
   let dialogResolve = null;
   function ask({ title, build, okText, danger, okHidden }) {
+    closeMenu();
     $('dialog-title').textContent = title;
     const body = $('dialog-body');
     clear(body);
@@ -92,15 +110,34 @@
   $('dialog-cancel').addEventListener('click', () => closeDialog(false));
   $('dialog').addEventListener('cancel', () => closeDialog(false));
 
-  function section(body, heading, items, empty, mono) {
-    body.appendChild(el('h3', heading));
-    if (!items || items.length === 0) {
-      body.appendChild(el('p', empty, 'muted'));
-      return;
+  // ---------- pages ----------
+
+  function showPage(page) {
+    if (state.page === 'project' && page !== 'project') stopLogs();
+    state.page = page;
+    for (const node of document.querySelectorAll('.page')) {
+      show(node, node.dataset.page === page);
     }
-    const list = el('ul');
-    for (const item of items) list.appendChild(el('li', item, mono ? 'mono' : ''));
-    body.appendChild(list);
+    const hasProjects = state.projects.length > 0;
+    show($('rail'), hasProjects);
+    show($('choose-cancel'), page === 'choose' && hasProjects && !!state.selected);
+    for (const item of $('projects').children) {
+      item.classList.toggle('selected', page === 'project' && item.dataset.path === state.selected);
+    }
+    $('content').scrollTop = 0;
+  }
+
+  function goBack() {
+    if (state.page === 'git' || state.page === 'folder') {
+      showPage('choose');
+    } else if (state.selected && state.projects.length) {
+      openProject(state.selected);
+    } else {
+      showPage('choose');
+    }
+  }
+  for (const button of document.querySelectorAll('[data-back]')) {
+    button.addEventListener('click', goBack);
   }
 
   // ---------- daemon ----------
@@ -113,44 +150,59 @@
       daemon = { running: false, message: errorText(error), notice: null };
     }
     state.daemonRunning = daemon.running;
-    const dot = $('daemon-dot');
-    dot.className = 'dot ' + (daemon.running ? 'on' : 'off');
-    const bin = state.info ? state.info.daemon_bin : 'daemon';
-    const text = $('daemon-text');
-    clear(text);
-    text.appendChild(document.createTextNode(daemon.running ? bin + ' is running' : bin + ' is not running '));
-    if (!daemon.running) {
-      const start = el('button', 'Start it', 'link');
-      start.addEventListener('click', startDaemon);
-      text.appendChild(start);
-    }
+    const bin = state.info ? state.info.daemon_bin : 'The daemon';
+    const words = daemon.running ? bin + ' running' : bin + ' not running';
+    for (const id of ['daemon-dot', 'choose-dot']) $(id).className = 'dot ' + (daemon.running ? 'on' : 'off');
+    $('daemon-text').textContent = words;
+    $('choose-daemon').textContent = daemon.running ? words : words + '. Start it from the menu bar icon, or below.';
+    const action = $('daemon-action');
+    action.textContent = daemon.running ? 'Restart' : 'Start it';
+    show(action, true);
+    const title = !daemon.running && daemon.message ? daemon.message : '';
+    $('daemon-text').title = title;
+    $('choose-daemon').title = title;
     show($('notice'), !!daemon.notice);
     $('notice').textContent = daemon.notice || '';
-    if (!daemon.running && daemon.message) {
-      text.title = daemon.message;
-    } else {
-      text.title = '';
-    }
+    updateButtons();
     return daemon;
   }
 
-  async function startDaemon() {
-    busy('Starting the daemon.');
+  async function startDaemon(restart) {
+    if (restart) {
+      const agreed = await ask({
+        title: 'Restart the daemon',
+        okText: 'Restart it',
+        build: (body) => {
+          body.appendChild(el('p', 'The daemon stops and starts again. Sandboxes are separate processes and keep running.'));
+          body.appendChild(el('p', 'A start, log or Git command in progress is cut off.', 'muted'));
+        },
+      });
+      if (!agreed) return;
+    }
+    stopLogs();
+    busy(restart ? 'Restarting the daemon.' : 'Starting the daemon.');
     try {
-      banner(await invoke('start_daemon'), 'ok');
+      banner(await invoke('start_daemon', { restart: !!restart }), 'ok');
     } catch (error) {
       banner(errorText(error));
     }
     busy('');
     await refreshDaemon();
     await refreshProjects();
-    await loadStatus();
+    if (state.page === 'project') await loadStatus();
   }
+  $('daemon-action').addEventListener('click', () => startDaemon(state.daemonRunning));
 
   // ---------- projects ----------
 
   function stateClass(s) {
-    return s === 'running' ? 'running' : s === 'stopped' ? 'stopped' : '';
+    return s === 'running' ? 'running' : s === 'stopped' ? 'stopped' : s === 'no_answer' ? 'no-answer' : '';
+  }
+
+  function isRemote(path) {
+    const dir = state.info && state.info.state_dir;
+    if (!dir) return null;
+    return String(path).startsWith(dir.replace(/\/+$/, '') + '/remote/');
   }
 
   async function refreshProjects() {
@@ -163,97 +215,148 @@
     state.projects = rows;
     const list = $('projects');
     clear(list);
-    if (rows.length === 0) {
-      list.appendChild(el('li', 'No projects yet. Add a folder below, or run a command in one.', 'empty-line'));
-    }
     for (const row of rows) {
       const item = el('li');
+      item.dataset.path = row.path;
       item.title = row.path;
+      const startingThis = state.starting === row.path;
+      item.appendChild(el('span', null, 'dot ' + (startingThis ? 'starting' : stateClass(row.state))));
       item.appendChild(el('span', row.name, 'name'));
-      item.appendChild(el('span', row.label, 'pill small-pill ' + stateClass(row.state)));
-      if (row.path === state.selected) item.classList.add('selected');
-      item.addEventListener('click', () => select(row.path));
+      item.appendChild(el('span', startingThis ? 'starting' : row.label.toLowerCase(), 'word'));
+      if (state.page === 'project' && row.path === state.selected) item.classList.add('selected');
+      item.addEventListener('click', () => openProject(row.path));
       list.appendChild(item);
     }
-    if (!state.selected && rows.length > 0) {
-      await select(rows[0].path);
-    } else if (state.selected) {
-      renderHeader();
+    if (state.selected && !rows.some((r) => r.path === state.selected)) {
+      state.selected = null;
+      state.status = null;
     }
+    show($('rail'), rows.length > 0);
+    if (state.page === 'project') renderHeader();
   }
 
   function selectedRow() {
     return state.projects.find((p) => p.path === state.selected) || null;
   }
 
-  async function select(path) {
+  async function openProject(path) {
     if (state.selected !== path) {
       stopLogs();
       clear($('log-text'));
       $('log-note').textContent = '';
+      state.logService = '';
+      state.status = null;
+      state.blocked = null;
       clearReview();
+      clearGit();
     }
     state.selected = path;
-    for (const item of $('projects').children) {
-      item.classList.toggle('selected', item.title === path);
-    }
-    banner('');
+    showPage('project');
+    renderHeader();
+    renderOverview(null);
+    await openTab(state.tab);
     await loadStatus();
-    // Fills the overview card as well as the Blocked traffic tab.
     await readTraffic();
     if (state.tab === 'logs') await readLogs();
   }
 
   function renderHeader() {
     const row = selectedRow();
-    $('project-name').textContent = row ? row.name : 'No project selected';
-    $('project-path').textContent = row ? row.path : '';
-    const pill = $('project-state');
     const s = state.status;
-    if (row && s) {
-      pill.textContent = s.label;
-      pill.className = 'pill ' + stateClass(s.state);
-      show(pill, true);
-    } else if (row) {
-      pill.textContent = row.label;
-      pill.className = 'pill ' + stateClass(row.state);
-      show(pill, true);
-    } else {
-      show(pill, false);
+    $('project-name').textContent = row ? row.name : lastSegment(state.selected || '');
+    const remote = row ? isRemote(row.path) : null;
+    $('project-source').textContent = row
+      ? (remote ? 'Cloned from Git · copy kept at ' + row.path : row.path)
+      : '';
+    const pill = $('project-state');
+    const startingThis = !!state.starting && state.starting === state.selected;
+    if (startingThis) {
+      pill.textContent = 'Starting';
+      pill.className = 'pill starting';
+    } else if (s || row) {
+      pill.textContent = s ? s.label : row.label;
+      pill.className = 'pill ' + stateClass(s ? s.state : row.state);
     }
+    show(pill, startingThis || !!s || !!row);
+    renderBadges();
     updateButtons();
+  }
+
+  function renderBadges() {
+    const s = state.status;
+    const net = $('badge-network');
+    const hosts = s && typeof s.blocked_domains === 'number' ? s.blocked_domains : 0;
+    net.textContent = String(hosts);
+    show(net, hosts > 0);
+    const changes = $('badge-changes');
+    const diff = state.diffs.get(state.selected);
+    changes.textContent = diff ? String(diff.view.files.length) : '';
+    show(changes, !!diff && diff.view.files.length > 0);
   }
 
   function updateButtons() {
     const s = state.status;
     const ready = !!state.selected && state.daemonRunning;
-    const has = ready && !state.busy;
+    const free = ready && !state.busy;
+    const startingThis = !!state.starting && state.starting === state.selected;
     // Stop and Destroy stay on during a start: they are the only way out of one
-    // that is stuck. The status is not refreshed while busy, so for the project
-    // being started it is stale, and the daemon is left to decide.
-    const canEnd = ready && (!state.busy || !!state.starting);
-    const row = selectedRow();
-    const startingThis = !!state.starting && !!row && row.path === state.starting;
-    // A button is off only when the known state makes it pointless. With no
-    // state at all, the daemon is left to decide, as the terminal does.
-    $('btn-start').disabled = !has || (!!s && s.state === 'running');
-    $('btn-restart').disabled = !has || !s || s.state !== 'running';
-    $('btn-stop').disabled = !canEnd || (!startingThis && !!s && s.state !== 'running');
-    // Destroy is always on: the daemon says so if there is nothing to destroy.
-    $('btn-destroy').disabled = !canEnd;
-    $('btn-remove').disabled = !has;
+    // that is stuck. The daemon is left to decide.
+    const canEnd = ready && (!state.busy || startingThis);
+    const running = !!s && s.state === 'running';
+    // A button is hidden only when the known state makes it pointless. With no
+    // state at all, both are offered and the daemon decides, as the terminal does.
+    show($('btn-start'), !startingThis && (!s || !running));
+    show($('btn-stop'), startingThis || !s || running);
+    $('btn-start').disabled = !free || !!state.starting;
+    $('btn-stop').disabled = !canEnd;
+    $('menu-restart').disabled = !free || !running || !!state.starting;
+    $('menu-destroy').disabled = !canEnd;
+    $('menu-remove').disabled = !free;
+    $('settings-destroy').disabled = !canEnd;
+    $('settings-remove').disabled = !free;
+    $('btn-more').disabled = !ready;
+    for (const id of ['git-go', 'folder-go', 'review-start']) $(id).disabled = state.busy;
+    for (const id of ['git-status', 'git-pull', 'git-push', 'review-read', 'log-read', 'traffic-read']) $(id).disabled = !free;
+    if ($('daemon-action')) $('daemon-action').disabled = state.busy;
   }
+
+  // ---------- the ••• menu ----------
+
+  function closeMenu() {
+    show($('more-menu'), false);
+    $('btn-more').setAttribute('aria-expanded', 'false');
+  }
+  $('btn-more').addEventListener('click', (event) => {
+    event.stopPropagation();
+    const open = $('more-menu').classList.contains('hidden');
+    show($('more-menu'), open);
+    $('btn-more').setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  document.addEventListener('click', (event) => {
+    if (!$('more-menu').contains(event.target)) closeMenu();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeMenu();
+  });
 
   // ---------- overview ----------
 
-  function row(list, left, right, leftClass) {
+  function row(list, left, right, leftClass, rightClass) {
     const item = el('li');
     item.appendChild(el('span', left, leftClass || ''));
-    item.appendChild(el('span', right, 'right'));
+    item.appendChild(el('span', right, 'right' + (rightClass ? ' ' + rightClass : '')));
     list.appendChild(item);
+    return item;
   }
   function emptyRow(list, text) {
     list.appendChild(el('li', text, 'empty-line'));
+  }
+  function kv(dl, pairs) {
+    clear(dl);
+    for (const [k, v, cls] of pairs) {
+      dl.appendChild(el('dt', k));
+      dl.appendChild(el('dd', v, cls || ''));
+    }
   }
 
   async function loadStatus() {
@@ -268,151 +371,464 @@
     }
     if (state.selected !== path) return;
     state.status = status;
+    state.statusFailure = failure;
     renderHeader();
     renderOverview(failure);
     renderLogServices();
+    renderSecrets();
+    renderSettings();
+  }
+
+  function resourcePairs(r) {
+    return r
+      ? [['Memory', r.memory], ['CPUs', r.cpus], ['Disk', r.disk], ['Memory while building', r.build_memory]]
+      : [['No limits on record', 'They are set when it starts']];
   }
 
   function renderOverview(failure) {
     const s = state.status;
     show($('overview-grid'), !!s);
     show($('overview-empty'), !s);
-    $('overview-empty').textContent = failure || '';
+    $('overview-empty').textContent = failure || (s ? '' : 'Asking the daemon.');
     const notes = $('status-notes');
     clear(notes);
     if (!s) return;
 
-    const res = $('resources');
-    clear(res);
-    if (s.resources) {
-      const r = s.resources;
-      for (const [k, v] of [['Memory', r.memory], ['CPU', r.cpus], ['Disk', r.disk], ['Build memory', r.build_memory]]) {
-        res.appendChild(el('dt', k));
-        res.appendChild(el('dd', v));
-      }
-      $('resources-note').textContent = r.clamped
-        ? 'Lowered to fit your own maximum. Changes apply on the next start.'
-        : 'Changes apply on the next start.';
-    } else {
-      res.appendChild(el('dt', 'No limits on record'));
-      res.appendChild(el('dd', 'They are set when it starts'));
-      $('resources-note').textContent = '';
-    }
+    kv($('resources'), resourcePairs(s.resources));
+    $('resources-note').textContent = !s.resources ? ''
+      : s.resources.clamped ? 'Lowered to fit your own maximum. Changes apply on the next start.'
+      : 'Limits, not current use. Changes apply on the next start.';
 
     const services = $('services');
     clear(services);
     if (s.services.length === 0) emptyRow(services, s.state === 'running' ? 'None reported.' : 'Nothing is running.');
-    for (const svc of s.services) row(services, svc.name, svc.state);
-    $('services-note').textContent = s.services.length ? 'These came from inside the sandbox, so they can be wrong.' : '';
+    for (const svc of s.services) {
+      const item = el('li');
+      const up = /^running/i.test(svc.state);
+      item.appendChild(el('span', null, 'dot ' + (up ? 'running' : 'stopped')));
+      item.appendChild(el('span', svc.name, 'strong'));
+      item.appendChild(el('span', svc.state, 'right muted'));
+      services.appendChild(item);
+    }
 
     const ports = $('ports');
     clear(ports);
     if (s.ports.length === 0) emptyRow(ports, 'No ports forwarded.');
-    for (const p of s.ports) row(ports, p, 'forwarded', 'mono');
+    for (const p of s.ports) row(ports, p, 'forwarded', 'mono', 'muted');
 
-    $('blocked-count').textContent = s.blocked_total === null || s.blocked_total === undefined
-      ? 'Not reported'
-      : `${s.blocked_total} refused lookups, ${s.blocked_domains} hostnames`;
-    clear($('blocked-top'));
-    $('blocked-note').textContent = 'Blocked hostnames only. Raw IP, metadata and UDP attempts are blocked but not recorded, so zero proves nothing.';
+    renderBlockedCard();
+    renderChangesCard();
 
     const exposure = $('exposure');
-    clear(exposure);
+    fillExposure(exposure, s.exposure);
     show($('exposure-card'), s.exposure.length > 0);
-    for (const line of s.exposure) exposure.appendChild(el('li', line));
 
     for (const text of s.notes) notes.appendChild(el('li', text, 'warn'));
   }
 
-  // ---------- start, stop, destroy ----------
+  function renderBlockedCard() {
+    const s = state.status;
+    const count = $('blocked-count');
+    const top = $('blocked-top');
+    clear(top);
+    if (!s || s.blocked_total === null || s.blocked_total === undefined) {
+      count.textContent = 'Not reported';
+      count.className = 'count muted';
+    } else {
+      count.textContent = plural(s.blocked_domains, 'host', 'hosts') + ' · ' + plural(s.blocked_total, 'try', 'tries');
+      count.className = 'count' + (s.blocked_total > 0 ? ' bad-text' : ' muted');
+    }
+    $('blocked-card').classList.toggle('alert-card', !!s && s.blocked_total > 0);
+    const recorded = !!s && typeof s.blocked_total === 'number';
+    const rows = recorded && state.blocked ? state.blocked.rows.slice(0, 3) : [];
+    for (const event of rows) row(top, event.domain, String(event.count), 'mono', 'muted');
+    if (rows.length === 0) emptyRow(top, 'Blocked hostnames only. Zero proves nothing.');
+  }
 
-  // A restart asks about the plan before stopping anything, so saying no leaves
-  // the sandbox running. Its data is kept, as with Stop and then Start.
-  async function startProject(restart) {
+  function renderChangesCard() {
+    const diff = state.diffs.get(state.selected);
+    const count = $('changes-count');
+    const flagged = $('changes-flagged');
+    if (!diff) {
+      count.textContent = 'Not compared yet';
+      count.className = 'big-number quiet';
+      flagged.textContent = 'Runs inside the sandbox when you ask. Nothing is copied out.';
+      flagged.className = 'small-text muted';
+      $('changes-when').textContent = '';
+      $('btn-changes').textContent = 'Compare in Changes →';
+      return;
+    }
+    const v = diff.view;
+    count.textContent = plural(v.files.length, 'file', 'files');
+    count.className = 'big-number';
+    if (v.flags.length) {
+      flagged.textContent = plural(v.flags.length, 'flag', 'flags') + ': ' + v.flags[0].path + (v.flags.length > 1 ? ' and more' : '');
+      flagged.className = 'small-text bad-text';
+    } else {
+      flagged.textContent = 'Nothing flagged. Flags are a heuristic aid.';
+      flagged.className = 'small-text muted';
+    }
+    $('changes-when').textContent = 'compared at ' + diff.when;
+    $('btn-changes').textContent = 'Review changes →';
+  }
+
+  function fillExposure(list, lines) {
+    clear(list);
+    for (const line of lines) {
+      // Host lines under a secret are indented by the daemon.
+      list.appendChild(el('li', line.trim(), /^\s/.test(line) ? 'host' : 'secret'));
+    }
+  }
+
+  $('btn-traffic').addEventListener('click', () => openTab('network'));
+  $('btn-changes').addEventListener('click', () => openTab('changes'));
+
+  // ---------- secrets and settings ----------
+
+  function renderSecrets() {
+    const s = state.status;
+    const list = $('secrets-exposure');
+    if (s && s.exposure.length) {
+      fillExposure(list, s.exposure);
+    } else {
+      clear(list);
+      list.appendChild(el('li', s ? 'No secret is assigned to this project.' : 'Not known: the daemon did not report on it.', 'empty-line'));
+    }
+  }
+
+  function renderSettings() {
     const row = selectedRow();
-    if (!row) return;
-    const verb = restart ? 'restarted' : 'started';
+    const s = state.status;
+    const remote = row ? isRemote(row.path) : null;
+    kv($('settings-kv'), [
+      ['Name', row ? row.name : ''],
+      ['Path', state.selected || '', 'mono'],
+      ['Comes from', remote === null ? 'Not known' : remote ? 'Cloned from Git; this is the copy the daemon keeps' : 'A folder on this computer, copied in from its commit'],
+      ['Sandbox', s ? s.label : (row ? row.label : '')],
+    ]);
+    kv($('settings-resources'), resourcePairs(s && s.resources));
+    $('settings-resources-note').textContent = s && s.resources && s.resources.clamped
+      ? 'Lowered to fit your own maximum. Changes apply on the next start.'
+      : 'Changes apply on the next start.';
+  }
+
+  // ---------- review and start ----------
+
+  // Lines the Ports card says for itself, since a port can be unticked there.
+  const PORT_SUMMARY = [/^Forward to 127\.0\.0\.1:/, /^No ports would be forwarded\.$/, /^Anything on this machine could then reach them\.$/];
+
+  async function reviewPlan({ path, name, restart, from, commit }) {
     busy('Working out what starting it would do.');
     let plan;
     try {
-      plan = await invoke('plan', { project: row.path });
+      plan = await invoke('plan', { project: path });
     } catch (error) {
       busy('');
       banner(errorText(error));
-      return;
+      return false;
     }
     busy('');
-    if (plan.blockers.length > 0) {
-      await ask({
-        title: 'This cannot be ' + verb + ' yet',
-        okHidden: true,
-        build: (body) => {
-          for (const b of plan.blockers) body.appendChild(el('p', b, 'alert'));
-        },
-      });
-      banner('Nothing was ' + verb + '.', 'info');
+    banner('');
+    state.review = { plan, path, name: name || lastSegment(plan.path || path), restart: !!restart, from: from || null, commit: commit || null };
+    renderReview();
+    showPage('review');
+    // The safe answer has the focus, so Enter never agrees by accident.
+    $('review-cancel').focus({ preventScroll: true });
+    return true;
+  }
+
+  function chips(node, hosts, empty) {
+    clear(node);
+    if (!hosts.length) {
+      node.appendChild(el('span', empty, 'muted small-text'));
       return;
     }
-    const ports = plan.ports.map((p) => p.host_port);
-    const agreed = await ask({
-      title: (restart ? 'Restart ' : 'Start ') + row.name,
-      okText: restart ? 'Restart with this plan' : 'Start with this plan',
-      build: (body) => {
-        for (const line of plan.summary) body.appendChild(el('p', line));
-        section(body, 'Services', plan.services, 'None.');
-        if (plan.generated_compose.length) {
-          body.appendChild(el('h3', 'Compose file written for this Dockerfile'));
-          body.appendChild(el('pre', plan.generated_compose.join('\n'), 'mono'));
-        }
-        body.appendChild(el('h3', 'Files'));
-        body.appendChild(el('p', plan.commit ? 'From commit ' + plan.commit + '. Nothing uncommitted is copied in.' : 'From the working tree.', 'mono'));
-        section(body, 'Ports to forward, on 127.0.0.1 only',
-          plan.ports.map((p) => `127.0.0.1:${p.host_port}  →  ${p.service}:${p.container_port}` + (p.note ? '  (' + p.note + ')' : '')),
-          'None.', true);
-        section(body, 'Hosts allowed during the build', plan.build_hosts, 'None.', true);
-        section(body, 'Hosts allowed while it runs', plan.run_hosts, 'None. Everything else is refused.', true);
-        section(body, 'Secrets (names only)', plan.secrets, 'None.');
-        if (plan.exposure.length) section(body, 'Where your secrets could go', plan.exposure, '', true);
-        body.appendChild(el('h3', 'Limits'));
-        body.appendChild(el('p', `${plan.resources.memory} memory, ${plan.resources.cpus} CPUs, ${plan.resources.disk} disk, ${plan.resources.build_memory} during the build.`));
-        if (plan.findings.length) section(body, 'What the checks found', plan.findings, '');
-        if (plan.warnings.length) section(body, 'Files that look like they hold a secret', plan.warnings, '', true);
-        body.appendChild(el('p', 'Plan ' + plan.digest.slice(0, 16), 'muted mono'));
-      },
+    for (const host of hosts) node.appendChild(el('span', host, 'chip mono'));
+  }
+
+  function renderReview() {
+    const { plan, name, restart, from } = state.review;
+    const blocked = plan.blockers.length > 0;
+    $('review-step').textContent = from ? 'Step 2 of 3 · Review' : (restart ? 'Restart · Review' : 'Start · Review');
+    $('review-title').textContent = blocked ? name + " can't start yet" : name + ' will be able to…';
+
+    const summary = $('review-summary');
+    clear(summary);
+    for (const line of plan.summary) {
+      if (PORT_SUMMARY.some((re) => re.test(line))) continue;
+      summary.appendChild(el('p', line));
+    }
+    summary.appendChild(el('p', plan.commit
+      ? 'Only committed files go in. Nothing else is allowed.'
+      : 'From the working tree. Nothing else is allowed.', 'muted'));
+
+    const blockers = $('review-blockers');
+    clear(blockers);
+    show(blockers, blocked);
+    if (blocked) {
+      blockers.appendChild(el('h3', 'This cannot start yet'));
+      for (const b of plan.blockers) blockers.appendChild(el('p', b));
+    }
+
+    chips($('review-build-hosts'), plan.build_hosts, 'None.');
+    chips($('review-run-hosts'), plan.run_hosts, 'None. Everything else is refused.');
+
+    const ports = $('review-ports');
+    clear(ports);
+    plan.ports.forEach((p, index) => {
+      const item = el('li');
+      const label = el('label');
+      const box = el('input');
+      box.type = 'checkbox';
+      box.checked = true;
+      box.dataset.index = String(index);
+      box.disabled = blocked;
+      label.appendChild(box);
+      label.appendChild(el('span', '127.0.0.1:' + p.host_port, 'mono'));
+      label.appendChild(el('span', p.service + ':' + p.container_port, 'right muted'));
+      item.appendChild(label);
+      if (p.note) item.appendChild(el('div', p.note, 'hint'));
+      ports.appendChild(item);
     });
-    if (!agreed) {
-      banner('Nothing was ' + verb + '.', 'info');
-      return;
+    if (!plan.ports.length) ports.appendChild(el('li', 'None. Nothing is forwarded.', 'empty-line'));
+    $('review-ports-note').textContent = plan.ports.length
+      ? 'Untick a port to leave it closed. Anything on this machine could reach a ticked one.'
+      : '';
+
+    const secrets = $('review-secrets');
+    clear(secrets);
+    for (const line of plan.secrets) {
+      // "NAME: how for services", as ops.rs writes it.
+      const cut = line.indexOf(': ');
+      if (cut > 0) row(secrets, line.slice(0, cut), line.slice(cut + 2), 'mono', 'muted');
+      else secrets.appendChild(el('li', line));
     }
-    state.starting = row.path;
-    if (restart) {
+    if (!plan.secrets.length) secrets.appendChild(el('li', 'None.', 'empty-line'));
+    // The rows above already say which service gets each one.
+    fillExposure($('review-exposure'), plan.exposure.filter((line) => !/^\S+ is given to /.test(line)));
+
+    const res = $('review-resources');
+    clear(res);
+    for (const [value, unit] of [[plan.resources.memory, 'memory'], [plan.resources.cpus, plan.resources.cpus === '1' ? 'CPU' : 'CPUs'], [plan.resources.disk, 'disk']]) {
+      const fig = el('div', null, 'figure');
+      fig.appendChild(el('div', value, 'figure-value'));
+      fig.appendChild(el('div', unit, 'figure-unit'));
+      res.appendChild(fig);
+    }
+    $('review-resources-note').textContent = plan.resources.build_memory + ' while building.'
+      + (plan.resources.clamped ? ' Lowered to fit your own maximum.' : '');
+
+    const findings = $('review-findings');
+    clear(findings);
+    const found = plan.findings.length + plan.warnings.length;
+    show(findings, found > 0);
+    if (plan.findings.length) {
+      findings.appendChild(el('h3', plural(plan.findings.length, 'finding', 'findings')));
+      for (const f of plan.findings) findings.appendChild(el('p', f));
+    }
+    if (plan.warnings.length) {
+      findings.appendChild(el('h3', 'Files that look like they hold a secret'));
+      for (const w of plan.warnings) findings.appendChild(el('p', w, 'mono'));
+    }
+
+    const more = $('review-more-body');
+    clear(more);
+    more.appendChild(el('h4', 'Services'));
+    more.appendChild(el('p', plan.services.length ? plan.services.join(', ') : 'None.'));
+    more.appendChild(el('h4', 'Files'));
+    more.appendChild(el('p', plan.commit ? 'From commit ' + plan.commit + '. Nothing uncommitted is copied in.' : 'From the working tree.', 'mono'));
+    if (plan.generated_compose.length) {
+      more.appendChild(el('h4', 'Compose file written for this Dockerfile'));
+      more.appendChild(el('pre', plan.generated_compose.join('\n'), 'cmd'));
+    }
+    more.appendChild(el('h4', 'Plan digest'));
+    more.appendChild(el('p', plan.digest, 'mono wrap'));
+    show($('review-more'), true);
+    $('review-more').open = false;
+
+    $('review-digest').textContent = 'plan ' + plan.digest.slice(0, 16);
+    show($('review-start'), !blocked);
+    $('review-start').textContent = restart ? 'Restart with this plan' : 'Start with this plan';
+    $('review-cancel').textContent = blocked ? 'Close' : 'Cancel';
+  }
+
+  function cancelReview() {
+    const review = state.review;
+    state.review = null;
+    if (review && !review.from) banner('Nothing was ' + (review.restart ? 'restarted.' : 'started.'), 'info');
+    if (review && review.from) banner('Nothing was started. The project is in the list; start it from there when you want.', 'info');
+    const target = review && projectPathFor(review);
+    if (target) openProject(target);
+    else goBack();
+  }
+  $('review-cancel').addEventListener('click', cancelReview);
+  $('review-back').addEventListener('click', cancelReview);
+
+  // The list's own path for a reviewed project, which the daemon canonicalized.
+  function projectPathFor(review) {
+    const names = [review.path, review.plan && review.plan.path];
+    const found = state.projects.find((p) => names.includes(p.path));
+    return found ? found.path : null;
+  }
+
+  $('review-start').addEventListener('click', () => {
+    const review = state.review;
+    if (!review || review.plan.blockers.length) return;
+    // Only ports from the plan that was shown, and only those left ticked.
+    const ports = [];
+    for (const box of $('review-ports').querySelectorAll('input[type=checkbox]')) {
+      if (box.checked) ports.push(review.plan.ports[Number(box.dataset.index)].host_port);
+    }
+    state.review = null;
+    runStart(review, ports);
+  });
+
+  const STEP_ORDER = ['planning', 'sandbox', 'snapshot', 'docker', 'secrets', 'build'];
+  const STEP_WORDS = {
+    planning: 'Checking the plan again',
+    sandbox: 'Getting the virtual machine ready',
+    snapshot: 'Copying the snapshot in',
+    docker: 'Waiting for Docker inside it',
+    secrets: 'Delivering assigned secrets',
+    build: 'Building and starting services',
+  };
+
+  function stepRow(key, words, status) {
+    const item = el('li', null, 'step ' + status);
+    item.dataset.key = key;
+    item.appendChild(el('span', null, 'mark'));
+    const text = el('span', null, 'step-text');
+    text.appendChild(el('span', words, 'step-words'));
+    text.appendChild(el('span', '', 'step-detail mono'));
+    item.appendChild(text);
+    item.appendChild(el('span', '', 'step-time'));
+    return item;
+  }
+  function seconds(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+  }
+
+  async function runStart(review, ports) {
+    const path = review.path;
+    const name = review.name;
+    const list = $('starting-steps');
+    clear(list);
+    show($('starting-error'), false);
+    show($('starting-done'), false);
+    $('starting-step').textContent = review.from ? 'Step 3 of 3 · Starting' : (review.restart ? 'Restarting' : 'Starting');
+    $('starting-title').textContent = (review.restart ? 'Restarting ' : 'Starting ') + name;
+    $('starting-note').textContent = 'You can leave this page; it keeps going and shows up on the left.';
+    if (review.from === 'git') {
+      const fetched = stepRow('fetch', 'Code fetched with your key', 'done');
+      fetched.querySelector('.step-detail').textContent = review.commit ? 'at ' + review.commit.slice(0, 12) : '';
+      list.appendChild(fetched);
+    }
+    if (review.restart) list.appendChild(stepRow('down', 'Stopping it, keeping its data', 'pending'));
+    for (const key of STEP_ORDER) list.appendChild(stepRow(key, STEP_WORDS[key], 'pending'));
+    list.appendChild(stepRow('ports', ports.length ? 'Opening ports ' + ports.join(', ') + ' on 127.0.0.1' : 'No ports to open', 'pending'));
+    showPage('starting');
+
+    let current = null;
+    let since = Date.now();
+    const timer = setInterval(() => {
+      if (current) current.querySelector('.step-time').textContent = seconds(Date.now() - since);
+    }, 1000);
+    function finishCurrent(status) {
+      if (!current) return;
+      current.className = 'step ' + status;
+      current.querySelector('.step-time').textContent = seconds(Date.now() - since);
+      current = null;
+    }
+    function begin(key, words, detail) {
+      let item = list.querySelector('li[data-key="' + CSS.escape(key) + '"]');
+      if (!item) {
+        // A step this window does not know: shown as the daemon named it.
+        item = stepRow(key, words || key, 'pending');
+        list.insertBefore(item, list.querySelector('li[data-key="ports"]'));
+      }
+      // Steps the daemon skipped are not shown as done.
+      for (let node = item.previousElementSibling; node; node = node.previousElementSibling) {
+        if (node.classList.contains('pending')) node.remove();
+      }
+      if (item !== current) {
+        finishCurrent('done');
+        current = item;
+        since = Date.now();
+        item.className = 'step active';
+      }
+      item.querySelector('.step-detail').textContent = detail || '';
+    }
+
+    state.starting = path;
+    state.startedReview = review;
+    busy('');
+    await refreshProjects();
+    renderHeader();
+
+    if (review.restart) {
       stopLogs();
-      busy('Stopping, to restart it.');
+      begin('down');
       try {
-        await invoke('down', { project: row.path });
+        await invoke('down', { project: path });
       } catch (error) {
-        banner('Could not stop it to restart it: ' + errorText(error));
-        state.starting = null;
-        busy('');
-        await loadStatus();
+        finishCurrent('failed');
+        clearInterval(timer);
+        failStart('Could not stop it to restart it: ' + errorText(error));
         return;
       }
     }
-    busy('Starting. A first build can take minutes.');
+
     const progress = new Channel();
-    progress.onmessage = (event) => {
-      busy('Starting. ' + event.step + (event.detail ? ': ' + event.detail : ''));
-    };
+    progress.onmessage = (event) => begin(event.step, STEP_WORDS[event.step], event.detail);
     try {
-      banner(await invoke('up', { project: row.path, digest: plan.digest, ports, onProgress: progress }), 'ok');
+      const said = await invoke('up', { project: path, digest: review.plan.digest, ports, onProgress: progress });
+      finishCurrent('done');
+      for (const node of [...list.querySelectorAll('li.pending')]) {
+        if (node.dataset.key !== 'ports') node.remove();
+      }
+      const last = list.querySelector('li[data-key="ports"]');
+      if (last) last.className = 'step done';
+      $('starting-done').textContent = said;
+      show($('starting-done'), true);
+      $('starting-note').textContent = '';
+      banner(said, 'ok');
     } catch (error) {
-      banner('Could not start it: ' + errorText(error));
+      finishCurrent('failed');
+      failStart('Could not start it: ' + errorText(error));
     }
+    clearInterval(timer);
     state.starting = null;
-    busy('');
     await refreshProjects();
-    await loadStatus();
-    if (state.tab === 'logs') await readLogs();
+    if (state.selected === path) {
+      await loadStatus();
+      await readTraffic();
+    }
+    if (state.page === 'project' && state.tab === 'logs') await readLogs();
+  }
+
+  function failStart(text) {
+    const box = $('starting-error');
+    box.textContent = text;
+    show(box, true);
+    $('starting-note').textContent = 'Nothing more will happen. Fix what it says, then press Start on the project.';
+    banner(text);
+    state.starting = null;
+    refreshProjects();
+  }
+
+  $('starting-open').addEventListener('click', () => {
+    const started = state.startedReview && projectPathFor(state.startedReview);
+    const target = started || (state.projects.find((p) => p.path === state.selected) ? state.selected : (state.projects[0] && state.projects[0].path));
+    if (target) openProject(target);
+    else showPage('choose');
+  });
+
+  async function startProject(restart) {
+    const row = selectedRow();
+    if (!row) return;
+    closeMenu();
+    await reviewPlan({ path: row.path, name: row.name, restart });
   }
 
   async function stopProject(destroy) {
@@ -439,6 +855,8 @@
       banner('Nothing was changed.', 'info');
       return;
     }
+    if (destroy) state.diffs.delete(row.path);
+    stopLogs();
     busy(destroy ? 'Destroying.' : 'Stopping.');
     try {
       banner(await invoke(destroy ? 'destroy' : 'down', { project: row.path }), 'ok');
@@ -448,6 +866,7 @@
     busy('');
     await refreshProjects();
     await loadStatus();
+    await readTraffic();
   }
 
   async function removeProject() {
@@ -480,38 +899,50 @@
     busy('');
     if (removed) {
       // Asking about it again would make a new record of it.
+      state.diffs.delete(row.path);
       state.selected = null;
       state.status = null;
       clear($('log-text'));
       clearReview();
+      clearGit();
     }
     await refreshProjects();
-    if (state.selected) await loadStatus();
-    else renderHeader();
-    updateButtons();
+    if (state.selected) {
+      await loadStatus();
+    } else if (state.projects.length) {
+      await openProject(state.projects[0].path);
+    } else {
+      showPage('choose');
+    }
   }
 
-  $('btn-remove').addEventListener('click', removeProject);
   $('btn-start').addEventListener('click', () => startProject(false));
-  $('btn-restart').addEventListener('click', () => startProject(true));
   $('btn-stop').addEventListener('click', () => stopProject(false));
-  $('btn-destroy').addEventListener('click', () => stopProject(true));
+  $('menu-restart').addEventListener('click', () => startProject(true));
+  $('menu-destroy').addEventListener('click', () => { closeMenu(); stopProject(true); });
+  $('menu-remove').addEventListener('click', () => { closeMenu(); removeProject(); });
+  $('settings-destroy').addEventListener('click', () => stopProject(true));
+  $('settings-remove').addEventListener('click', removeProject);
 
   // ---------- logs ----------
 
   function renderLogServices() {
-    const select = $('log-service');
-    const keep = select.value;
-    clear(select);
-    select.appendChild(el('option', 'All services'));
-    select.options[0].value = '';
+    const group = $('log-services');
+    clear(group);
     const names = (state.status && state.status.log_services) || [];
-    for (const name of names) {
-      const option = el('option', name);
-      option.value = name;
-      select.appendChild(option);
+    if (!names.includes(state.logService)) state.logService = '';
+    for (const name of [''].concat(names)) {
+      const chip = el('button', name || 'All', 'chip-btn' + (name === state.logService ? ' active' : ''));
+      chip.type = 'button';
+      chip.setAttribute('aria-pressed', name === state.logService ? 'true' : 'false');
+      chip.addEventListener('click', () => {
+        if (state.logService === name) return;
+        state.logService = name;
+        renderLogServices();
+        readLogs();
+      });
+      group.appendChild(chip);
     }
-    select.value = names.includes(keep) ? keep : '';
   }
 
   const MAX_LOG_CHARS = 400000;
@@ -524,12 +955,17 @@
     if (atBottom) pre.scrollTop = pre.scrollHeight;
   }
 
+  function setFollowing(on) {
+    $('log-stop').disabled = !on;
+    show($('log-following'), on);
+  }
+
   function stopLogs() {
     if (state.logId !== null) {
       invoke('logs_stop', { id: state.logId }).catch(() => {});
       state.logId = null;
     }
-    $('log-stop').disabled = true;
+    setFollowing(false);
   }
 
   async function readLogs() {
@@ -540,7 +976,6 @@
     const s = state.status;
     if (!s) {
       $('log-note').textContent = 'The daemon could not report on this project, so its logs were not asked for.';
-      clearReview();
       return;
     }
     if (s.state !== 'running') {
@@ -550,7 +985,7 @@
       return;
     }
     const follow = $('log-follow').checked;
-    $('log-note').textContent = follow ? 'Following. New lines appear as they are written.' : 'Reading.';
+    $('log-note').textContent = follow ? '' : 'Reading.';
     const channel = new Channel();
     let mine = null;
     channel.onmessage = (event) => {
@@ -559,22 +994,23 @@
       } else if (event.kind === 'end') {
         if (mine !== null && state.logId === mine) {
           state.logId = null;
-          $('log-stop').disabled = true;
+          setFollowing(false);
         }
         const empty = $('log-text').textContent.length === 0;
         $('log-note').textContent = event.note || (empty ? 'Nothing has been logged yet.' : (follow ? 'Stopped following.' : ''));
       }
     };
     try {
-      const service = $('log-service').value || null;
+      const service = state.logService || null;
       mine = await invoke('logs', { project: row.path, service, follow, onEvent: channel });
-      if (follow) {
+      if (follow && state.selected === row.path) {
         state.logId = mine;
-        $('log-stop').disabled = false;
+        setFollowing(true);
+      } else if (follow) {
+        invoke('logs_stop', { id: mine }).catch(() => {});
       }
     } catch (error) {
       $('log-note').textContent = errorText(error);
-      clearReview();
     }
   }
 
@@ -583,10 +1019,9 @@
     stopLogs();
     $('log-note').textContent = 'Stopped following.';
   });
-  $('log-service').addEventListener('change', readLogs);
   $('log-follow').addEventListener('change', readLogs);
 
-  // ---------- blocked traffic ----------
+  // ---------- network ----------
 
   async function readTraffic() {
     const row = selectedRow();
@@ -600,171 +1035,147 @@
     try {
       view = await invoke('blocked', { project: row.path });
     } catch (error) {
-      notes.appendChild(el('li', errorText(error), 'alert'));
+      if (state.selected === row.path) notes.appendChild(el('li', errorText(error), 'alert'));
       return;
     }
     if (state.selected !== row.path) return;
+    state.blocked = view;
     for (const note of view.notes) notes.appendChild(el('li', note.text, note.weight === 'plain' ? '' : note.weight));
-    $('traffic-total').textContent = view.recording ? `${view.total} refused lookups counted` : '';
+    $('traffic-total').textContent = view.recording ? plural(view.total, 'refused lookup', 'refused lookups') + ' counted' : '';
     for (const event of view.rows) {
       const tr = el('tr');
-      tr.appendChild(el('td', event.time));
+      tr.appendChild(el('td', event.time, 'mono muted'));
       tr.appendChild(el('td', event.count, 'num'));
-      tr.appendChild(el('td', event.domain));
+      tr.appendChild(el('td', event.domain, 'mono'));
       rows.appendChild(tr);
     }
-    // The overview card shows the newest few.
-    const top = $('blocked-top');
-    clear(top);
-    for (const event of view.rows.slice(0, 4)) row2(top, event);
-  }
-  function row2(list, event) {
-    const item = el('li');
-    item.appendChild(el('span', event.domain, 'mono'));
-    item.appendChild(el('span', '×' + event.count, 'right'));
-    list.appendChild(item);
+    renderBlockedCard();
   }
 
   $('traffic-read').addEventListener('click', readTraffic);
-  $('btn-traffic').addEventListener('click', () => openTab('traffic'));
 
-  // ---------- git review ----------
+  // ---------- changes ----------
 
   // Clears the page, so a comparison is never shown under another project.
   function clearReview() {
     clear($('review-notes'));
     clear($('review-flags'));
     clear($('review-files'));
-    $('review-base').textContent = '';
+    show($('review-flags-head'), false);
+    show($('review-files-head'), false);
+    $('review-heading').textContent = 'Changed since it started';
+    $('review-when').textContent = '';
+    $('review-read').textContent = 'Compare with the snapshot';
+    show($('review-intro'), true);
+  }
+
+  const CHANGE_LETTER = { added: 'A', modified: 'M', deleted: 'D', 'type changed': 'T' };
+
+  function renderDiff(diff) {
+    clearReview();
+    const view = diff.view;
+    show($('review-intro'), false);
+    $('review-read').textContent = 'Compare again';
+    $('review-heading').textContent = 'Changed since it started from ' + view.baseline;
+    $('review-when').textContent = 'Compared at ' + diff.when;
+    const notes = $('review-notes');
+    for (const note of view.notes) notes.appendChild(el('li', note.text, note.weight === 'plain' ? '' : note.weight));
+    const flags = $('review-flags');
+    show($('review-flags-head'), view.flags.length > 0);
+    for (const flag of view.flags) {
+      const item = el('li');
+      item.appendChild(el('div', flag.path, 'mono strong'));
+      item.appendChild(el('div', flag.message));
+      flags.appendChild(item);
+    }
+    const head = $('review-files-head');
+    head.textContent = (view.flags.length ? 'Every changed file · ' : 'Changed files · ') + view.files.length;
+    show(head, true);
+    const files = $('review-files');
+    for (const file of view.files) {
+      const item = el('li');
+      item.title = file.change;
+      item.appendChild(el('span', CHANGE_LETTER[file.change] || '?', 'change ' + file.change.replace(' ', '-')));
+      item.appendChild(el('span', file.path, 'mono'));
+      files.appendChild(item);
+    }
+    if (!view.files.length) files.appendChild(el('li', 'No files changed.', 'empty-line'));
   }
 
   // Runs only when asked: the comparison runs inside the sandbox.
   async function readReview() {
     const row = selectedRow();
+    if (!row) return;
     clearReview();
-    const notes = $('review-notes');
-    if (!row) {
-      notes.appendChild(el('li', 'No project selected.', 'warn'));
-      return;
-    }
     busy('Comparing inside the sandbox. A large project can take a while.');
     let view;
     try {
       view = await invoke('diff', { project: row.path });
     } catch (error) {
-      notes.appendChild(el('li', errorText(error), 'alert'));
+      if (state.selected === row.path) {
+        show($('review-intro'), true);
+        $('review-notes').appendChild(el('li', errorText(error), 'alert'));
+      }
       return;
     } finally {
       busy('');
     }
+    const now = new Date();
+    const diff = { view, when: String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') };
+    state.diffs.set(row.path, diff);
     if (state.selected !== row.path) return;
-    $('review-base').textContent = `Snapshot commit ${view.baseline}`;
-    for (const note of view.notes) notes.appendChild(el('li', note.text, note.weight === 'plain' ? '' : note.weight));
-    const flags = $('review-flags');
-    for (const flag of view.flags) {
-      const tr = el('tr', null, 'alert');
-      tr.appendChild(el('td', 'FLAG', 'flag'));
-      tr.appendChild(el('td', flag.path, 'mono'));
-      tr.appendChild(el('td', flag.message));
-      flags.appendChild(tr);
-    }
-    const files = $('review-files');
-    for (const file of view.files) {
-      const tr = el('tr');
-      tr.appendChild(el('td', file.change));
-      tr.appendChild(el('td', file.path, 'mono'));
-      files.appendChild(tr);
-    }
+    renderDiff(diff);
+    renderBadges();
+    renderChangesCard();
   }
 
   $('review-read').addEventListener('click', readReview);
 
-  // ---------- tabs ----------
-
-  async function openTab(tab) {
-    state.tab = tab;
-    for (const button of document.querySelectorAll('.tab')) {
-      button.classList.toggle('active', button.dataset.tab === tab);
-    }
-    for (const panel of document.querySelectorAll('.panel')) {
-      show(panel, panel.dataset.panel === tab);
-    }
-    if (tab !== 'logs') stopLogs();
-    if (tab === 'traffic') await readTraffic();
-    if (tab === 'logs' && state.selected) {
-      await loadStatus();
-      await readLogs();
-    }
-  }
-  for (const button of document.querySelectorAll('.tab')) {
-    button.addEventListener('click', () => openTab(button.dataset.tab));
-  }
-
-  // ---------- adding a project ----------
-
-  $('add-form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const path = $('add-path').value.trim();
-    if (!path) return;
-    try {
-      const said = await invoke('add_project', { path });
-      $('add-path').value = '';
-      banner(said === 'Added.' ? '' : said, 'info');
-      await refreshProjects();
-    } catch (error) {
-      banner(errorText(error));
-    }
-  });
-
-  // ---------- importing from Git ----------
-
-  $('import-form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const url = $('import-url').value.trim();
-    if (!url) return;
-    busy('Fetching on this machine. Your SSH agent may ask you to approve.');
-    let view;
-    try {
-      view = await invoke('import_remote', { url });
-    } catch (error) {
-      busy('');
-      banner(errorText(error));
-      return;
-    }
-    busy('');
-    $('import-url').value = '';
-    banner(view.message, 'info');
-    await refreshProjects();
-    await select(view.project_path);
-    if (view.fetched) await startProject();
-  });
-
   // ---------- Git ----------
+
+  function clearGit() {
+    show($('git-title'), false);
+    clear($('git-updates'));
+    $('git-output').textContent = '';
+    show($('git-output'), false);
+    $('git-branch').textContent = 'Press Status to see the branch.';
+  }
+
+  function renderGitAvailability() {
+    const remote = state.selected ? isRemote(state.selected) : null;
+    // When it cannot be told, the controls are offered and the daemon decides.
+    const offer = remote !== false;
+    show($('git-card'), offer);
+    show($('git-status').closest('.card'), offer);
+    show($('git-not-remote'), !offer);
+  }
 
   async function runGit(op, message) {
     const row = selectedRow();
-    if (!row) { banner('Choose a project first.'); return; }
+    if (!row) return null;
     const waiting = op === 'pull' || op === 'push';
-    busy(waiting ? (op === 'pull' ? 'Pulling' : 'Pushing') + '. Your SSH agent may ask you to approve.' : 'Asking Git');
+    busy(waiting ? (op === 'pull' ? 'Pulling' : 'Pushing') + '. Your SSH agent may ask you to approve.' : 'Asking Git.');
     let view;
     try {
       view = await invoke('git', { project: row.path, op, commitMessage: message || null });
     } catch (error) {
       busy('');
       banner(errorText(error));
-      return;
+      return null;
     }
     busy('');
+    if (state.selected !== row.path) return view;
     const title = $('git-title');
     title.textContent = view.title;
-    title.className = view.ok ? '' : 'bad';
+    title.className = view.ok ? 'good-text' : 'bad-text';
     show(title, true);
     const updates = $('git-updates');
     clear(updates);
-    for (const line of view.updates) updates.appendChild(el('li', 'pushed ' + line));
-    if (view.refused) updates.appendChild(el('li', view.refused, 'bad'));
+    for (const line of view.updates) updates.appendChild(el('li', 'pushed ' + line, 'mono'));
+    if (view.refused) updates.appendChild(el('li', view.refused, 'alert'));
     $('git-output').textContent = view.output.join('\n');
-    $('git-branch').textContent = view.branch ? 'On branch ' + view.branch : '';
+    show($('git-output'), view.output.length > 0);
+    if (view.branch) $('git-branch').textContent = 'On branch ' + view.branch;
     return view;
   }
 
@@ -779,10 +1190,109 @@
     if (view && view.ok) $('git-message').value = '';
   });
 
+  // ---------- tabs ----------
+
+  async function openTab(tab) {
+    closeMenu();
+    state.tab = tab;
+    for (const button of document.querySelectorAll('.tab')) {
+      button.classList.toggle('active', button.dataset.tab === tab);
+    }
+    for (const panel of document.querySelectorAll('.panel')) {
+      show(panel, panel.dataset.panel === tab);
+    }
+    if (tab !== 'logs') stopLogs();
+    if (tab === 'network') await readTraffic();
+    if (tab === 'changes') {
+      renderGitAvailability();
+      const diff = state.diffs.get(state.selected);
+      if (diff) renderDiff(diff);
+    }
+    if (tab === 'logs' && state.selected) {
+      await loadStatus();
+      await readLogs();
+    }
+  }
+  for (const button of document.querySelectorAll('.tab')) {
+    button.addEventListener('click', () => openTab(button.dataset.tab));
+  }
+
+  // ---------- new project ----------
+
+  $('btn-new').addEventListener('click', () => { banner(''); showPage('choose'); });
+  $('choose-cancel').addEventListener('click', goBack);
+  $('choose-git').addEventListener('click', () => {
+    banner('');
+    showPage('git');
+    $('git-url').focus();
+  });
+  $('choose-folder').addEventListener('click', () => {
+    banner('');
+    showPage('folder');
+    $('folder-path').focus();
+  });
+
+  $('git-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (state.busy) return;
+    const url = $('git-url').value.trim();
+    if (!url) { banner('Paste an SSH URL first, such as git@github.com:org/repo.git.'); return; }
+    const gitRef = $('git-ref').value.trim() || null;
+    banner('');
+    busy('Fetching on this machine. Your SSH agent may ask you to approve.');
+    let view;
+    try {
+      view = await invoke('import_remote', { url, gitRef });
+    } catch (error) {
+      busy('');
+      banner(errorText(error));
+      return;
+    }
+    busy('');
+    await refreshProjects();
+    if (!view.fetched) {
+      banner(view.message, 'info');
+      await openProject(view.project_path);
+      return;
+    }
+    $('git-url').value = '';
+    $('git-ref').value = '';
+    const shown = await reviewPlan({ path: view.project_path, name: lastSegment(url).replace(/\.git$/, ''), from: 'git', commit: view.commit });
+    if (!shown) await openProject(view.project_path);
+  });
+
+  $('folder-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (state.busy) return;
+    const path = $('folder-path').value.trim();
+    if (!path) { banner("Give the folder's full path first."); return; }
+    banner('');
+    busy('Adding the folder.');
+    let said;
+    try {
+      said = await invoke('add_project', { path });
+    } catch (error) {
+      busy('');
+      banner(errorText(error));
+      return;
+    }
+    busy('');
+    await refreshProjects();
+    $('folder-path').value = '';
+    // "Added, but..." means the daemon recorded it and could not read its
+    // sandbox's state. The plan does not need that state, so go on to it.
+    const shown = await reviewPlan({ path, name: lastSegment(path), from: 'folder' });
+    if (shown && said !== 'Added.') banner(said, 'info');
+    if (!shown) {
+      const row = state.projects.find((p) => p.path === path);
+      if (row) await openProject(row.path);
+    }
+  });
+
   $('refresh').addEventListener('click', async () => {
     await refreshDaemon();
     await refreshProjects();
-    await loadStatus();
+    if (state.page === 'project') await loadStatus();
   });
 
   // ---------- about and the terminal ----------
@@ -794,6 +1304,7 @@
   function renderInfo(info) {
     $('brand').textContent = info.product;
     document.title = info.product;
+    $('choose-cli').textContent = `${info.cli_bin} up git@…`;
     $('secrets-cmd').textContent = `cd /path/to/project\n${info.cli_bin} secrets list\n${info.cli_bin} secrets set NAME`;
     const box = $('cli-install');
     clear(box);
@@ -807,19 +1318,15 @@
       box.appendChild(el('p', `This build has no command line tool beside it. Install ${info.cli_bin} from source or Homebrew; it talks to the same daemon.`, 'muted'));
     }
     box.appendChild(el('p', `Running ${info.cli_bin} with no arguments opens the full-screen terminal interface.`, 'muted'));
-    const about = $('about');
-    clear(about);
-    const pairs = [
+    kv($('about'), [
       ['Version', info.version],
-      ['State folder', info.state_dir || 'not found'],
-      ['Daemon', info.daemon_bin],
-      ['Command line tool', info.bundled_cli || 'not bundled'],
-    ];
-    for (const [k, v] of pairs) {
-      about.appendChild(el('dt', k));
-      about.appendChild(el('dd', v));
-    }
+      ['State folder', info.state_dir || 'not found', 'mono'],
+      ['Daemon', info.daemon_bin, 'mono'],
+      ['Command line tool', info.bundled_cli || 'not bundled', 'mono'],
+    ]);
   }
+
+  $('btn-about').addEventListener('click', () => showPage('about'));
 
   // ---------- start ----------
 
@@ -832,18 +1339,15 @@
     }
     await refreshDaemon();
     await refreshProjects();
-    if (state.projects.length === 0) {
-      show($('overview-grid'), false);
-      show($('overview-empty'), true);
-      $('overview-empty').textContent = 'No project selected. Import an SSH remote or add a project folder in the sidebar.';
-    }
+    if (state.projects.length) await openProject(state.projects[0].path);
+    else showPage('choose');
     // The menu bar icon may have started or restarted the daemon meanwhile.
     setInterval(async () => {
-      if (state.busy || $('dialog').open) return;
+      if (state.busy || state.starting || $('dialog').open) return;
       const before = state.daemonRunning;
       await refreshDaemon();
-      if (before !== state.daemonRunning) await refreshProjects();
-      if (state.selected && state.tab === 'overview') await loadStatus();
+      if (before !== state.daemonRunning || state.page === 'project') await refreshProjects();
+      if (state.page === 'project' && state.selected && state.tab === 'overview') await loadStatus();
     }, 10000);
   }
 
