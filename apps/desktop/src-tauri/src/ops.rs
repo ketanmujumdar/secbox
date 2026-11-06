@@ -991,11 +991,18 @@ pub struct ImportView {
 
 /// Fetches an SSH remote on this machine, with the person's own key, into the
 /// daemon's folder. Starting it is a separate step, with its plan.
-pub fn import_remote(client: &Client, url: &str, agent: Option<String>) -> Result<ImportView, CallError> {
+/// `git_ref` is a branch, tag or commit; `None` takes the remote's default
+/// branch. The daemon checks it before anything is fetched.
+pub fn import_remote(
+    client: &Client,
+    url: &str,
+    git_ref: Option<String>,
+    agent: Option<String>,
+) -> Result<ImportView, CallError> {
     let reply = client.call(
         Request::Fetch(proto::FetchArgs {
             url: url.to_owned(),
-            git_ref: None,
+            git_ref,
             fetch: true,
             ssh_auth_sock: agent,
         }),

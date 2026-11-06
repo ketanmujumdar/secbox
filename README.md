@@ -43,7 +43,7 @@ any of it can be called working.
 | `mcp setup claude FOLDER`, `mcp setup codex` | Works. Makes a folder for Claude Code with its own host tools denied, or prints how to add the server to Codex |
 | `diff [PATH]` | Built, through the daemon, and tested against a fake engine only: **never run on a real VM**. Lists what changed in a running sandbox since its snapshot, with files that could act on your machine flagged first. Copies nothing out. See [Reviewing changes](#reviewing-changes-in-a-sandbox) |
 | `export` | Not built |
-| Desktop app (`apps/desktop`) | Early first cut. A menu bar icon that keeps the daemon running, and a window for status, start with plan approval, stop, destroy, logs, blocked hostnames, Import from an SSH remote, and a Git tab for pull, commit and push. Same daemon, same powers as the CLI. Run on Linux under Xvfb only; macOS untested. See [its README](apps/desktop/README.md) |
+| Desktop app (`apps/desktop`) | Early first cut. A menu bar icon that keeps the daemon running, and a window that brings a project in (clone from an SSH remote, or add a folder), shows its plan before it starts, and gives each project Overview, Logs, Network (blocked hostnames), Changes (compare, then commit, pull and push), Secrets and Settings tabs, with stop and destroy. Same daemon, same powers as the CLI. Run on Linux under Xvfb only; macOS untested. See [its README](apps/desktop/README.md) |
 
 `new`, `up`, `down`, `status`, `logs`, `net blocked`, `shell`, `exec` and `diff` send requests to a daemon,
 `secboxd`, which holds the secrets, the policy and the approvals. With no daemon
@@ -108,7 +108,7 @@ How it works:
 
 Limits: files the project's `.gitignore` leaves out are not shown, and would not be in an export either. A sandbox created before this was added has nothing to compare with, and `diff` says to recreate it. The sandbox must be running. `export` is not built, so nothing reviewed here can leave the sandbox yet.
 
-The Review panel in the full-screen interface (`r`) shows the same lines, flags first in red. Press `5` to compare: it runs inside the sandbox, so it never runs by itself. Up, down, PgUp and PgDn scroll. The desktop app's Git review page shows the same, with a Compare button.
+The Review panel in the full-screen interface (`r`) shows the same lines, flags first in red. Press `5` to compare: it runs inside the sandbox, so it never runs by itself. Up, down, PgUp and PgDn scroll. The desktop app's Changes tab shows the same, with a Compare button.
 
 ## Starting from a Git remote
 
@@ -123,7 +123,7 @@ secbox git pull --project git@github.com:org/shop.git
 
 You don't need a clone on your machine. The sandbox gets a real clone with its whole history, and **your SSH key never goes into it**. Pull and push go through a relay in the daemon: Git in the VM speaks through it, and the daemon runs the real `ssh` on your Mac, with your `~/.ssh/config` and your agent, to the project's own repository only. 1Password's SSH agent works and asks you to approve each time. Before a push leaves, the daemon reads its branch list and refuses `main`, `master`, deletes and tags. A `git push` typed inside the VM fails, because there is nothing there to authenticate with.
 
-The terminal UI imports with `i` and pulls and pushes with `g` and `G`. The desktop app has an Import box and a Git tab. AI agents get `git_status`, `git_pull`, `git_commit` and `git_push` over MCP, with the same checks. [docs/GIT.md](docs/GIT.md) explains all of it, including what the relay can't see.
+The terminal UI imports with `i` and pulls and pushes with `g` and `G`. The desktop app clones from *New project*, with an optional branch, tag or commit, and pulls, commits and pushes from a project's Changes tab. AI agents get `git_status`, `git_pull`, `git_commit` and `git_push` over MCP, with the same checks. [docs/GIT.md](docs/GIT.md) explains all of it, including what the relay can't see.
 
 ## AI agents (Claude Code, Codex)
 
