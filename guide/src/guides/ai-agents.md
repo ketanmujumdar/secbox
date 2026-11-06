@@ -59,12 +59,14 @@ microVM                                sh -c COMMAND in /work, or docker compose
 | `exec` | Runs `sh -c COMMAND` in `/work`, or in one service |
 | `read_file` | Reads a file under `/work` |
 | `write_file` | Replaces a file under `/work` |
+| `git` | Any Git command in the clone. Only fetch, pull and push reach the remote, through the relay. See [Git without handing over your keys](git.md) |
+| `git_status`, `git_pull`, `git_commit`, `git_push` | Shortcuts for the common ones |
 
 Arguments and limits are in the [MCP tools reference](../reference/mcp-tools.md).
 
 ### What the server will not do
 
-It has no tool to start, stop, rebuild or destroy a sandbox; read a secret or change assignments; change network policy or forward a port; commit, push or export; reach another project; or read and write your machine's files.
+It has no tool to start, stop, rebuild or destroy a sandbox; read a secret or change assignments; change network policy or forward a port; push to `main` or `master`, delete a branch, push a tag or push to another repository; export; reach another project; or read and write your machine's files.
 
 Tools that would need a person's approval, such as `request_network`, `propose_change` and `rebuild`, are not offered, because there is no approval prompt yet.
 

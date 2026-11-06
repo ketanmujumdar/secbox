@@ -1071,10 +1071,11 @@ pub fn git(
     agent: Option<String>,
 ) -> Result<GitView, CallError> {
     let name = match &op {
-        proto::GitOp::Status => "Status",
-        proto::GitOp::Pull => "Pull",
-        proto::GitOp::Commit { .. } => "Commit",
-        proto::GitOp::Push => "Push",
+        proto::GitOp::Status => "Status".to_owned(),
+        proto::GitOp::Pull => "Pull".to_owned(),
+        proto::GitOp::Commit { .. } => "Commit".to_owned(),
+        proto::GitOp::Push => "Push".to_owned(),
+        proto::GitOp::Run { args } => format!("git {}", text::escape_short(args.first().map_or("", String::as_str), 40)),
     };
     let reply = client.call(
         Request::Git(proto::GitArgs {

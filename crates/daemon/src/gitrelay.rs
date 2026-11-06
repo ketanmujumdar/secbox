@@ -68,6 +68,8 @@ pub const PROTECTED_BRANCHES: &[&str] = &["main", "master"];
 const WORK: &str = "/work";
 const NETWORK_LIMIT: Duration = Duration::from_secs(15 * 60);
 const LOCAL_LIMIT: Duration = Duration::from_secs(60);
+/// A typed command that stays in the sandbox, such as a `gc` or a big `log`.
+const RUN_LIMIT: Duration = Duration::from_secs(5 * 60);
 const MAX_OUTPUT: usize = 64 * 1024;
 const MAX_HEADER_LINE: u64 = 4096;
 /// The push command list is small; this is far more than any real push needs.
@@ -182,6 +184,7 @@ pub fn handle(service: &Service, project: &Project, args: &GitArgs) -> Result<Gi
             record_push(service, project, &done);
             done
         }
+        GitOp::Run { args } => run_typed(service, project, &remote.url, args, &identity, agent.as_deref())?,
     };
     report.branch = current_branch(service, project);
     Ok(report)
@@ -232,6 +235,80 @@ pub fn clone_into_sandbox(
         return Err(internal(format!("could not check out the approved commit: {}", clean(out.stderr.as_bytes()))));
     }
     Ok(())
+}
+
+/// Runs a command typed by a person or an agent: inside the sandbox, with the
+/// relay only for fetching and pushing (see `gitrun`). The person's name goes
+/// on any commit or merge it makes.
+fn run_typed(
+    service: &Service,
+    project: &Project,
+    url: &str,
+    args: &[String],
+    identity: &GitIdentity,
+    agent: Option<&Path>,
+) -> Result<GitReport, ApiError> {
+    let route = crate::gitrun::classify(args).map_err(bad)?;
+    let name = crate::gitrun::subcommand(args).to_owned();
+    let mut git = with_identity(identity);
+    git.extend(args.iter().cloned());
+    let report = match route {
+        crate::gitrun::Route::Relayed(allowed) => {
+            let done = relay(service, project, url, git, allowed, agent)?;
+            if allowed == GitService::ReceivePack {
+                record_push(service, project, &done);
+            }
+            done
+        }
+        crate::gitrun::Route::Local => {
+            let mut command = vec!["git".to_owned()];
+            command.extend(git);
+            let mut request = ExecRequest::new(command);
+            request.workdir = Some(work()?);
+            request.timeout = Some(RUN_LIMIT);
+            request.env.extend(no_prompts());
+            let out = service
+                .deps()
+                .engine()
+                .exec(&project.sandbox, &request)
+                .map_err(|e| engine_error(e.to_string()))?;
+            GitReport {
+                ok: out.code == 0,
+                code: Some(out.code),
+                output: format!("{}{}", clean(out.stdout.as_bytes()), clean(out.stderr.as_bytes())),
+                branch: None,
+                updates: Vec::new(),
+                refused: None,
+            }
+        }
+    };
+    service.record(
+        audit::entry(service.deps().now_unix(), audit::Action::GitRan)
+            .project(project.id.as_str())
+            .subject(&name)
+            .detail(match (&report.refused, report.ok) {
+                (Some(_), _) => "refused",
+                (None, true) => "ok",
+                (None, false) => "failed",
+            }),
+    );
+    Ok(report)
+}
+
+/// There is no terminal and no one to type: a command that would wait for an
+/// editor, a pager or a password fails at once and says why.
+fn no_prompts() -> Vec<(String, String)> {
+    let editor = "sh -c 'echo \"There is no editor here. Give the message with -m, or use --no-edit.\" >&2; exit 1'";
+    [
+        ("GIT_TERMINAL_PROMPT", "0"),
+        ("GIT_PAGER", "cat"),
+        ("PAGER", "cat"),
+        ("GIT_EDITOR", editor),
+        ("GIT_SEQUENCE_EDITOR", editor),
+        ("GIT_MERGE_AUTOEDIT", "no"),
+    ]
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .to_vec()
 }
 
 fn work() -> Result<GuestPath, ApiError> {
@@ -385,6 +462,7 @@ fn relay(
     request.workdir = Some(work()?);
     let end = end_marker();
     request.env.push((END_VAR.to_owned(), end.clone()));
+    request.env.extend(no_prompts());
     let mut vm = service
         .deps()
         .engine()
@@ -572,10 +650,18 @@ fn read_commands(reader: &mut impl BufRead) -> Result<(Vec<u8>, Vec<PushCommand>
             .map_err(|_| "the push ended part way through its branch list".to_owned())?;
         raw.extend_from_slice(&payload);
         // The first line carries capabilities after a NUL.
-        let line = payload.split(|b| *b == 0).next().unwrap_or(&[]);
+        let mut parts = payload.splitn(2, |b| *b == 0);
+        let line = parts.next().unwrap_or(&[]);
         let line = String::from_utf8_lossy(line);
         let line = line.trim_end_matches('\n');
         commands.push(parse_command(line));
+        // Push options follow the list and would be passed on unread, for the
+        // remote to act on. None are allowed.
+        if let Some(caps) = parts.next() {
+            if String::from_utf8_lossy(caps).split_whitespace().any(|cap| cap == "push-options") {
+                commands.push(PushCommand::Other("push options".to_owned()));
+            }
+        }
     }
 }
 
@@ -782,6 +868,14 @@ mod tests {
         let good = format!("{A} {B} refs/heads/feature\0caps\n");
         let bad = format!("{A} {B} refs/heads/main\n");
         assert!(check(&[&good, &bad]).is_err());
+    }
+
+    #[test]
+    fn push_options_are_refused_and_other_capabilities_are_not() {
+        let with = format!("{A} {B} refs/heads/f\0report-status push-options side-band-64k\n");
+        assert!(check(&[&with]).unwrap_err().contains("push options"));
+        let without = format!("{A} {B} refs/heads/f\0report-status side-band-64k\n");
+        assert_eq!(check(&[&without]).unwrap().len(), 1);
     }
 
     #[test]

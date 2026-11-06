@@ -316,7 +316,7 @@
     $('settings-remove').disabled = !free;
     $('btn-more').disabled = !ready;
     for (const id of ['git-go', 'folder-go', 'review-start']) $(id).disabled = state.busy;
-    for (const id of ['git-status', 'git-pull', 'git-push', 'review-read', 'log-read', 'traffic-read']) $(id).disabled = !free;
+    for (const id of ['git-status', 'git-pull', 'git-push', 'git-autostash', 'git-run-go', 'review-read', 'log-read', 'traffic-read']) $(id).disabled = !free;
     if ($('daemon-action')) $('daemon-action').disabled = state.busy;
   }
 
@@ -1174,7 +1174,43 @@
     clear($('git-updates'));
     $('git-output').textContent = '';
     show($('git-output'), false);
+    show($('git-stuck'), false);
     $('git-branch').textContent = 'Press Status to see the branch.';
+  }
+
+  // Splits a typed command into Git's arguments, as a shell would for plain
+  // words, 'single' and "double" quotes and backslashes, and nothing more: no
+  // variables, globs or pipes. Returns null for an unclosed quote.
+  function splitArgs(line) {
+    const args = [];
+    let word = null;
+    let quote = null;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (quote) {
+        if (c === quote) quote = null;
+        else if (c === '\\' && quote === '"' && (line[i + 1] === '"' || line[i + 1] === '\\')) word += line[++i];
+        else word += c;
+      } else if (c === "'" || c === '"') {
+        quote = c;
+        if (word === null) word = '';
+      } else if (c === '\\' && i + 1 < line.length) {
+        word = (word || '') + line[++i];
+      } else if (/\s/.test(c)) {
+        if (word !== null) { args.push(word); word = null; }
+      } else {
+        word = (word || '') + c;
+      }
+    }
+    if (quote) return null;
+    if (word !== null) args.push(word);
+    if (args[0] === 'git') args.shift();
+    return args;
+  }
+
+  // A pull or merge that stopped because uncommitted changes are in the way.
+  function blockedByLocalChanges(view) {
+    return !view.ok && view.output.some((line) => /would be overwritten by (merge|checkout)|Please commit your changes or stash them/.test(line));
   }
 
   function renderGitAvailability() {
@@ -1186,14 +1222,15 @@
     show($('git-not-remote'), !offer);
   }
 
-  async function runGit(op, message) {
+  async function runGit(op, message, args) {
     const row = selectedRow();
     if (!row) return null;
-    const waiting = op === 'pull' || op === 'push';
-    busy(waiting ? (op === 'pull' ? 'Pulling' : 'Pushing') + '. Your SSH agent may ask you to approve.' : 'Asking Git.');
+    const command = op === 'run' ? (args[0] || '') : op;
+    const waiting = ['pull', 'push', 'fetch', 'ls-remote'].includes(command);
+    busy(waiting ? (command === 'push' ? 'Pushing' : 'Fetching') + '. Your SSH agent may ask you to approve.' : 'Asking Git.');
     let view;
     try {
-      view = await invoke('git', { project: row.path, op, commitMessage: message || null });
+      view = await invoke('git', { project: row.path, op, commitMessage: message || null, args: args || null });
     } catch (error) {
       busy('');
       banner(errorText(error));
@@ -1212,12 +1249,22 @@
     $('git-output').textContent = view.output.join('\n');
     show($('git-output'), view.output.length > 0);
     if (view.branch) $('git-branch').textContent = 'On branch ' + view.branch;
+    show($('git-stuck'), (command === 'pull' || command === 'merge') && blockedByLocalChanges(view));
     return view;
   }
 
   $('git-status').addEventListener('click', () => runGit('status'));
   $('git-pull').addEventListener('click', () => runGit('pull'));
   $('git-push').addEventListener('click', () => runGit('push'));
+  $('git-autostash').addEventListener('click', () => runGit('run', null, ['pull', '--no-rebase', '--no-edit', '--autostash']));
+  $('git-run-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const args = splitArgs($('git-run').value);
+    if (args === null) { banner('A quote is not closed.'); return; }
+    if (!args.length) { banner('Type a Git command first, such as status or log --oneline.'); return; }
+    const view = await runGit('run', null, args);
+    if (view && view.ok) $('git-run').value = '';
+  });
   $('git-commit-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const message = $('git-message').value.trim();

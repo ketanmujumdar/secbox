@@ -256,13 +256,16 @@ async fn import_remote(
 }
 
 /// One Git operation on a project imported from a remote: `status`, `pull`,
-/// `commit` (with a message) or `push`. Pull and push use the person's SSH key
-/// on this machine, through the daemon's relay, which checks every push.
+/// `commit` (with a message), `push`, or `run` with any Git command's
+/// arguments. It runs inside the sandbox. Fetch, pull and push use the
+/// person's SSH key on this machine, through the daemon's relay, which checks
+/// every push.
 #[tauri::command]
 async fn git(
     project: String,
     op: String,
     commit_message: Option<String>,
+    args: Option<Vec<String>>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<ops::GitView, String> {
     let state = Arc::clone(&state);
@@ -275,6 +278,7 @@ async fn git(
                 message: commit_message.unwrap_or_default(),
                 paths: Vec::new(),
             },
+            "run" => proto::GitOp::Run { args: args.unwrap_or_default() },
             _ => return Err("That is not a Git operation this window offers.".to_owned()),
         };
         ops::git(&state.client, &project, op, ops::host_identity(), ops::agent_socket()).map_err(message)

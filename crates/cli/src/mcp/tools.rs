@@ -172,6 +172,26 @@ pub(crate) fn list() -> Value {
             "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": true },
         },
         {
+            "name": "git",
+            "title": "Run a Git command",
+            "description": "Runs any Git command in the sandbox clone at /work, given as its arguments after `git`: [\"switch\", \"-c\", \"fix\"], [\"stash\"], [\"log\", \"--oneline\", \"-10\"], [\"rebase\", \"main\"]. It runs inside the sandbox, never on the person's machine. Only fetch, pull and ls-remote reach the remote, and push, through the relay with the person's SSH key on their machine; their SSH agent may ask them to approve. A push to main or master, deleting a branch, pushing a tag or sending push options is refused before anything is sent. There is no terminal: give commit messages with -m, and use --no-edit for merges. Options before the command, such as -c and -C, are refused.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "args": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1,
+                        "maxItems": proto::MAX_GIT_ARGS,
+                        "description": "The Git command and its arguments, without the leading git, one argument per item."
+                    }
+                },
+                "required": ["args"],
+                "additionalProperties": false
+            },
+            "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": true },
+        },
+        {
             "name": "write_file",
             "title": "Write a file in the sandbox",
             "description": format!("Writes a whole file in the project's copy at {WORK}, making its folders if needed and replacing what was there. Give the path relative to {WORK}. Up to {FILE_LIMIT} bytes. The change stays in the sandbox; nothing on the host changes."),
@@ -221,6 +241,16 @@ pub(crate) fn call(params: &Value, project: &Path, deps: &mut Deps) -> Result<Va
                 Some(_) => return Err("paths must be a list of strings".to_owned()),
             };
             Ok(proto::GitOp::Commit { message, paths })
+        }),
+        "git" => git(arguments, &["args"], &project, deps, |arguments| {
+            let args = match arguments.get("args") {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|item| item.as_str().map(str::to_owned).ok_or("args must be strings".to_owned()))
+                    .collect::<Result<Vec<_>, _>>()?,
+                _ => return Err("args must be a list of strings, such as [\"status\"]".to_owned()),
+            };
+            Ok(proto::GitOp::Run { args })
         }),
         _ => return Err((INVALID_PARAMS, "there is no tool by that name".to_owned())),
     };

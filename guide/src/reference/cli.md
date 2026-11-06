@@ -167,6 +167,14 @@ Fetches an SSH remote on this machine, or takes a folder's last commit, then sho
 
 Exits 1 when the answer is not `y`, when there is no terminal and no `--yes`, or when something blocks the start. See [Bringing a project in](../guides/new.md).
 
+## git
+
+```text
+secbox git [--project PATH|REMOTE] <status | pull | commit -m MSG [PATHS] | push | run GIT_ARGS...>
+```
+
+Git in the clone of a project imported from a remote. Everything runs inside the sandbox. `run` takes any Git command without the leading `git`. Fetch, pull and push use your SSH key on this machine, through the daemon's relay, and every push is checked: no `main` or `master`, no deletes, no tags, no push options. Put `--project` before `run`, because everything after it goes to Git. See [Git without handing over your keys](../guides/git.md).
+
 ## up
 
 ```text
