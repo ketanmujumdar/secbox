@@ -320,7 +320,7 @@ pub(crate) mod tests {
 
     #[test]
     fn rejects_dangerous_types_and_damage() {
-        for typeflag in [b'1', b'3', b'4', b'6', b'7', b'L', b'K', b'S'] {
+        for typeflag in *b"13467LKS" {
             let mut data = header(b"x", typeflag, 0, b"/etc/passwd").to_vec();
             data.extend(end());
             assert!(collect(&data).is_err(), "type {}", typeflag as char);
