@@ -341,7 +341,11 @@ fn copy_in_snapshot(
     if let Some(remote) = crate::remote::remote_of(service, project) {
         let commit = crate::gitref::head_commit(&project.root)
             .map_err(|e| internal(format!("cannot tell which commit was approved: {e}")))?;
+        crate::diff::forget_baseline(project);
         crate::gitrelay::clone_into_sandbox(service, project, &remote.url, &remote.git_ref, &commit)?;
+        // The approved commit is what `diff` compares with. The host's mirror
+        // holds it, so nothing is read back from the clone in the guest.
+        crate::diff::remember_baseline(project, Some(commit.clone()))?;
         if let Some(generated) = &plan.generated_compose {
             let file = staging.path().join(GENERATED_COMPOSE_FILE);
             std::fs::write(&file, generated)

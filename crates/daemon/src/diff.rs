@@ -190,7 +190,11 @@ pub fn diff(
             "the record of what this sandbox started from is damaged",
         ));
     }
-    let store = project.dir.join(BASELINE_STORE);
+    // A project cloned from a remote started at a commit the host's own
+    // mirror holds; any other project, at the commit the host made of its
+    // snapshot.
+    let store = crate::remote::mirror_of(service, project)
+        .unwrap_or_else(|| project.dir.join(BASELINE_STORE));
     if !std::fs::symlink_metadata(&store).is_ok_and(|m| m.is_dir()) {
         return Err(no_baseline());
     }

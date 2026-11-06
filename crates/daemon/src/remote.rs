@@ -162,6 +162,15 @@ pub fn remote_of(service: &Service, project: &crate::Project) -> Option<Remote> 
     Some(record)
 }
 
+/// The host's mirror of a remote project, which holds the commit its sandbox
+/// was cloned at. `diff` reviews against it, as it does against the baseline
+/// store of a project copied from a folder.
+pub fn mirror_of(service: &Service, project: &crate::Project) -> Option<PathBuf> {
+    remote_of(service, project)?;
+    let mirror = project.root.parent()?.join(MIRROR);
+    mirror.join("HEAD").is_file().then_some(mirror)
+}
+
 /// The agent socket last given for this remote, if it is still usable.
 pub fn last_agent(url: &str) -> Option<PathBuf> {
     let last = LAST_AGENT.lock().unwrap_or_else(|e| e.into_inner());
