@@ -33,15 +33,19 @@
 //! of the bundle. Such a file is then not in anything an export would carry
 //! either, since an export would be made from the same reviewed commit.
 
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use engine::{ExecRequest, GuestPath, OutputSink, OutputStream, StreamEnd};
-use gitbroker::{ChangeStatus, Flag, FlagKind, Quarantine, Review};
-use proto::{text, ApiError, DiffFile, DiffFlag, DiffReport, FileChange, SandboxState};
+use gitbroker::{ChangeStatus, Flag, FlagKind, LineKind, Patch, PatchLimits, Quarantine, Review};
+use proto::{
+    text, ApiError, DiffFile, DiffFlag, DiffHunk, DiffLine, DiffLineKind, DiffReport, FilePatch,
+    FileChange, SandboxState, MAX_FRAME_BYTES,
+};
 
 use crate::run::{status_of, tempdir_in_state, WORK_DIR};
 use crate::settings::SandboxRecord;
@@ -59,6 +63,18 @@ const MAX_STDERR: usize = 16 * 1024;
 const MAX_PATH_CHARS: usize = 400;
 const MAX_FILES: usize = 20_000;
 const MAX_FLAGS: usize = 2_000;
+/// Files whose lines are read in one comparison.
+const MAX_PATCHED_FILES: usize = 2_000;
+/// How long reading those lines may take. The rest are then not included.
+const PATCH_TIME_LIMIT: Duration = Duration::from_secs(30);
+/// One file's share of a message, so one file cannot use up all of it.
+const MAX_FILE_PATCH_BYTES: usize = 256 * 1024;
+/// Kept free in a message for what wraps the report.
+const FRAME_MARGIN: usize = 4 * 1024;
+/// What one line costs in a message besides its text.
+const LINE_OVERHEAD: usize = 32;
+const MAX_LINE_CHARS: usize = 2_000;
+const NO_NEWLINE: &str = "  (no newline at end of file)";
 
 /// Run inside the guest by `sh -c`, with the baseline's id as `$1`. It has no
 /// say in what the host trusts: the host checks everything it sends.
@@ -204,13 +220,19 @@ pub fn diff(
     progress.step("bundling inside the sandbox", None);
     fetch_bundle(service, project, &baseline, &bundle, &*progress)?;
     progress.step("reviewing on the host", None);
-    let review = review_bundle(
+    let (quarantine, review) = review_bundle(
         &store,
         &baseline,
         &bundle,
         &staging.path().join("quarantine.git"),
     )?;
-    let report = report(project, &baseline, &review);
+    let mut report = report(project, &baseline, &review);
+    progress.step("reading the changed lines", None);
+    // A keychain that cannot be read means values cannot be looked for. The
+    // comparison is still worth having, without any of the file content.
+    if let Ok(masker) = crate::mask::Masker::for_project(service, project) {
+        fill_patches(&mut report, &quarantine, &review, &masker, &*progress);
+    }
     service.record(
         audit::entry(service.deps().now_unix(), audit::Action::ChangesReviewed)
             .project(project.id.as_str())
@@ -403,7 +425,7 @@ fn review_bundle(
     baseline: &str,
     bundle: &Path,
     quarantine_dir: &Path,
-) -> Result<Review, ApiError> {
+) -> Result<(Quarantine, Review), ApiError> {
     let host_side = |e: gitbroker::Error| match e {
         gitbroker::Error::GitUnavailable(_) | gitbroker::Error::GitTooOld { .. } => internal(
             format!("git on this machine cannot be used for a review: {e}"),
@@ -426,9 +448,111 @@ fn review_bundle(
             "the sandbox's bundle did not hold exactly the one branch asked for, so it was refused",
         )),
     };
-    quarantine
+    let review = quarantine
         .review(Some(baseline), &tip)
-        .map_err(|e| refused(format!("the sandbox's changes could not be reviewed: {e}")))
+        .map_err(|e| refused(format!("the sandbox's changes could not be reviewed: {e}")))?;
+    Ok((quarantine, review))
+}
+
+/// Puts the changed lines into a report, as many as one message can carry.
+///
+/// Files with a flag go first, so a sandbox cannot push its planted hook out of
+/// view by also changing a lot of harmless text. Whatever does not fit stays
+/// [`FilePatch::NotIncluded`], which every client calls unread.
+fn fill_patches(
+    report: &mut DiffReport,
+    quarantine: &Quarantine,
+    review: &Review,
+    masker: &crate::mask::Masker,
+    progress: &dyn Progress,
+) {
+    let limits = PatchLimits::default();
+    let started = Instant::now();
+    let holds_secret = |blob: &[u8]| {
+        let text = String::from_utf8_lossy(blob);
+        masker.mask(&text) != text
+    };
+    let Ok(base) = serde_json::to_vec(&*report) else {
+        return;
+    };
+    let mut room = MAX_FRAME_BYTES.saturating_sub(base.len() + FRAME_MARGIN);
+
+    let flagged: HashSet<String> = report.flags.iter().filter_map(|f| f.path.clone()).collect();
+    let mut order: Vec<usize> = (0..report.files.len()).collect();
+    order.sort_by_key(|at| !flagged.contains(&report.files[*at].path));
+
+    for at in order.into_iter().take(MAX_PATCHED_FILES) {
+        if room == 0 || progress.cancelled() || started.elapsed() > PATCH_TIME_LIMIT {
+            break;
+        }
+        let Some(change) = review.changes().get(at) else {
+            continue;
+        };
+        let patch = match review.patch(quarantine, change, &limits, &holds_secret) {
+            Ok(patch) => file_patch(patch),
+            Err(_) => FilePatch::Unreadable,
+        };
+        let Ok(encoded) = serde_json::to_vec(&patch) else {
+            continue;
+        };
+        if encoded.len() <= room {
+            room -= encoded.len();
+            report.files[at].patch = patch;
+        }
+    }
+}
+
+/// Escapes one file's lines and cuts them to its share of the message.
+fn file_patch(patch: Patch) -> FilePatch {
+    let (hunks, added, removed, mut truncated) = match patch {
+        Patch::Text { hunks, added, removed, truncated } => (hunks, added, removed, truncated),
+        Patch::Withheld => return FilePatch::Withheld,
+        Patch::Binary => return FilePatch::Binary,
+        Patch::TooLarge => return FilePatch::TooLarge,
+        Patch::Submodule => return FilePatch::Submodule,
+        Patch::Unreadable => return FilePatch::Unreadable,
+    };
+    let mut bytes = 0;
+    let mut out = Vec::new();
+    'hunks: for hunk in hunks {
+        let mut lines = Vec::with_capacity(hunk.lines.len());
+        for line in hunk.lines {
+            let mut text = text::escape_line(&String::from_utf8_lossy(&line.text), MAX_LINE_CHARS);
+            if line.no_newline {
+                text.push_str(NO_NEWLINE);
+            }
+            // Twice the text: JSON can double every character of it.
+            bytes += text.len() * 2 + LINE_OVERHEAD;
+            if bytes > MAX_FILE_PATCH_BYTES {
+                truncated = true;
+                if !lines.is_empty() {
+                    out.push(DiffHunk {
+                        old_start: hunk.old_start,
+                        new_start: hunk.new_start,
+                        lines,
+                    });
+                }
+                break 'hunks;
+            }
+            let kind = match line.kind {
+                LineKind::Context => DiffLineKind::Context,
+                LineKind::Added => DiffLineKind::Added,
+                LineKind::Removed => DiffLineKind::Removed,
+            };
+            lines.push(DiffLine { kind, text });
+        }
+        out.push(DiffHunk {
+            old_start: hunk.old_start,
+            new_start: hunk.new_start,
+            lines,
+        });
+    }
+    FilePatch::Text {
+        hunks: out,
+        added,
+        removed,
+        truncated,
+    }
 }
 
 fn report(project: &Project, baseline: &str, review: &Review) -> DiffReport {
@@ -456,6 +580,7 @@ fn report(project: &Project, baseline: &str, review: &Review) -> DiffReport {
                     ChangeStatus::Deleted => FileChange::Deleted,
                     ChangeStatus::TypeChanged => FileChange::TypeChanged,
                 },
+                patch: FilePatch::NotIncluded,
             })
             .collect(),
         commits: review.commits_scanned() as u64,

@@ -7,6 +7,7 @@
 ```sh
 secbox diff                     # the current folder's project
 secbox diff ~/code/myapp
+secbox diff --patch             # also print the changed lines of each file
 ```
 
 ## Sample output
@@ -26,6 +27,28 @@ Nothing was copied out of the sandbox. Export is not built yet.
 ```
 
 Flags come first, in red on a terminal. Then every changed file, marked `added`, `modified`, `deleted` or `type changed`.
+
+## Reading the changed lines
+
+`secbox diff --patch` prints the lines that changed in each file, and in the desktop app you click a file in the **Changes** tab. The host works out the lines itself from the reviewed copy. Git's own diff is not used, because attributes in the sandbox's files can change what it shows, and nothing from the sandbox is run.
+
+Some files are not shown, and each one says why:
+
+| Not shown | Why |
+| --- | --- |
+| Looks like it holds a secret | Either version of the file has a key-shaped string or a long random value under a name like `password`, holds a value of a secret given to this project, or has a name like `.env` or `*.pem` |
+| Binary | It holds a NUL byte |
+| Too large | Either version is over 1 MB |
+| Submodule | It points at another repository |
+| No room | One reply carries about 4 MB. Files with a flag get that room first, so a flood of harmless text cannot push a planted hook out of view |
+
+A long file is cut after 5,000 lines or 256 KB, and a long line after 2,000 characters, and each cut says so.
+
+**A file that is not shown has not been reviewed.** A sandbox can cause any of these on purpose, for example by planting a fake key in a malicious script so that it is withheld. Treat such a file as unread, and don't take it out of the sandbox on trust.
+
+A secret that matches no pattern and was not given to this project will appear in the lines. They go only to your own screen, but they will be in your terminal's scrollback if you use `--patch`.
+
+Control, bidirectional and invisible characters show as escapes such as `\u{202e}`, so text cannot pretend to be something else that way. Lookalike letters from other alphabets are not escaped in file content.
 
 ## Exit codes
 
@@ -67,13 +90,13 @@ If the sandbox rewrites its history so it no longer starts from the snapshot, `d
 
 ## In the full-screen interface
 
-Press `c` for the selected project's Changes tab, then `r` to compare. It shows the same lines, flags first in red. Comparing runs inside the sandbox, so it never starts by itself. Up, down, PgUp and PgDn scroll. See [Full-screen terminal interface](terminal-ui.md).
+Press `c` for the selected project's Changes tab, then `r` to compare. It shows the same lines as `secbox diff`, flags first in red. It does not show the changed lines of each file yet; use `secbox diff --patch` or the desktop app. Comparing runs inside the sandbox, so it never starts by itself. Up, down, PgUp and PgDn scroll. See [Full-screen terminal interface](terminal-ui.md).
 
 ![The Changes tab of the full-screen interface, before comparing](../images/cli/tui-review.png)
 
 ## In the desktop app
 
-The **Git review** page shows the same comparison, with a **Compare** button. See [Desktop app](desktop-app.md).
+The **Changes** tab shows the same comparison, with a **Compare** button. Click a file to read its changed lines. See [Desktop app](desktop-app.md).
 
 ## Limits
 

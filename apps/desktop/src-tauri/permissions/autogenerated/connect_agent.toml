@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-connect-agent"
+description = "Enables the connect_agent command without any pre-configured scope."
+commands.allow = ["connect_agent"]
+
+[[permission]]
+identifier = "deny-connect-agent"
+description = "Denies the connect_agent command without any pre-configured scope."
+commands.deny = ["connect_agent"]

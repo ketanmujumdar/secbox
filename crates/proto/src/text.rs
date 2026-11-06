@@ -36,6 +36,25 @@ pub fn escape_short(text: &str, max_chars: usize) -> String {
     out
 }
 
+/// Escapes one line of a file for reading, cut to `max_chars`. Tabs stay, since
+/// code is laid out with them and they cannot rewrite what is on screen. A cut
+/// says so, because the part past it has not been read.
+pub fn escape_line(text: &str, max_chars: usize) -> String {
+    let mut out = String::with_capacity(text.len().min(max_chars));
+    for (count, c) in text.chars().enumerate() {
+        if count >= max_chars {
+            out.push_str(" ... (line cut here)");
+            break;
+        }
+        if c != '\t' && is_unsafe(c) {
+            out.extend(c.escape_unicode());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub fn escape_path(path: &std::path::Path) -> String {
     escape(&path.to_string_lossy())
 }
@@ -285,6 +304,21 @@ mod tests {
     fn short_form_cuts_long_text() {
         assert_eq!(escape_short("abcdef", 3), "abc...");
         assert_eq!(escape_short("abc", 3), "abc");
+    }
+
+    #[test]
+    fn a_line_keeps_its_tabs_and_nothing_else_unsafe() {
+        let out = escape_line("\tif (a\u{202e}) {\u{1b}[2J\r", 100);
+        assert!(out.starts_with('\t'));
+        assert!(out.contains("\\u{202e}") && out.contains("\\u{1b}") && out.contains("\\u{d}"));
+        assert!(!out.contains('\u{1b}') && !out.contains('\u{202e}') && !out.contains('\r'));
+        assert_eq!(escape_line(&out, 100), out);
+    }
+
+    #[test]
+    fn a_cut_line_says_it_was_cut() {
+        assert_eq!(escape_line("abc", 3), "abc");
+        assert_eq!(escape_line("abcd", 3), "abc ... (line cut here)");
     }
 
     #[test]

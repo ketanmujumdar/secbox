@@ -239,6 +239,11 @@
                 <ul class="rows mono-rows" id="ports"></ul>
                 <p class="hint">On 127.0.0.1 only. Anything on this machine can reach them.</p>
               </div>
+              <div class="card span3" id="agent-card">
+                <div class="card-head"><h2>AI agent</h2><button id="agent-connect" disabled>Connect Claude Code</button></div>
+                <p class="hint">Claude Code works inside this sandbox, with its own shell, file and web tools turned off. What it reads goes to the model's provider, including any secret a service was given.</p>
+                <pre class="cmd hidden" id="agent-cmd"></pre>
+              </div>
               <div class="card span3 hidden" id="exposure-card">
                 <h2>Where your secrets could go</h2>
                 <ul class="exposure" id="exposure"></ul>

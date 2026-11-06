@@ -528,6 +528,86 @@ pub struct DiffFile {
     /// Escaped. Quoted when it has spaces, quotes or escapes in it.
     pub path: String,
     pub change: FileChange,
+    /// The lines that changed, or why they are not shown. A daemon that does
+    /// not send this reads as not included.
+    #[serde(default)]
+    pub patch: FilePatch,
+}
+
+/// What a person can be shown of one changed file. Text in it was checked for
+/// likely secrets first, and is escaped except for tabs.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FilePatch {
+    Text {
+        hunks: Vec<DiffHunk>,
+        /// Lines added and removed in the whole file, even when cut short.
+        added: u64,
+        removed: u64,
+        /// A limit cut the lines, so the rest of this file has not been shown.
+        truncated: bool,
+    },
+    /// It looks like it holds a secret, so none of it is shown.
+    Withheld,
+    Binary,
+    TooLarge,
+    Submodule,
+    Unreadable,
+    /// The reply had no room for it, or the keychain could not be read, or the
+    /// daemon is older than this field.
+    #[default]
+    NotIncluded,
+}
+
+impl FilePatch {
+    /// Says why there are no lines to read. `None` for text.
+    ///
+    /// Every word of this is what a reviewer goes by, and a sandbox can bring
+    /// about any of these on purpose, so each one says the file is unread.
+    pub fn unread_reason(&self) -> Option<&'static str> {
+        match self {
+            Self::Text { .. } => None,
+            Self::Withheld => Some("Not shown, because it looks like it holds a secret. A sandbox can cause this on purpose by planting a key-shaped string, so treat this file as unread."),
+            Self::Binary => Some("Not shown, because it is a binary file. Treat it as unread."),
+            Self::TooLarge => Some("Not shown, because it is too large. Treat it as unread."),
+            Self::Submodule => Some("Not shown, because it is a submodule pointer to another repository. Treat what it points at as unread."),
+            Self::Unreadable => Some("Not shown, because it could not be read. Treat it as unread."),
+            Self::NotIncluded => Some("Not shown, because this comparison had no room for it or could not check it for secrets. Treat it as unread."),
+        }
+    }
+
+    /// True when part or all of the file has not been shown to anyone.
+    pub fn is_incomplete(&self) -> bool {
+        match self {
+            Self::Text { truncated, .. } => *truncated,
+            _ => true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiffHunk {
+    /// One-based first line in the old file, or 0 when the hunk has none.
+    pub old_start: u64,
+    /// One-based first line in the new file, or 0 when the hunk has none.
+    pub new_start: u64,
+    pub lines: Vec<DiffLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffLineKind {
+    Context,
+    Added,
+    Removed,
 }
 
 /// One finding. It never holds file content, so never a secret's value.
@@ -1237,6 +1317,7 @@ mod tests {
                 files: vec![DiffFile {
                     path: ".claude/settings.json".to_owned(),
                     change: FileChange::Added,
+                    patch: FilePatch::NotIncluded,
                 }],
                 commits: 1,
                 complete: true,

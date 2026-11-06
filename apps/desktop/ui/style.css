@@ -518,6 +518,10 @@ details.more h4 { margin-top: 10px; }
   z-index: 4;
 }
 .tab {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
   border: none;
   border-bottom: 2px solid transparent;
   border-radius: 0;
@@ -618,7 +622,40 @@ pre.cmd {
 }
 .flags li .strong { color: var(--ink); }
 .files { list-style: none; margin: 0; padding: 0; }
-.files li { display: flex; gap: 14px; padding: 5px 12px; font-size: 13px; }
+.files > li { font-size: 13px; }
+.file-row {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  width: 100%;
+  padding: 5px 12px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 400;
+  text-align: left;
+}
+.file-row:hover:not(:disabled) { background: var(--soft); }
+.file-path { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.file-stat { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+.file-stat.good { color: var(--good); }
+.file-stat.bad { color: var(--bad); }
+.file-stat.warn { color: var(--warn); }
+.patch { margin: 4px 0 12px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.patch-note { margin: 0; padding: 10px 12px; color: var(--muted); }
+.patch-note.warn { color: var(--warn); }
+.patch-code { overflow-x: auto; max-height: 480px; overflow-y: auto; font-family: var(--mono); font-size: 12px; line-height: 18px; tab-size: 4; }
+.patch-hunk { padding: 2px 12px; background: var(--soft); color: var(--muted); position: sticky; left: 0; }
+.patch-line { display: flex; width: max-content; min-width: 100%; white-space: pre; }
+.patch-line.added { background: color-mix(in srgb, var(--good) 14%, transparent); }
+.patch-line.removed { background: color-mix(in srgb, var(--bad) 14%, transparent); }
+.patch-number { flex: none; width: 44px; padding-right: 8px; text-align: right; color: var(--muted); user-select: none; }
+.patch-sign { flex: none; width: 16px; text-align: center; user-select: none; }
+.patch-line.added .patch-sign { color: var(--good); }
+.patch-line.removed .patch-sign { color: var(--bad); }
+.patch-text { flex: none; padding-right: 12px; }
 .change { font-family: var(--mono); font-weight: 600; width: 12px; }
 .change.added { color: var(--good); }
 .change.modified, .change.type-changed { color: var(--warn); }
@@ -669,3 +706,5 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
 .secret-form .checks { flex-direction: row; flex-wrap: wrap; gap: 6px 18px; }
 .secret-form-actions { display: flex; justify-content: flex-end; gap: 10px; }
 .warn-line { color: var(--warn); font-size: 13.5px; font-weight: 500; }
+/* A row action keeps its word whole, however narrow the table gets. */
+.table td button { white-space: nowrap; }

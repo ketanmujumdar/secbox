@@ -23,6 +23,7 @@
     "allow-remove-project",
     "allow-approve-host",
     "allow-secrets",
-    "allow-set-secret"
+    "allow-set-secret",
+    "allow-connect-agent"
   ]
 }

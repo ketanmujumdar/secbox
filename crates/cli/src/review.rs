@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Args;
-use proto::{DiffReport, ProjectArgs, Reply, Request};
+use proto::{DiffLineKind, DiffReport, FilePatch, ProjectArgs, Reply, Request};
 
 use crate::blocked::Weight;
 use crate::client::{CallError, DaemonClient};
@@ -24,7 +24,65 @@ const PATH_COLUMN: usize = 40;
 pub struct DiffArgsCli {
     /// Project folder [default: the current folder]
     path: Option<PathBuf>,
+    /// Also print the changed lines of each file
+    #[arg(long)]
+    patch: bool,
 }
+
+/// The changed lines of every file, for `--patch`. Text is escaped here,
+/// whatever the daemon already did, and a file with no lines says why.
+fn patch_lines(report: &DiffReport) -> Vec<(Option<Tone>, String)> {
+    let mut out = Vec::new();
+    let mut unread = 0;
+    for file in &report.files {
+        out.push((None, String::new()));
+        let path = esc(&file.path);
+        if file.patch.is_incomplete() {
+            unread += 1;
+        }
+        let FilePatch::Text { hunks, added, removed, truncated } = &file.patch else {
+            out.push((Some(Tone::Strong), path));
+            let reason = file.patch.unread_reason().unwrap_or_default();
+            out.push((Some(Tone::Warn), format!("  {reason}")));
+            continue;
+        };
+        out.push((Some(Tone::Strong), format!("{path}  +{added} -{removed}")));
+        if hunks.is_empty() {
+            out.push((Some(Tone::Dim), format!("  {NO_LINES}")));
+        }
+        for hunk in hunks {
+            let header = format!("@@ -{} +{} @@", hunk.old_start, hunk.new_start);
+            out.push((Some(Tone::Dim), header));
+            for line in &hunk.lines {
+                let (sign, tone) = match line.kind {
+                    DiffLineKind::Context => (' ', None),
+                    DiffLineKind::Added => ('+', Some(Tone::Good)),
+                    DiffLineKind::Removed => ('-', Some(Tone::Bad)),
+                };
+                let text = proto::text::escape_line(&line.text, usize::MAX);
+                out.push((tone, format!("{sign}{text}")));
+            }
+        }
+        if *truncated {
+            out.push((Some(Tone::Warn), format!("  {CUT_SHORT}")));
+        }
+    }
+    if unread > 0 {
+        out.push((None, String::new()));
+        out.push((
+            Some(Tone::Bad),
+            format!(
+                "{unread} {} not shown in full. Treat what is missing as unread.",
+                if unread == 1 { "file was" } else { "files were" }
+            ),
+        ));
+    }
+    out
+}
+
+/// A text change with no lines to show.
+const NO_LINES: &str = "No lines changed. The file is empty, or only its type or permissions changed.";
+const CUT_SHORT: &str = "Cut short at a limit. Treat the rest of this file as unread.";
 
 /// What is always true of this comparison.
 pub(crate) const HEURISTIC: &str = "Flags are a heuristic aid. Read the changes yourself before anything from this sandbox reaches your machine.";
@@ -192,6 +250,15 @@ pub fn run(args: &DiffArgsCli, deps: &mut Deps) -> i32 {
         };
         say!(deps, "{text}");
     }
+    if args.patch {
+        for (tone, text) in patch_lines(&report) {
+            let text = match tone {
+                Some(tone) => paint(color, tone, &text),
+                None => text,
+            };
+            say!(deps, "{text}");
+        }
+    }
     code(&report)
 }
 
@@ -209,15 +276,50 @@ mod tests {
                 DiffFile {
                     path: ".claude/settings.json".to_owned(),
                     change: FileChange::Added,
+                    patch: proto::FilePatch::NotIncluded,
                 },
                 DiffFile {
                     path: "app.js".to_owned(),
                     change: FileChange::Modified,
+                    patch: proto::FilePatch::NotIncluded,
                 },
             ],
             commits: 1,
             complete: true,
         }
+    }
+
+    #[test]
+    fn a_patch_prints_its_lines_and_says_what_is_unread() {
+        let mut report = report(Vec::new());
+        report.files[0].patch = FilePatch::Withheld;
+        report.files[1].patch = FilePatch::Text {
+            hunks: vec![proto::DiffHunk {
+                old_start: 1,
+                new_start: 1,
+                lines: vec![
+                    proto::DiffLine {
+                        kind: DiffLineKind::Removed,
+                        text: "old".to_owned(),
+                    },
+                    proto::DiffLine {
+                        kind: DiffLineKind::Added,
+                        text: "\tnew\u{1b}[2J".to_owned(),
+                    },
+                ],
+            }],
+            added: 1,
+            removed: 1,
+            truncated: false,
+        };
+        let text: Vec<String> = patch_lines(&report).into_iter().map(|(_, t)| t).collect();
+        assert!(text.contains(&"app.js  +1 -1".to_owned()), "{text:?}");
+        assert!(text.contains(&"@@ -1 +1 @@".to_owned()), "{text:?}");
+        assert!(text.contains(&"-old".to_owned()), "{text:?}");
+        // The tab stays, and the escape cannot reach the terminal.
+        assert!(text.contains(&"+\tnew\\u{1b}[2J".to_owned()), "{text:?}");
+        assert!(text.iter().any(|t| t.contains("treat this file as unread")), "{text:?}");
+        assert!(text.last().unwrap().starts_with("1 file was not shown in full"), "{text:?}");
     }
 
     fn hook() -> DiffFlag {
@@ -269,7 +371,7 @@ mod tests {
         let prompt = |_: &str| -> std::io::Result<secrets::SecretValue> { panic!() };
         let host = |_: &std::path::Path| -> crate::HostInfo { panic!() };
         let code = run(
-            &DiffArgsCli { path: None },
+            &DiffArgsCli { path: None, patch: false },
             &mut Deps {
                 out: &mut out,
                 err: &mut err,

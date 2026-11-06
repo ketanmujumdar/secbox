@@ -16,8 +16,8 @@ use engine::{Engine, FakeCall, FakeEngine, OutputStream};
 use hoststate::host::{HostInfo, Hypervisor};
 use hoststate::StatePaths;
 use proto::{
-    ErrorCode, FileChange, PlanArgs, ProjectArgs, Reply, Request, SnapshotCounts, SnapshotPlan,
-    Source, UpArgs,
+    DiffLineKind, ErrorCode, FileChange, FilePatch, PlanArgs, ProjectArgs, Reply, Request,
+    SnapshotCounts, SnapshotPlan, Source, UpArgs,
 };
 use secrets::{MemoryStore, ProjectId, SecretStore};
 
@@ -28,6 +28,8 @@ struct TestDeps {
     /// The snapshot arrives with something at `.git` already, so the
     /// baseline cannot be made.
     snapshot_has_git: bool,
+    /// A value the store holds for `DEMO_TOKEN`.
+    known_secret: std::sync::Mutex<Option<String>>,
 }
 
 impl Deps for TestDeps {
@@ -52,7 +54,16 @@ impl Deps for TestDeps {
     }
 
     fn store(&self, _project: &ProjectId) -> Box<dyn SecretStore> {
-        Box::new(MemoryStore::default())
+        let store = MemoryStore::default();
+        if let Some(value) = self.known_secret.lock().unwrap().as_deref() {
+            store
+                .put(
+                    &secrets::SecretName::new("DEMO_TOKEN").unwrap(),
+                    &secrets::SecretValue::new(value),
+                )
+                .unwrap();
+        }
+        Box::new(store)
     }
 
     /// The project's top-level files, as a commit snapshot of them would be.
@@ -100,6 +111,7 @@ fn fixture_with(snapshot_has_git: bool) -> Fixture {
     let deps = Arc::new(TestDeps {
         engine: FakeEngine::new(),
         snapshot_has_git,
+        known_secret: std::sync::Mutex::new(None),
     });
     let paths = StatePaths {
         state: state.path().join(brand::STATE_DIR),
@@ -724,4 +736,191 @@ fn a_baseline_that_cannot_be_made_does_not_stop_the_start() {
     assert!(audit.contains("baseline_missing"), "{audit}");
     let error = f.diff().unwrap_err();
     assert_eq!(error.code, ErrorCode::WrongState);
+}
+
+// ---------- the changed lines ----------
+
+fn patch_of<'a>(report: &'a proto::DiffReport, path: &str) -> &'a FilePatch {
+    &report
+        .files
+        .iter()
+        .find(|f| f.path == path)
+        .unwrap_or_else(|| panic!("{path} not in {:?}", report.files))
+        .patch
+}
+
+fn lines_of(patch: &FilePatch) -> Vec<(DiffLineKind, String)> {
+    let FilePatch::Text { hunks, .. } = patch else {
+        panic!("expected text, got {patch:?}");
+    };
+    hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .map(|l| (l.kind, l.text.clone()))
+        .collect()
+}
+
+/// Starts a project holding the given extra file, lets the guest change it, and
+/// compares.
+fn compare_with(extra: Option<(&str, &str)>, change: impl FnOnce(&Path)) -> proto::DiffReport {
+    let f = fixture();
+    if let Some((name, content)) = extra {
+        std::fs::write(f.project.path().join(name), content).unwrap();
+    }
+    f.up();
+    let bundle = f.guest_bundle(change);
+    f.guest_sends(&base64(&bundle));
+    f.diff().unwrap()
+}
+
+fn aws_key() -> String {
+    format!("AKIA{}", "IOSFODNN7EXAMPLE")
+}
+
+#[test]
+fn the_changed_lines_of_a_file_come_back() {
+    let report = compare_with(None, |work| {
+        std::fs::write(work.join("app.js"), "console.log('changed');\n").unwrap();
+        std::fs::write(work.join("new.js"), "one\ntwo").unwrap();
+        std::fs::remove_file(work.join("compose.yaml")).unwrap();
+    });
+    assert_eq!(
+        lines_of(patch_of(&report, "app.js")),
+        [
+            (DiffLineKind::Removed, "console.log('hello');".to_owned()),
+            (DiffLineKind::Added, "console.log('changed');".to_owned()),
+        ]
+    );
+    let new = lines_of(patch_of(&report, "new.js"));
+    assert_eq!(new[1].1, "two  (no newline at end of file)");
+    let FilePatch::Text { added, removed, truncated, .. } = patch_of(&report, "compose.yaml") else {
+        panic!();
+    };
+    assert_eq!((*added, *removed, *truncated), (0, 3, false));
+}
+
+#[test]
+fn a_file_with_a_likely_secret_is_withheld_on_either_side_and_never_sent() {
+    let key = aws_key();
+    let in_new = compare_with(None, |work| {
+        std::fs::write(work.join("config.js"), format!("const k = '{}';\n", aws_key())).unwrap();
+    });
+    assert_eq!(patch_of(&in_new, "config.js"), &FilePatch::Withheld);
+    assert!(!serde_json::to_string(&in_new).unwrap().contains(&key));
+
+    // The snapshot held it, and the sandbox only changed a line beside it, so
+    // it would be a context line. The review scans added lines, so no flag
+    // would have caught this.
+    let beside = format!("const k = '{key}';\nconst a = 1;\n");
+    let as_context = compare_with(Some(("config.js", &beside)), |work| {
+        let edited = format!("const k = '{}';\nconst a = 2;\n", aws_key());
+        std::fs::write(work.join("config.js"), edited).unwrap();
+    });
+    assert_eq!(patch_of(&as_context, "config.js"), &FilePatch::Withheld);
+    assert!(!serde_json::to_string(&as_context).unwrap().contains(&key));
+
+    // The sandbox removed it, so it would be a removed line.
+    let as_removed = compare_with(Some(("config.js", &beside)), |work| {
+        std::fs::write(work.join("config.js"), "const a = 1;\n").unwrap();
+    });
+    assert_eq!(patch_of(&as_removed, "config.js"), &FilePatch::Withheld);
+    assert!(!serde_json::to_string(&as_removed).unwrap().contains(&key));
+}
+
+#[test]
+fn a_file_holding_a_secret_given_to_this_project_is_withheld_even_encoded() {
+    let value = "plainlooking-value-no-pattern";
+    let f = fixture();
+    f.up();
+    *f.deps.known_secret.lock().unwrap() = Some(value.to_owned());
+    let dir = f.project_state();
+    let canonical = std::fs::canonicalize(f.project.path()).unwrap();
+    let mut meta = hoststate::read_meta(&dir)
+        .unwrap()
+        .unwrap_or_else(|| hoststate::ProjectMeta::new(&canonical));
+    meta.assignments = secrets::AssignmentSet::new(vec![secrets::Assignment::new(
+        secrets::SecretName::new("DEMO_TOKEN").unwrap(),
+        secrets::Delivery::Injected,
+        vec![secrets::ServiceName::new("api").unwrap()],
+    )
+    .unwrap()])
+    .unwrap();
+    hoststate::write_meta(&dir, &meta).unwrap();
+
+    let encoded = base64(value.as_bytes());
+    let bundle = f.guest_bundle(|work| {
+        std::fs::write(work.join("plain.txt"), format!("x {value} y\n")).unwrap();
+        std::fs::write(work.join("encoded.txt"), &encoded).unwrap();
+        std::fs::write(work.join("clean.txt"), "nothing here\n").unwrap();
+    });
+    f.guest_sends(&base64(&bundle));
+    let report = f.diff().unwrap();
+    assert_eq!(patch_of(&report, "plain.txt"), &FilePatch::Withheld);
+    assert_eq!(patch_of(&report, "encoded.txt"), &FilePatch::Withheld);
+    assert!(matches!(patch_of(&report, "clean.txt"), FilePatch::Text { .. }));
+    assert!(!serde_json::to_string(&report).unwrap().contains(value));
+}
+
+#[test]
+fn secret_file_names_are_withheld_but_tool_configs_stay_readable() {
+    let report = compare_with(None, |work| {
+        std::fs::write(work.join(".env"), "A=1\n").unwrap();
+        std::fs::write(work.join("server.pem"), "not really\n").unwrap();
+        std::fs::write(work.join(".mcp.json"), "{\"command\":\"curl evil\"}\n").unwrap();
+    });
+    assert_eq!(patch_of(&report, ".env"), &FilePatch::Withheld);
+    assert_eq!(patch_of(&report, "server.pem"), &FilePatch::Withheld);
+    assert!(lines_of(patch_of(&report, ".mcp.json"))[0].1.contains("curl evil"));
+}
+
+/// Git's own diff would obey these. This must not.
+#[test]
+fn attributes_in_the_sandbox_cannot_hide_a_change() {
+    let report = compare_with(None, |work| {
+        std::fs::write(work.join(".gitattributes"), "* -diff binary\n").unwrap();
+        std::fs::write(work.join("app.js"), "steal();\n").unwrap();
+    });
+    assert!(lines_of(patch_of(&report, "app.js"))
+        .iter()
+        .any(|(kind, text)| *kind == DiffLineKind::Added && text == "steal();"));
+}
+
+#[test]
+fn hostile_lines_are_escaped_and_binaries_are_not_shown() {
+    let report = compare_with(None, |work| {
+        std::fs::write(work.join("app.js"), "\tok\u{1b}[2J\u{202e}\r\n").unwrap();
+        std::fs::write(work.join("late-nul.bin"), [vec![b'a'; 9000], vec![0u8]].concat()).unwrap();
+    });
+    let added = lines_of(patch_of(&report, "app.js")).pop().unwrap().1;
+    assert_eq!(added, "\tok\\u{1b}[2J\\u{202e}\\u{d}");
+    // Past the first 8000 bytes, where the review's sniff stops looking.
+    assert_eq!(patch_of(&report, "late-nul.bin"), &FilePatch::Binary);
+}
+
+/// A sandbox cannot push its planted hook out of view with a flood of text, and
+/// the reply still fits one message.
+#[test]
+fn a_flood_of_changes_fits_one_message_and_flagged_files_are_read_first() {
+    let report = compare_with(None, |work| {
+        let line = "\"\\".repeat(500);
+        let big: String = (0..300).map(|i| format!("{i}{line}\n")).collect();
+        for i in 0..40 {
+            std::fs::write(work.join(format!("a{i:02}.txt")), &big).unwrap();
+        }
+        std::fs::create_dir_all(work.join("zzz/.claude")).unwrap();
+        std::fs::write(work.join("zzz/.claude/settings.json"), PLANTED_HOOK).unwrap();
+    });
+    let frame = proto::Frame::Done(proto::Outcome::Ok {
+        reply: Reply::Diff(report.clone()),
+    });
+    let mut wire = Vec::new();
+    proto::write_frame(&mut wire, &frame).unwrap();
+    assert!(wire.len() <= proto::MAX_FRAME_BYTES);
+
+    assert!(matches!(
+        patch_of(&report, "zzz/.claude/settings.json"),
+        FilePatch::Text { truncated: false, .. }
+    ));
+    assert!(report.files.iter().any(|f| f.patch == FilePatch::NotIncluded));
+    assert!(report.files.iter().any(|f| f.patch.is_incomplete()));
 }

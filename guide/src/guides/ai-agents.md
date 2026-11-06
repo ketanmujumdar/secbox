@@ -4,6 +4,12 @@ The project's code lives in the sandbox, so an AI agent on your machine cannot s
 
 > **Built, never run against a real VM.** Claude Code has connected to the server and listed its tools. No model has yet used them on a running sandbox.
 
+## One button, on a Mac
+
+In the desktop app, start the project and press **Connect Claude Code** on its Overview. It makes a folder for this project in `~/secbox-agents`, and opens Terminal with Claude Code running there, its own tools off. Trust the folder and approve the `secbox` server when it asks. Pressing it again reuses the folder.
+
+Started from anywhere else, Claude Code has its own tools back, so use the button or that folder. On other systems the app shows the command to run.
+
 ## Quick setup for Claude Code
 
 ```sh

@@ -337,6 +337,8 @@
     $('menu-destroy').disabled = !canEnd;
     $('menu-remove').disabled = !free;
     $('settings-destroy').disabled = !canEnd;
+    // The agent's tools never start a sandbox, so there is nothing to connect to.
+    $('agent-connect').disabled = !free || !running;
     $('settings-remove').disabled = !free;
     $('btn-more').disabled = !ready;
     for (const id of ['git-go', 'folder-go', 'review-start']) $(id).disabled = state.busy;
@@ -1091,6 +1093,23 @@
   $('menu-destroy').addEventListener('click', () => { closeMenu(); stopProject(true); });
   $('menu-remove').addEventListener('click', () => { closeMenu(); removeProject(); });
   $('settings-destroy').addEventListener('click', () => stopProject(true));
+
+  $('agent-connect').addEventListener('click', async () => {
+    const row = selectedRow();
+    if (!row) return;
+    busy('Setting up Claude Code for this sandbox.');
+    try {
+      const done = await invoke('connect_agent', { project: row.path });
+      $('agent-cmd').textContent = done.command;
+      show($('agent-cmd'), true);
+      banner(done.opened
+        ? 'Claude Code is opening in Terminal. Trust the folder and approve the server when it asks.'
+        : 'Run the command under AI agent in a terminal to start Claude Code.', 'ok');
+    } catch (error) {
+      banner('Could not set up Claude Code: ' + errorText(error));
+    }
+    busy('');
+  });
   $('settings-remove').addEventListener('click', removeProject);
 
   // ---------- logs ----------
@@ -1277,6 +1296,78 @@
 
   const CHANGE_LETTER = { added: 'A', modified: 'M', deleted: 'D', 'type changed': 'T' };
 
+  const LINE_SIGN = { context: ' ', added: '+', removed: '-' };
+
+  // One line of a file. Everything from the sandbox goes in as text, never as
+  // markup: el() only sets textContent.
+  function patchLine(line, oldNumber, newNumber) {
+    const row = el('div', null, 'patch-line ' + line.kind);
+    row.appendChild(el('span', line.kind === 'added' ? '' : oldNumber, 'patch-number'));
+    row.appendChild(el('span', line.kind === 'removed' ? '' : newNumber, 'patch-number'));
+    row.appendChild(el('span', LINE_SIGN[line.kind] || '?', 'patch-sign'));
+    row.appendChild(el('span', line.text, 'patch-text'));
+    return row;
+  }
+
+  function patchBody(patch) {
+    const body = el('div', null, 'patch');
+    if (patch.unread) {
+      body.appendChild(el('p', patch.unread, 'patch-note warn'));
+      return body;
+    }
+    if (!patch.hunks.length) {
+      body.appendChild(el('p', 'No lines changed. The file is empty, or only its type or permissions changed.', 'patch-note'));
+      return body;
+    }
+    const code = el('div', null, 'patch-code');
+    for (const hunk of patch.hunks) {
+      let oldNumber = hunk.old_start;
+      let newNumber = hunk.new_start;
+      code.appendChild(el('div', 'From line ' + (newNumber || oldNumber), 'patch-hunk'));
+      for (const line of hunk.lines) {
+        code.appendChild(patchLine(line, oldNumber, newNumber));
+        if (line.kind !== 'added') oldNumber += 1;
+        if (line.kind !== 'removed') newNumber += 1;
+      }
+    }
+    body.appendChild(code);
+    if (patch.truncated) body.appendChild(el('p', 'Cut short at a limit. Treat the rest of this file as unread.', 'patch-note warn'));
+    return body;
+  }
+
+  // A changed file. Its lines are built the first time it is opened, because a
+  // comparison can hold thousands of them.
+  function fileRow(file) {
+    const item = el('li');
+    const row = el('button', null, 'file-row');
+    row.type = 'button';
+    row.title = file.change;
+    row.setAttribute('aria-expanded', 'false');
+    row.appendChild(el('span', CHANGE_LETTER[file.change] || '?', 'change ' + file.change.replace(' ', '-')));
+    row.appendChild(el('span', file.path, 'mono file-path'));
+    const patch = file.patch;
+    if (patch.unread) {
+      row.appendChild(el('span', 'Not shown', 'file-stat warn'));
+    } else {
+      row.appendChild(el('span', '+' + patch.added, 'file-stat good'));
+      row.appendChild(el('span', '-' + patch.removed, 'file-stat bad'));
+    }
+    item.appendChild(row);
+    let body = null;
+    row.addEventListener('click', () => {
+      if (!body) {
+        body = patchBody(patch);
+        item.appendChild(body);
+        row.setAttribute('aria-expanded', 'true');
+        return;
+      }
+      const open = body.classList.contains('hidden');
+      show(body, open);
+      row.setAttribute('aria-expanded', String(open));
+    });
+    return item;
+  }
+
   function renderDiff(diff) {
     clearReview();
     const view = diff.view;
@@ -1298,13 +1389,7 @@
     head.textContent = (view.flags.length ? 'Every changed file · ' : 'Changed files · ') + view.files.length;
     show(head, true);
     const files = $('review-files');
-    for (const file of view.files) {
-      const item = el('li');
-      item.title = file.change;
-      item.appendChild(el('span', CHANGE_LETTER[file.change] || '?', 'change ' + file.change.replace(' ', '-')));
-      item.appendChild(el('span', file.path, 'mono'));
-      files.appendChild(item);
-    }
+    for (const file of view.files) files.appendChild(fileRow(file));
     if (!view.files.length) files.appendChild(el('li', 'No files changed.', 'empty-line'));
   }
 

@@ -121,6 +121,7 @@ mod tests {
                 files: vec![DiffFile {
                     path: ".claude/settings.json".to_owned(),
                     change: FileChange::Added,
+                    patch: proto::FilePatch::NotIncluded,
                 }],
                 commits: 1,
                 complete: true,

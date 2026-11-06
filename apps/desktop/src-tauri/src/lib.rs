@@ -5,6 +5,7 @@
 //! web port, and it can reach only the commands in this file, each granted by
 //! name in `capabilities/main.json`.
 
+pub mod agent;
 pub mod client;
 pub mod daemon_proc;
 pub mod ops;
@@ -375,6 +376,23 @@ async fn destroy(app: AppHandle, project: String, state: State<'_, Arc<AppState>
 }
 
 #[tauri::command]
+async fn connect_agent(project: String, state: State<'_, Arc<AppState>>) -> Result<agent::Connected, String> {
+    let state = Arc::clone(&state);
+    blocking(move || {
+        let cli = daemon_proc::bundled_cli(state.exe.as_deref())
+            .ok_or_else(|| format!("this app has no copy of {} beside it", brand::CLI_BIN))?;
+        let home = state
+            .paths()?
+            .state
+            .parent()
+            .ok_or_else(|| "the state folder has no parent".to_owned())?
+            .to_path_buf();
+        agent::connect(&cli, &home, std::path::Path::new(&project))
+    })
+    .await
+}
+
+#[tauri::command]
 async fn approve_host(
     app: AppHandle,
     project: String,
@@ -682,6 +700,7 @@ pub fn run() {
             destroy,
             remove_project,
             approve_host,
+            connect_agent,
             logs,
             logs_stop,
             blocked,

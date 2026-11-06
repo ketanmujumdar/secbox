@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use proto::text::{self, TerminalFilter};
 use proto::{
-    BlockedArgs, BlockedRecording, BlockedReport, DiffReport, DownArgs, LogTrust, LogsArgs,
+    BlockedArgs, BlockedRecording, BlockedReport, DiffLineKind, DiffReport, DownArgs, FilePatch,
+    LogTrust, LogsArgs,
     OutputStream, PlanArgs, PlanReport, ProjectArgs, Reply, Request, SandboxState, Source,
     StatusReport, UpArgs,
 };
@@ -796,6 +797,60 @@ pub struct DiffFlagRow {
 pub struct DiffFileRow {
     pub change: &'static str,
     pub path: String,
+    pub patch: PatchView,
+}
+
+/// A file's changed lines, or why there are none to read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PatchView {
+    /// Why nothing is shown. When set, the file is unread.
+    pub unread: Option<&'static str>,
+    pub added: u64,
+    pub removed: u64,
+    /// A limit cut the lines, so the rest of the file is unread.
+    pub truncated: bool,
+    pub hunks: Vec<HunkView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HunkView {
+    pub old_start: u64,
+    pub new_start: u64,
+    pub lines: Vec<LineView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LineView {
+    pub kind: DiffLineKind,
+    pub text: String,
+}
+
+fn patch_view(patch: &FilePatch) -> PatchView {
+    let unread = patch.unread_reason();
+    let FilePatch::Text { hunks, added, removed, truncated } = patch else {
+        return PatchView { unread, added: 0, removed: 0, truncated: false, hunks: Vec::new() };
+    };
+    PatchView {
+        unread,
+        added: *added,
+        removed: *removed,
+        truncated: *truncated,
+        hunks: hunks
+            .iter()
+            .map(|hunk| HunkView {
+                old_start: hunk.old_start,
+                new_start: hunk.new_start,
+                lines: hunk
+                    .lines
+                    .iter()
+                    .map(|line| LineView {
+                        kind: line.kind,
+                        text: text::escape_line(&line.text, usize::MAX),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
 }
 
 pub const DIFF_HEURISTIC: &str = "Flags are a heuristic aid. Read the changes yourself before anything from this sandbox reaches your machine.";
@@ -828,6 +883,16 @@ pub fn diff_view(report: &DiffReport) -> DiffView {
     if report.files.is_empty() {
         notes.push(note(Weight::Plain, "No files changed."));
     }
+    let unread = report.files.iter().filter(|file| file.patch.is_incomplete()).count();
+    if unread > 0 {
+        notes.push(note(
+            Weight::Alert,
+            &format!(
+                "{unread} {} not shown in full. Treat what is missing as unread.",
+                if unread == 1 { "file was" } else { "files were" }
+            ),
+        ));
+    }
     notes.push(note(Weight::Warn, NOTHING_COPIED));
     DiffView {
         baseline: text::escape(report.baseline.get(..12).unwrap_or(&report.baseline)),
@@ -857,6 +922,7 @@ pub fn diff_view(report: &DiffReport) -> DiffView {
             .map(|file| DiffFileRow {
                 change: file.change.word(),
                 path: text::escape(&file.path),
+                patch: patch_view(&file.patch),
             })
             .collect(),
         notes,
@@ -958,6 +1024,7 @@ mod tests {
             files: vec![proto::DiffFile {
                 path: ".claude/settings.json".to_owned(),
                 change: proto::FileChange::Added,
+                patch: proto::FilePatch::NotIncluded,
             }],
             commits: 1,
             complete: true,
@@ -988,6 +1055,34 @@ mod tests {
         assert!(view.flags.is_empty());
         assert!(view.notes.iter().any(|n| n.text.contains(DIFF_HEURISTIC)));
         assert!(!view.files[0].path.contains('\u{1b}') && !view.files[0].path.contains('\u{202e}'));
+    }
+
+    #[test]
+    fn a_files_lines_are_escaped_and_what_is_unread_is_counted() {
+        let mut report = diff_report(Vec::new());
+        report.files[0].patch = proto::FilePatch::Text {
+            hunks: vec![proto::DiffHunk {
+                old_start: 0,
+                new_start: 1,
+                lines: vec![proto::DiffLine {
+                    kind: proto::DiffLineKind::Added,
+                    text: "\tgo\u{1b}[2J\u{202e}".to_owned(),
+                }],
+            }],
+            added: 1,
+            removed: 0,
+            truncated: false,
+        };
+        let view = diff_view(&report);
+        let patch = &view.files[0].patch;
+        assert_eq!(patch.unread, None);
+        assert_eq!(patch.hunks[0].lines[0].text, "\tgo\\u{1b}[2J\\u{202e}");
+        assert!(!view.notes.iter().any(|n| n.text.contains("not shown in full")));
+
+        report.files[0].patch = proto::FilePatch::Withheld;
+        let view = diff_view(&report);
+        assert!(view.files[0].patch.unread.unwrap().contains("treat this file as unread"));
+        assert!(view.notes.iter().any(|n| n.weight == Weight::Alert && n.text.starts_with("1 file was not shown")));
     }
 
     #[test]

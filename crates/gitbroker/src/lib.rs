@@ -57,6 +57,7 @@ mod error;
 mod git;
 mod push;
 mod quarantine;
+mod patch;
 mod remote;
 mod review;
 mod secretpath;
@@ -70,6 +71,7 @@ pub use detect::SecretRule;
 pub use display::escape_for_display;
 pub use error::Error;
 pub use push::{PushAuth, PushReceipt};
+pub use patch::{Hunk, LineKind, Patch, PatchLimits, PatchLine};
 pub use quarantine::{ImportedBundle, ImportedRef, Quarantine};
 pub use remote::{
     fetch_ssh, ssh_target, valid_git_protocol, validate_fetch_ref, validate_ssh_url, GitService, SshTarget,

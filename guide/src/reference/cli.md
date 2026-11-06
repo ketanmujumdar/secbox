@@ -243,10 +243,10 @@ Runs one command, after `--`, in the sandbox or in one service's container, and 
 ## diff
 
 ```text
-secbox diff [PATH]
+secbox diff [--patch] [PATH]
 ```
 
-Compares a running sandbox's `/work` with the snapshot it started from, and lists flags first, then every changed file. Copies nothing out. Exits 0 when nothing is flagged, 5 when something is or the review stopped at a limit, and 1 when it could not compare. See [Reviewing changes](../guides/reviewing-changes.md).
+Compares a running sandbox's `/work` with the snapshot it started from, and lists flags first, then every changed file. `--patch` also prints each file's changed lines, or why they are not shown. Copies nothing out. Exits 0 when nothing is flagged, 5 when something is or the review stopped at a limit, and 1 when it could not compare. See [Reviewing changes](../guides/reviewing-changes.md).
 
 ## mcp
 
