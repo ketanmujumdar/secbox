@@ -211,10 +211,26 @@ fn a_plan_describes_the_ports_the_project_publishes() {
 #[test]
 fn a_plan_carries_the_build_hosts_and_no_approved_hosts_to_start_with() {
     let plan = fixture().plan();
-    assert!(plan.network.build_hosts.contains(&"registry.npmjs.org".to_owned()));
+    // Its only Dockerfile is FROM scratch: image hosts, and nothing that
+    // takes uploads from anyone.
+    assert!(plan.network.build_hosts.contains(&"registry-1.docker.io".to_owned()));
+    assert!(!plan.network.build_hosts.contains(&"registry.npmjs.org".to_owned()));
+    assert!(!plan.network.build_hosts.contains(&"storage.googleapis.com".to_owned()));
     assert_eq!(plan.network.run_hosts, Vec::<String>::new());
     assert_eq!(plan.network.tls, proto::TlsPlan::ServerNameOnly);
     assert!(plan.network.merged_for_whole_life);
+}
+
+#[test]
+fn a_node_project_gets_the_npm_registry_and_adding_it_moves_the_digest() {
+    let f = fixture();
+    let before = f.plan();
+    std::fs::write(f.project.path().join("web/package.json"), "{}").unwrap();
+    let after = f.plan();
+    assert!(after.network.build_hosts.contains(&"registry.npmjs.org".to_owned()));
+    assert!(!after.network.build_hosts.contains(&"proxy.golang.org".to_owned()));
+    // The hosts are part of what a person approves.
+    assert_ne!(before.digest, after.digest);
 }
 
 #[test]
@@ -1239,6 +1255,23 @@ impl SecretFixture {
         self.project.path().to_string_lossy().into_owned()
     }
 
+    fn plan(&self) -> proto::PlanReport {
+        match self
+            .service
+            .handle(
+                &Request::Plan(PlanArgs {
+                    project: self.path(),
+                    source: Source::default(),
+                }),
+                &mut Quiet,
+            )
+            .unwrap()
+        {
+            Reply::Plan(plan) => *plan,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
     fn up(&self) -> Result<proto::UpReport, proto::ApiError> {
         let Reply::Plan(plan) = self
             .service
@@ -1282,7 +1315,6 @@ fn with_secret_valued(
     services: &[&str],
     value: &str,
 ) -> SecretFixture {
-    let state = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("compose.yaml"), COMPOSE).unwrap();
     std::fs::create_dir_all(project.path().join("web")).unwrap();
@@ -1292,7 +1324,17 @@ fn with_secret_valued(
         "resources:\n  memory: 4G\n  cpus: 2\n  disk: 30G\n",
     )
     .unwrap();
+    with_secret_in(project, delivery, services, value)
+}
 
+/// Any project, with `ENCRYPTION_KEY` assigned to the named services.
+fn with_secret_in(
+    project: tempfile::TempDir,
+    delivery: secrets::Delivery,
+    services: &[&str],
+    value: &str,
+) -> SecretFixture {
+    let state = tempfile::tempdir().unwrap();
     let store = Shared::default();
     let name = secrets::SecretName::new("ENCRYPTION_KEY").unwrap();
     store
@@ -1739,4 +1781,167 @@ fn other_kinds_of_project_are_still_refused() {
         "{}",
         error.message
     );
+}
+
+// The hostile demo: one service holds a secret, another tries to take it.
+
+/// A copy of a folder under `tests/fixtures`, subfolders included.
+fn copy_fixture(name: &str) -> tempfile::TempDir {
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap().flatten() {
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    let project = tempfile::tempdir().unwrap();
+    copy(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures").join(name),
+        project.path(),
+    );
+    project
+}
+
+#[test]
+fn a_service_that_could_reach_another_services_secret_stops_the_start() {
+    let f = with_secret_in(
+        copy_fixture("hostile-demo"),
+        secrets::Delivery::Injected,
+        &["api"],
+        FAKE_VALUE,
+    );
+    let plan = f.plan();
+    let blockers = plan.blockers.join("\n");
+    for expected in ["privileged", "pid", "/run", "docker.sock"] {
+        assert!(
+            plan.blockers
+                .iter()
+                .any(|b| b.contains("service evil") && b.contains(expected)),
+            "no blocker mentions {expected}:\n{blockers}"
+        );
+    }
+    // The service that holds the secret is not the one blamed.
+    assert!(!blockers.contains("service api"), "{blockers}");
+
+    let refused = f.up().expect_err("a blocked plan must not start");
+    assert!(!format!("{refused:?}").contains(FAKE_VALUE));
+    assert!(
+        f.deps.inner.engine.inputs().is_empty(),
+        "nothing may be delivered for a plan that was refused"
+    );
+}
+
+#[test]
+fn the_same_settings_without_secrets_are_findings_and_not_blockers() {
+    let f = fixture_from(copy_fixture("hostile-demo"), TestDeps::new());
+    let plan = f.plan();
+    assert!(
+        !plan.blockers.iter().any(|b| b.contains("could reach past")),
+        "{:?}",
+        plan.blockers
+    );
+    assert!(plan.findings.iter().any(|x| x.service.as_deref() == Some("evil")));
+}
+
+#[test]
+fn the_runnable_demo_starts_and_its_secret_goes_only_to_api_over_standard_input() {
+    let f = with_secret_in(
+        copy_fixture("hostile-demo-run"),
+        secrets::Delivery::Injected,
+        &["api"],
+        FAKE_VALUE,
+    );
+    assert_eq!(f.plan().blockers, Vec::<String>::new());
+    let report = f.up().unwrap();
+    assert_eq!(report.secrets.len(), 1);
+    assert_eq!(report.secrets[0].service, "api");
+    assert!(!f.calls_as_text().contains(FAKE_VALUE));
+    // Nothing allowed while it runs unless a person approved it on the host.
+    let plan = f.plan();
+    assert!(plan.network.run_hosts.is_empty(), "{:?}", plan.network.run_hosts);
+}
+
+#[test]
+fn a_dockerfile_projects_secret_reaches_its_one_service() {
+    let f = with_secret_in(
+        dockerfile_project(),
+        secrets::Delivery::Injected,
+        &["app"],
+        FAKE_VALUE,
+    );
+    assert_eq!(f.plan().blockers, Vec::<String>::new());
+    f.up().unwrap();
+    let written = f.deps.inner.engine.inputs();
+    let env = written
+        .iter()
+        .find(|(_, body)| body.contains("ENCRYPTION_KEY="))
+        .expect("no environment file was written");
+    assert_eq!(env.1, format!("ENCRYPTION_KEY={FAKE_VALUE}\n"));
+    let yaml = &written
+        .iter()
+        .find(|(_, body)| body.contains("services:") && body.contains("env_file"))
+        .expect("no override was written")
+        .1;
+    assert!(yaml.contains("\"app\""), "{yaml}");
+    // The override is merged with the generated file, which Compose finds
+    // in the work folder.
+    let calls = f.calls_as_text();
+    assert!(calls.contains("compose.yaml"), "{calls}");
+    assert!(calls.contains("override.yaml"), "{calls}");
+    assert!(!calls.contains(FAKE_VALUE));
+}
+
+// Masking secret values in what comes back from the sandbox.
+
+#[test]
+fn a_secret_printed_by_a_service_is_masked_in_logs_even_split_or_encoded() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.up().unwrap();
+    let engine = &f.deps.inner.engine;
+    let (first, second) = FAKE_VALUE.split_at(7);
+    // Split between two reads, as a follow can deliver it.
+    engine.push_stream_output(engine::OutputStream::Stdout, format!("api  | token={first}").as_bytes());
+    engine.push_stream_output(engine::OutputStream::Stdout, format!("{second} ok\n").as_bytes());
+    // Base64 of NAME=value, as the demo's attacker sent it.
+    let encoded = {
+        const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let bytes = format!("ENCRYPTION_KEY={FAKE_VALUE}\n").into_bytes();
+        let mut out = String::new();
+        for c in bytes.chunks(3) {
+            let n = (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+            for i in 0..=c.len() {
+                out.push(A[(n >> (18 - 6 * i)) as usize & 63] as char);
+            }
+        }
+        out
+    };
+    engine.push_stream_output(engine::OutputStream::Stderr, format!("posted {encoded}\n").as_bytes());
+
+    let mut kept = Kept::default();
+    let request = Request::Logs(LogsArgs {
+        project: f.path(),
+        service: Some("api".to_owned()),
+        tail: 200,
+        follow: false,
+    });
+    f.service.handle(&request, &mut kept).unwrap();
+    let all: String = kept.output.iter().map(|(_, t)| t.as_str()).collect();
+    assert!(!all.contains(FAKE_VALUE), "{all}");
+    assert!(!all.contains(first) || !all.contains(second), "{all}");
+    assert!(all.contains("token=[ENCRYPTION_KEY] ok"), "{all}");
+    assert!(all.contains("posted ") && all.matches("[ENCRYPTION_KEY]").count() == 2, "{all}");
+}
+
+#[test]
+fn logs_for_a_project_with_no_secrets_are_passed_through_unchanged() {
+    let f = fixture().started();
+    f.deps
+        .engine
+        .push_stream_output(engine::OutputStream::Stdout, b"web  | ready\n");
+    let (_, kept) = f.logs(Some("web")).unwrap();
+    assert_eq!(kept.text(OutputStream::Stdout), "web  | ready\n");
 }

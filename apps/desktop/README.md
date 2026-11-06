@@ -5,7 +5,7 @@
 The app and the terminal are bundled together. Anyone who wants a terminal uses `secbox` (or `secbox` with no arguments for the full-screen interface). The app adds two things:
 
 - **A menu bar icon** (tray icon on Linux), which is the part that is always there. It shows whether `secboxd` is answering and lists known projects with their state, with *Open window*, *Start daemon* or *Restart daemon*, and *Quit*. Closing the window keeps the app in the menu bar. Quitting the app leaves the daemon running.
-- **A window**: an overview of each project (state, services, ports on 127.0.0.1, resources, blocked-traffic count), *Start*, *Stop* and *Destroy*, a Logs tab and a Blocked traffic tab. Secrets and Git review show the same "not built yet" text as the terminal interface.
+- **A window**: an overview of each project (state, services, ports on 127.0.0.1, resources, blocked-traffic count), *Start*, *Stop* and *Destroy*, a Logs tab and a Blocked traffic tab. Git review compares the running sandbox with its snapshot when you press Compare, and lists flags first, then changed files, as `diff` does. Secrets shows the same text as the terminal interface.
 
 The app has no powers of its own. Every button becomes one request on the daemon's owner-only Unix socket, the same request the CLI sends, and the daemon applies the same rules.
 

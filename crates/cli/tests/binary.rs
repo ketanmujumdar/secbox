@@ -46,16 +46,15 @@ fn help_and_usage_use_the_brand_name() {
 #[test]
 fn unbuilt_commands_refuse_with_a_distinct_code() {
     let dir = home();
-    for command in ["diff", "export"] {
-        let done = run_binary(dir.path(), &[command]);
-        assert_eq!(done.code, NOT_BUILT, "{command}");
-        assert!(done.err.contains("not built yet"), "{command}");
-        assert!(done.err.contains("Do not rely on it"), "{command}");
-        assert!(!dir.path().join(brand::STATE_DIR).exists());
+    let done = run_binary(dir.path(), &["export"]);
+    assert_eq!(done.code, NOT_BUILT);
+    assert!(done.err.contains("not built yet"));
+    assert!(done.err.contains("Do not rely on it"));
+    assert!(!dir.path().join(brand::STATE_DIR).exists());
+    let codes = [exit::OK, exit::FAILED, exit::USAGE, exit::FINDINGS, exit::DENIED, exit::FLAGGED, NOT_BUILT];
+    for (index, code) in codes.iter().enumerate() {
+        assert!(!codes[index + 1..].contains(code), "{code} is used twice");
     }
-    assert_ne!(NOT_BUILT, exit::OK);
-    assert_ne!(NOT_BUILT, exit::FAILED);
-    assert_ne!(NOT_BUILT, exit::USAGE);
 }
 
 /// The commands that run a sandbox are built, but they do nothing on their
@@ -64,7 +63,7 @@ fn unbuilt_commands_refuse_with_a_distinct_code() {
 #[test]
 fn the_sandbox_commands_report_a_daemon_that_is_not_running() {
     let dir = home();
-    for command in ["up", "down", "status"] {
+    for command in ["up", "down", "status", "diff"] {
         let done = run_binary(dir.path(), &[command]);
         assert_eq!(done.code, exit::FAILED, "{command}: {}", done.all());
         assert!(

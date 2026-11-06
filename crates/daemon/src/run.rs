@@ -307,6 +307,9 @@ fn create(
         ports: ports.to_vec(),
         plan_digest: args.plan_digest.clone(),
         log_level: Some(crate::blocked::created_level()),
+        reachable_hosts: Some(proto::reachable_while_running(&plan.network)),
+        // Set once the snapshot is in, by the copy that makes it.
+        baseline: None,
     }
     .save(&project.dir)
     .map_err(internal)?;
@@ -375,12 +378,15 @@ fn copy_in_snapshot(
     if let Some(generated) = &plan.generated_compose {
         write_generated_compose(&snapshot, generated)?;
     }
+    // Last, so the commit holds exactly what the guest is given.
+    let baseline = crate::diff::make_baseline(service, project, &snapshot);
     let guest = GuestPath::new(WORK_DIR).map_err(|e| internal(e.to_string()))?;
     service
         .deps()
         .engine()
         .copy_in(&project.sandbox, &snapshot, &guest)
         .map_err(|e| engine_error(e.to_string()))?;
+    crate::diff::remember_baseline(project, baseline)?;
     service.record(
         audit::entry(service.deps().now_unix(), audit::Action::SnapshotTaken)
             .project(project.id.as_str())
@@ -417,7 +423,7 @@ fn write_generated_compose(snapshot: &std::path::Path, generated: &str) -> Resul
         .map_err(|e| internal(format!("cannot write the generated Compose file: {}", e.kind())))
 }
 
-fn tempdir_in_state(service: &Service) -> Result<tempfile::TempDir, ApiError> {
+pub(crate) fn tempdir_in_state(service: &Service) -> Result<tempfile::TempDir, ApiError> {
     let staging = service.state_dir().join("staging");
     hoststate::ensure_private_dir(&staging).map_err(internal)?;
     tempfile::tempdir_in(&staging)
@@ -599,6 +605,7 @@ pub fn down(
             .destroy(&project.sandbox)
             .map_err(|e| engine_error(e.to_string()))?;
         SandboxRecord::remove(&project.dir).map_err(internal)?;
+        crate::diff::forget_baseline(project);
         service.record(
             audit::entry(service.deps().now_unix(), audit::Action::SandboxDestroyed)
                 .project(project.id.as_str()),
@@ -651,7 +658,26 @@ pub fn status(service: &Service, project: &Project) -> Result<StatusReport, ApiE
         // are ever recorded, and only by a sandbox created to record them.
         blocked_count: blocked.total,
         blocked: Some(blocked),
+        exposure: Some(Box::new(proto::SecretExposure {
+            secrets: held_secrets(project)?,
+            reachable_hosts: record.as_ref().and_then(|r| r.reachable_hosts.clone()),
+        })),
     })
+}
+
+/// The secrets assigned to this project, by name, and who gets each.
+fn held_secrets(project: &Project) -> Result<Vec<proto::HeldSecret>, ApiError> {
+    let Some(meta) = hoststate::read_meta(&project.dir).map_err(internal)? else {
+        return Ok(Vec::new());
+    };
+    Ok(meta
+        .assignments
+        .iter()
+        .map(|a| proto::HeldSecret {
+            name: text::escape(a.name().as_str()),
+            services: a.services().iter().map(|s| text::escape(s.as_str())).collect(),
+        })
+        .collect())
 }
 
 pub(crate) fn status_of(service: &Service, project: &Project) -> Result<SandboxState, ApiError> {

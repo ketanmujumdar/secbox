@@ -1,0 +1,12 @@
+# The runnable half of the demo: no container escapes, so it starts. `api`
+# holds DEMO_TOKEN and its probe tries to send it out. On a real VM every
+# probe should print BLOCKED, and `net blocked` should list the hostnames.
+services:
+  api:
+    build: ./api
+    ports:
+      - "127.0.0.1:8080:8080"
+    # The project, mounted the way a dev setup would. The planted hook then
+    # lands in the sandbox's copy of the project, where `diff` must flag it.
+    volumes:
+      - .:/work

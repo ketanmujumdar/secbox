@@ -117,7 +117,7 @@ A blocked encrypted request would show only its host and port unless it passes t
 
 Each project gets one VM, and its whole Compose stack runs on that VM's private daemon. Services still reach each other by name, but not other projects or the host.
 
-**Compose files are untrusted.** The daemon inside the VM cannot see host paths, so a host mount, the host socket or `privileged` affects only the VM. secbox still flags these requests before starting. Published ports are forwarded to `127.0.0.1` on the host, and only when approved.
+**Compose files are untrusted.** The daemon inside the VM cannot see host paths, so a host mount, the host socket or `privileged` reaches only the VM. But the VM is where every service's secrets are delivered, so once a project has a secret assigned, any such setting is a blocker and the project will not start: one hostile service could otherwise read another's secrets from the VM's `tmpfs`, the Docker socket or `/proc`. Without secrets these stay findings. Published ports are forwarded to `127.0.0.1` on the host, and only when approved.
 
 **Within a project, compromise can spread.** If `app` is compromised, it can attack `db` on the same network. Separate networks and narrowly assigned secrets reduce this.
 

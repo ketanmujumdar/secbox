@@ -280,7 +280,25 @@ pub fn status(args: &StatusArgsCli, deps: &mut Deps) -> i32 {
     show_services(&report.services, deps);
     say!(deps);
     show_blocked(report.blocked.as_ref(), deps);
+    if let Some(exposure) = &report.exposure {
+        show_exposure(&exposure.secrets, exposure.reachable_hosts.as_deref(), deps);
+    }
     exit::OK
+}
+
+/// Which secret goes to which service, and every host it could be sent to.
+/// Printed whenever a secret is assigned, because that list is the real
+/// answer to whether a key can leave.
+fn show_exposure(secrets: &[proto::HeldSecret], hosts: Option<&[String]>, deps: &mut Deps) {
+    let lines = proto::exposure_lines(secrets, hosts, false);
+    if lines.is_empty() {
+        return;
+    }
+    say!(deps);
+    say!(deps, "{}", paint(deps.color, Tone::Warn, "Where secrets could go"));
+    for line in lines {
+        say!(deps, "  {}", esc(&line));
+    }
 }
 
 /// Saying "0 blocked" would read as "nothing was blocked", which is a different
@@ -386,6 +404,11 @@ fn show_plan(plan: &PlanReport, deps: &mut Deps) {
             );
         }
     }
+    show_exposure(
+        &proto::held_from_plan(&plan.secrets),
+        Some(&proto::reachable_while_running(&plan.network)),
+        deps,
+    );
 
     if plan.ports.is_empty() {
         field(deps, "Ports", "none published");
@@ -605,7 +628,7 @@ fn request(deps: &mut Deps, request: Request, command: &str) -> Result<Reply, i3
         say!(deps, "{}  {}", paint(color, Tone::Dim, "..."), esc(&line));
     });
     result.map_err(|error| {
-        tell!(deps, "{command}: {}", esc(&error.message()));
+        tell!(deps, "{command}: {}", error.for_terminal());
         exit::FAILED
     })
 }

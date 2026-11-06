@@ -2,6 +2,8 @@
 
 secbox is being built to run a project and its AI agent inside a disposable microVM, so that a compromised dependency or a tricked agent stays away from your machine. `docs/ARCHITECTURE.md` has the design.
 
+**User documentation:** <https://ketanmujumdar.github.io/secbox/>, built from [`guide/`](guide/src/index.md). It is also available as [`llms.txt`](https://ketanmujumdar.github.io/secbox/llms.txt) and [`llms-full.txt`](https://ketanmujumdar.github.io/secbox/llms-full.txt) for AI assistants.
+
 `secbox` is a working name. See [Changing the name](#changing-the-name).
 
 ## Status: early, and not protecting anything yet
@@ -18,6 +20,8 @@ exists in the code and has not been confirmed on a real guest.
 `docs/NEEDS_A_VM.md` lists everything that has to run on real hardware before
 any of it can be called working.
 
+`docs/PROTECTIONS.md` lists each protection against the real attack it answers, the test that proves it, and whether it has run on a real VM.
+
 | Command | State |
 | --- | --- |
 | `doctor` | Works. Checks the host, without needing Docker |
@@ -31,14 +35,15 @@ any of it can be called working.
 | `up`, `down`, `status` | Built, for Compose projects and projects with only a Dockerfile. They need the daemon |
 | `up git@host:org/repo.git [--ref REF]` | Built, never run on a real VM or server. Clones the remote into the sandbox with its history, through a relay that uses your SSH key on this machine. See [docs/GIT.md](docs/GIT.md) |
 | `git status\|pull\|commit\|push [--project P]` | Built, never run on a real VM or server. Pull and push go through the same relay; a push to `main` or `master`, a delete or a tag is refused before anything is sent |
-| `logs [SERVICE] [-f] [--tail N] [--project PATH]` | Works on a running sandbox, through the daemon. Removes terminal control codes. Does not mask secret values |
+| `logs [SERVICE] [-f] [--tail N] [--project PATH]` | Works on a running sandbox, through the daemon. Removes terminal control codes, and replaces assigned secret values with their names |
 | `shell [SERVICE]`, `exec [--service S] -- CMD...` | Work on a running sandbox, on your real terminal. Control codes can't be filtered there |
 | `mcp serve --project PATH` | Built, never run on a real VM. An MCP server on stdin and stdout that lets an AI agent on this machine work in one project's sandbox. See [AI agents](#ai-agents-claude-code-codex) |
 | `mcp setup claude FOLDER`, `mcp setup codex` | Works. Makes a folder for Claude Code with its own host tools denied, or prints how to add the server to Codex |
-| `diff`, `export` | Not built |
+| `diff [PATH]` | Built, through the daemon, and tested against a fake engine only: **never run on a real VM**. Lists what changed in a running sandbox since its snapshot, with files that could act on your machine flagged first. Copies nothing out. See [Reviewing changes](#reviewing-changes-in-a-sandbox) |
+| `export` | Not built |
 | Desktop app (`apps/desktop`) | Early first cut. A menu bar icon that keeps the daemon running, and a window for status, start with plan approval, stop, destroy, logs, blocked hostnames, Import from an SSH remote, and a Git tab for pull, commit and push. Same daemon, same powers as the CLI. Run on Linux under Xvfb only; macOS untested. See [its README](apps/desktop/README.md) |
 
-`up`, `down`, `status`, `logs`, `net blocked`, `shell` and `exec` send requests to a daemon,
+`up`, `down`, `status`, `logs`, `net blocked`, `shell`, `exec` and `diff` send requests to a daemon,
 `secboxd`, which holds the secrets, the policy and the approvals. With no daemon
 running they say so.
 
@@ -68,7 +73,40 @@ In the full-screen interface, the Logs panel follows new lines by itself. Scroll
 
 There is no SSH server and no open port in the VM. For `shell` and `exec` the daemon checks the sandbox is running and tells the CLI where the engine is, and the CLI runs the engine with a cleared environment. Anything you paste into that shell is inside the sandbox.
 
-`logs` masks nothing. A service given a secret can print it, and `logs` will then show it.
+`logs` and `net blocked` replace each assigned secret's value with its name, such as `[DEMO_TOKEN]`, before you see it. That covers the value as it is, in base64, URL encoding and hex, and pieces of it inside a hostname. A value that has been encrypted or reworked can't be recognised, so this stops accidental leaks into logs, not a thief. `shell` and `exec` run on your own terminal, so their output is not masked.
+
+## Reviewing changes in a sandbox
+
+```sh
+secbox diff                     # the current folder's project
+secbox diff path/to/project
+```
+
+```text
+Compared with the snapshot this sandbox started from (commit 1f2a12002068).
+
+FLAG  .claude/settings.json  adds a hook for an AI coding tool, which would run on your machine
+FLAG  .claude/settings.json  changes Claude Code settings, which can make it run commands on your machine
+
+2 files changed:
+  added     .claude/settings.json
+  modified  api/server.js
+
+2 flags to look at. Flags are a heuristic aid. Read the changes yourself before anything from this sandbox reaches your machine.
+Nothing was copied out of the sandbox. Export is not built yet.
+```
+
+It exits 0 when nothing is flagged, 5 when something is, or when the review stopped at a limit, and 1 when it could not compare. Flags cover AI tool settings and hooks (`.claude/`, `.cursor/`), `CLAUDE.md` and `AGENTS.md`, `.vscode/`, CI workflows, Git hooks such as `.husky`, package install scripts, lockfiles, Dockerfiles and Compose files, symlinks, binaries and likely secrets. Names are matched the way a case-insensitive filesystem would, so `.CLAUDE/Settings.json` and lookalikes with invisible characters flag too.
+
+How it works:
+
+- When a sandbox is created, the daemon commits the snapshot itself, keeps that commit in the project's state folder, and gives the sandbox the same commit as `/work/.git`. That commit is what `diff` compares with, whatever the sandbox does to its own history.
+- On `diff`, Git runs inside the sandbox only. It commits everything in `/work` onto a throwaway branch, uncommitted changes included, and sends a bundle of it back as text. The daemon stops reading at 128 MB.
+- The daemon checks the bundle, imports it into a new quarantine repository and reviews it there. Nothing from it is checked out or run, and Git on your machine never runs in a `.git` the sandbox wrote.
+
+Limits: files the project's `.gitignore` leaves out are not shown, and would not be in an export either. A sandbox created before this was added has nothing to compare with, and `diff` says to recreate it. The sandbox must be running. `export` is not built, so nothing reviewed here can leave the sandbox yet.
+
+The Review panel in the full-screen interface (`r`) shows the same lines, flags first in red. Press `5` to compare: it runs inside the sandbox, so it never runs by itself. Up, down, PgUp and PgDn scroll. The desktop app's Git review page shows the same, with a Compare button.
 
 ## Starting from a Git remote
 
@@ -90,7 +128,7 @@ The terminal UI imports with `i` and pulls and pushes with `g` and `G`. The desk
 The code is in the sandbox, so an agent on your machine can't see it. `secbox mcp serve` is an MCP server the agent starts as a child process. It speaks over stdin and stdout, never a port, and is bound to one project. Its tools (`status`, `logs`, `exec`, `read_file`, `write_file`) act only inside that project's sandbox, through the daemon, with the same checks as `secbox exec`.
 
 ```sh
-secbox up --project ~/code/myapp
+secbox up ~/code/myapp
 secbox mcp setup claude ~/agents/myapp --project ~/code/myapp
 cd ~/agents/myapp && claude
 ```
@@ -140,11 +178,12 @@ secbox net check tests/fixtures/policy.yaml PUT https://registry.npmjs.org/left-
 | 2 | Bad usage |
 | 3 | `check --strict` found Critical or High findings |
 | 4 | `net check` explained a denied request |
+| 5 | `diff` flagged something, or its review stopped at a limit |
 | 69 | The command is not built yet |
 
 ## Files it keeps
 
-State lives in `~/.secbox`, owner-only: per-project secret names, their assignments and a names-only audit log. Secret values go only to macOS Keychain or Linux Secret Service. Set `SECBOX_HOME` to use `$SECBOX_HOME/.secbox` instead, which helps when testing or when your home path is too long for Unix sockets.
+State lives in `~/.secbox`, owner-only: per-project secret names, their assignments, a names-only audit log, and for each sandbox a small Git repository holding the commit of the snapshot it was given (`baseline.git`, removed by `down --destroy`). Secret values go only to macOS Keychain or Linux Secret Service. Set `SECBOX_HOME` to use `$SECBOX_HOME/.secbox` instead, which helps when testing or when your home path is too long for Unix sockets.
 
 ## Changing the name
 

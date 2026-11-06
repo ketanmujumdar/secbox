@@ -85,6 +85,10 @@
             <p class="muted small-text" id="blocked-note"></p>
             <button class="small" id="btn-traffic">Show all</button>
           </div>
+          <div class="card hidden" id="exposure-card">
+            <h2>Where your secrets could go</h2>
+            <ul class="rows mono" id="exposure"></ul>
+          </div>
         </div>
         <ul class="notes" id="status-notes"></ul>
       </section>
@@ -144,6 +148,20 @@
           <pre class="logs" id="git-output"></pre>
           <p class="note">Make a branch before pushing, in Terminal &amp; about's shell: <code>git switch -c my-branch</code>.</p>
         </div>
+        <div class="toolbar">
+          <button class="small" id="review-read">Compare with the snapshot</button>
+          <span class="muted" id="review-base"></span>
+        </div>
+        <p class="muted" id="review-intro">Compares the files in the running sandbox with the snapshot it started from. The comparison runs inside the sandbox; the host reviews the result and runs nothing from it. Nothing is copied out.</p>
+        <ul class="notes" id="review-notes"></ul>
+        <table class="table">
+          <thead><tr><th>Flag</th><th>Path</th><th>Why it matters</th></tr></thead>
+          <tbody id="review-flags"></tbody>
+        </table>
+        <table class="table">
+          <thead><tr><th>Change</th><th>Path</th></tr></thead>
+          <tbody id="review-files"></tbody>
+        </table>
       </section>
 
       <section class="panel hidden" data-panel="about">

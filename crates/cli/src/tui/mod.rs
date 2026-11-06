@@ -11,6 +11,7 @@
 
 mod logs;
 mod overview;
+mod review;
 mod screen;
 mod secrets;
 mod style;
@@ -172,6 +173,15 @@ pub fn run(deps: &mut Deps) -> i32 {
             Key::Down if model.pane.0 == Pane::Traffic => model.traffic.scroll_by(-1),
             Key::PageUp if model.pane.0 == Pane::Traffic => model.traffic.scroll_by(LOG_PAGE),
             Key::PageDown if model.pane.0 == Pane::Traffic => model.traffic.scroll_by(-LOG_PAGE),
+            Key::Up if model.pane.0 == Pane::Review => model.review.scroll_by(-1),
+            Key::Down if model.pane.0 == Pane::Review => model.review.scroll_by(1),
+            Key::PageUp if model.pane.0 == Pane::Review => model.review.scroll_by(-LOG_PAGE),
+            Key::PageDown if model.pane.0 == Pane::Review => model.review.scroll_by(LOG_PAGE),
+            // Comparing runs inside the sandbox, so it happens only when asked.
+            Key::Refresh if model.pane.0 == Pane::Review => {
+                load_projects(deps, &mut model);
+                compare(deps, &mut model);
+            }
             Key::Up => {
                 model.move_by(-1);
                 show_selected(deps, &mut model);
@@ -357,15 +367,46 @@ fn refresh_panel_if_showing(
         Pane::Logs => *follow = refresh_logs(deps, model),
         Pane::Traffic => refresh_traffic(deps, model),
         Pane::Secrets => refresh_secrets(deps, model),
-        Pane::Projects | Pane::Review => {}
+        Pane::Review => match model.selected_row() {
+            Some(row) => {
+                let path = row.path.clone();
+                model.review.belong_to(&path);
+            }
+            None => model.review = view::ReviewPanel::default(),
+        },
+        Pane::Projects => {}
     }
+}
+
+/// Compares the selected project's sandbox with its snapshot, into the
+/// Review panel.
+fn compare(deps: &mut Deps, model: &mut Model) {
+    let Some(row) = model.selected_row().cloned() else {
+        model.review = view::ReviewPanel::default();
+        return;
+    };
+    model.busy = Some("Comparing inside the sandbox. A large project can take a while.".to_owned());
+    draw(deps, model);
+    review::refresh(deps.daemon, &mut model.review, &row.path);
+    model.busy = None;
 }
 
 /// Reads the selected project's secret names. This reads a small file in the
 /// state folder and asks nothing of the daemon, so it needs no limit.
 fn refresh_secrets(deps: &mut Deps, model: &mut Model) {
     match model.selected_row().cloned() {
-        Some(row) => secrets::refresh(deps.env, &mut model.secrets, &row.name),
+        Some(row) => {
+            secrets::refresh(deps.env, &mut model.secrets, &row.name);
+            model.secrets.reach = status_of(deps, &row.path)
+                .and_then(|report| report.exposure)
+                .map(|e| {
+                    proto::exposure_lines(&e.secrets, e.reachable_hosts.as_deref(), true)
+                        .iter()
+                        .map(|line| crate::ui::esc(line))
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
         None => model.secrets = view::SecretsPanel::default(),
     }
 }
@@ -665,6 +706,15 @@ fn dialog_lines(plan: &PlanReport, ports: &[u16]) -> Vec<String> {
     ));
     if plan.network.merged_for_whole_life {
         lines.push("Build hosts stay reachable after the build.".to_owned());
+    }
+    let exposure = proto::exposure_lines(
+        &proto::held_from_plan(&plan.secrets),
+        Some(&proto::reachable_while_running(&plan.network)),
+        true,
+    );
+    if !exposure.is_empty() {
+        lines.push(String::new());
+        lines.extend(exposure);
     }
     lines
 }

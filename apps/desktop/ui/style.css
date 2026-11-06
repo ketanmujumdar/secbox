@@ -284,6 +284,9 @@ select {
 .table th { color: var(--muted); font-weight: 550; font-size: 12px; }
 .table td { font-family: var(--mono); font-size: 13px; }
 .table .num { text-align: right; }
+.table + .table { margin-top: 14px; }
+.table tr.alert td { background: var(--bad-soft); color: var(--bad); }
+.table td.flag { font-weight: 700; }
 
 .cmd {
   background: var(--bg);

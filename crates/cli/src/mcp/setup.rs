@@ -238,7 +238,7 @@ fn claude(args: &ClaudeArgs, deps: &mut Deps) -> i32 {
     say!(deps, "  CLAUDE.md              tells the agent where the code is");
     say!(deps);
     say!(deps, "Start the sandbox, then start Claude Code in that folder:");
-    say!(deps, "  {} up --project {}", brand::CLI_BIN, shell_quote(&launch.project));
+    say!(deps, "  {} up {}", brand::CLI_BIN, shell_quote(&launch.project));
     say!(deps, "  cd {} && claude", shell_quote(&plain(&folder, "the folder").unwrap_or_default()));
     say!(deps);
     say!(deps, "Claude Code may ask you to trust the folder and approve the `{}` server. Say yes to both.", server_name());
@@ -348,7 +348,7 @@ fn codex(args: &CodexArgs, deps: &mut Deps) -> i32 {
     say!(deps, "Then start the sandbox, and start Codex from an empty folder outside the project,");
     say!(deps, "with its own sandbox read-only and every command it wants to run put to you:");
     say!(deps);
-    say!(deps, "  {} up --project {}", brand::CLI_BIN, shell_quote(&launch.project));
+    say!(deps, "  {} up {}", brand::CLI_BIN, shell_quote(&launch.project));
     say!(deps, "  mkdir -p ~/{name}-agent && cd ~/{name}-agent");
     say!(deps, "  codex --sandbox read-only --ask-for-approval untrusted");
     say!(deps);

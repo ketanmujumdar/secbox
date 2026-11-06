@@ -18,6 +18,7 @@ const COMMANDS: &[&str] = &[
     "blocked",
     "import_remote",
     "git",
+    "diff",
 ];
 
 fn main() {

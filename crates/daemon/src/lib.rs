@@ -15,9 +15,12 @@
 
 pub mod audit;
 pub mod blocked;
+pub mod buildhosts;
 pub mod debug;
+pub mod diff;
 pub mod gitref;
 pub mod gitrelay;
+pub mod mask;
 pub mod plan;
 pub mod remote;
 pub mod run;
@@ -185,6 +188,10 @@ impl Service {
             Request::Git(args) => {
                 let project = self.open(&args.project)?;
                 gitrelay::handle(self, &project, args).map(Reply::Git)
+            }
+            Request::Diff(args) => {
+                let project = self.open(&args.project)?;
+                diff::diff(self, &project, progress).map(Reply::Diff)
             }
         }
     }

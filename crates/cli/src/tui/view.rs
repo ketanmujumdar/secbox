@@ -328,6 +328,8 @@ pub struct SecretsPanel {
     pub rows: Vec<SecretRow>,
     /// Why there are no rows, when there are none.
     pub note: Option<Line>,
+    /// Where the secrets could be sent, from the daemon. Already escaped.
+    pub reach: Vec<String>,
 }
 
 /// What the Traffic panel shows for the selected project.
@@ -363,6 +365,37 @@ impl TrafficPanel {
     }
 }
 
+/// What the Review panel shows for the selected project: the lines of a
+/// comparison with its snapshot, flags first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewPanel {
+    /// The project all of this belongs to.
+    pub project: String,
+    /// Already escaped, with flags in alert colour.
+    pub lines: Vec<Line>,
+    /// How many lines down from the top the view has been scrolled.
+    pub scroll: usize,
+}
+
+impl ReviewPanel {
+    /// Clears everything if it belongs to another project, so that one
+    /// project's changes are never drawn under another's name.
+    pub fn belong_to(&mut self, project: &str) {
+        if self.project != project {
+            *self = Self {
+                project: project.to_owned(),
+                ..Self::default()
+            };
+        }
+    }
+
+    /// Moves down through the lines, or back up, stopping at each end.
+    pub fn scroll_by(&mut self, delta: isize) {
+        let furthest = self.lines.len().saturating_sub(1);
+        self.scroll = self.scroll.saturating_add_signed(delta).min(furthest);
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Model {
     pub projects: Vec<Row>,
@@ -378,6 +411,7 @@ pub struct Model {
     pub logs: LogsPanel,
     pub traffic: TrafficPanel,
     pub secrets: SecretsPanel,
+    pub review: ReviewPanel,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -403,21 +437,6 @@ impl Model {
             d if d < 0 => self.selected.saturating_sub(d.unsigned_abs()),
             d => (self.selected + d as usize).min(last),
         };
-    }
-}
-
-/// What each panel says when it has nothing to show, because the thing it
-/// would show is not built. Saying so is the point: an empty panel would
-/// otherwise read as "nothing happened".
-fn not_built(pane: Pane) -> &'static [&'static str] {
-    match pane {
-        Pane::Projects | Pane::Logs | Pane::Traffic | Pane::Secrets => &[],
-        Pane::Review => &[
-            "Reviewing changes out of a sandbox is not built.",
-            "",
-            "The broker that quarantines a bundle, flags risky paths and pushes",
-            "one approved commit exists, but no command reaches it yet.",
-        ],
     }
 }
 
@@ -467,7 +486,13 @@ pub fn keys_for(pane: Pane) -> &'static [KeyLabel] {
             ("6", "Panel"),
             ("10", "Quit"),
         ],
-        Pane::Review => &[("1", "Help"), ("6", "Panel"), ("10", "Quit")],
+        Pane::Review => &[
+            ("1", "Help"),
+            ("↑↓", "Scroll"),
+            ("5", "Compare"),
+            ("6", "Panel"),
+            ("10", "Quit"),
+        ],
     }
 }
 
@@ -478,7 +503,7 @@ pub fn help_for(pane: Pane) -> &'static str {
         Pane::Logs => "New lines follow by themselves. Left and right choose a service or All. Up and PgUp scroll back and pause; f or End follows again. e opens a shell in the chosen service. 5 reads again.",
         Pane::Traffic => "Up, down, PgUp and PgDn scroll. 5 reads the newest.",
         Pane::Secrets => "Names and where they go, never values. Up and down choose the project, 5 reads again. Change them with the secrets command.",
-        Pane::Review => "Reviewing changes is not built yet. Red letters open panels, tab moves on, q quits.",
+        Pane::Review => "5 compares the sandbox's files with the snapshot it started from, inside the running sandbox. Flags come first, in red. Up, down, PgUp and PgDn scroll. Choose the project on Projects. Nothing is copied out.",
     }
 }
 
@@ -627,10 +652,8 @@ fn body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, h: usi
         secrets_body(model, screen, x, y, w, room);
         return;
     }
-    if model.pane.0 != Pane::Projects {
-        for (offset, text) in not_built(model.pane.0).iter().take(room).enumerate() {
-            screen.text_cut(x + 1, y + offset, text, w - 2, Style::Window);
-        }
+    if model.pane.0 == Pane::Review {
+        review_body(model, screen, x, y, w, room);
         return;
     }
     if model.projects.is_empty() {
@@ -1044,7 +1067,59 @@ fn secrets_body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize
             width,
             Style::WindowDim,
         );
+        at += 1;
     }
+    // Where they could go, in the room left, wrapped rather than cut so a
+    // host name is never shown half missing.
+    at += 1;
+    for line in &panel.reach {
+        for piece in wrap(line, width) {
+            if at >= rows_bottom {
+                return;
+            }
+            screen.text_cut(x + 1, at, &piece, width, Style::WindowWarn);
+            at += 1;
+        }
+    }
+}
+
+/// The project's name, then the comparison's lines from the scroll point on.
+/// Before the first comparison, or after one that could not run, it says how
+/// to get one, so an empty panel is never read as "nothing changed".
+fn review_body(model: &Model, screen: &mut Screen, x: usize, y: usize, w: usize, room: usize) {
+    let panel = &model.review;
+    let width = w - 2;
+    let bottom = y + room;
+    let Some(row) = model.selected_row() else {
+        screen.text_cut(x + 1, y, "No project has been started on this machine.", width, Style::Window);
+        return;
+    };
+    screen.text_cut(x + 1, y, &row.name, width, Style::WindowDim);
+    let mut at = y + 1;
+    if panel.lines.is_empty() || panel.project != row.path {
+        for (text, style) in [
+            ("Press 5 to compare this sandbox's files with the snapshot it started from.", Style::Window),
+            ("The comparison runs inside the sandbox, so it must be running. The host reviews the result and runs nothing from it. Nothing is copied out.", Style::WindowDim),
+        ] {
+            at += 1;
+            for piece in wrap(text, width) {
+                if at < bottom {
+                    screen.text_cut(x + 1, at, &piece, width, style);
+                    at += 1;
+                }
+            }
+        }
+        return;
+    }
+    for line in panel.lines.iter().skip(panel.scroll) {
+        if at >= bottom {
+            break;
+        }
+        screen.text_cut(x + 1, at, &line.text, width, line.style);
+        at += 1;
+    }
+    let shown = bottom.saturating_sub(y + 1);
+    screen.scrollbar(x + w - 1, y + 1, shown, panel.scroll, shown, panel.lines.len());
 }
 
 /// Breaks text at spaces to fit a width. A word longer than that is left whole,
@@ -1471,11 +1546,59 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_that_is_not_built_says_so_rather_than_looking_empty() {
+    fn the_review_panel_says_how_to_compare_rather_than_looking_empty() {
         let mut m = model();
         m.pane = PaneState(Pane::Review);
         let text = plain(&m, 80, 24);
-        assert!(text.contains("is not built"), "{text}");
+        assert!(text.contains("Press 5 to compare"), "{text}");
+        assert!(!text.contains("is not built"), "{text}");
+    }
+
+    fn review_model() -> Model {
+        let mut m = model();
+        m.pane = PaneState(Pane::Review);
+        m.review.project = "/p/demo_shop".to_owned();
+        m.review.lines = vec![
+            Line::plain("Compared with the snapshot this sandbox started from (commit 1f2a12002068)."),
+            Line::styled(
+                "FLAG  .claude/settings.json  adds a hook for an AI coding tool",
+                Style::WindowAlert,
+            ),
+            Line::plain("1 file changed:"),
+            Line::plain("  added     .claude/settings.json"),
+        ];
+        m
+    }
+
+    #[test]
+    fn the_review_panel_shows_flags_in_alert_colour() {
+        let m = review_model();
+        let screen = compose(&m, 100, 30);
+        let text = screen.plain();
+        assert!(text.contains("FLAG  .claude/settings.json"), "{text}");
+        let row = text.lines().position(|l| l.contains("FLAG  ")).unwrap();
+        let spans = &render(&m, 100, 30)[row];
+        assert!(
+            spans.iter().any(|s| s.text.contains("FLAG") && s.style == Style::WindowAlert),
+            "{spans:?}"
+        );
+    }
+
+    #[test]
+    fn the_review_panel_scrolls_and_another_projects_result_is_not_shown() {
+        let mut m = review_model();
+        m.review.scroll_by(2);
+        let text = plain(&m, 100, 30);
+        assert!(!text.contains("FLAG  .claude"), "{text}");
+        assert!(text.contains("1 file changed"), "{text}");
+        m.review.scroll_by(100);
+        assert_eq!(m.review.scroll, 3);
+        m.review.scroll_by(-100);
+        assert_eq!(m.review.scroll, 0);
+        m.selected = 1;
+        let text = plain(&m, 100, 30);
+        assert!(!text.contains("FLAG"), "{text}");
+        assert!(text.contains("Press 5 to compare"), "{text}");
     }
 
     fn secrets_model() -> Model {
@@ -1494,6 +1617,32 @@ mod tests {
             },
         ];
         m
+    }
+
+    #[test]
+    fn the_secrets_panel_says_where_the_secrets_could_be_sent() {
+        let mut model = Model {
+            projects: vec![Row {
+                name: "demo".into(),
+                path: "/p/demo".into(),
+                state: RowState::Running,
+            }],
+            pane: PaneState(Pane::Secrets),
+            ..Model::default()
+        };
+        model.secrets.rows = vec![SecretRow {
+            name: "DEMO_TOKEN".into(),
+            source: "keychain".into(),
+            goes_to: "api".into(),
+        }];
+        model.secrets.reach = proto::exposure_lines(
+            &[proto::HeldSecret { name: "DEMO_TOKEN".into(), services: vec!["api".into()] }],
+            Some(&["storage.googleapis.com".to_owned()]),
+            true,
+        );
+        let text = compose(&model, 100, 30).plain();
+        assert!(text.contains("DEMO_TOKEN is given to api"), "{text}");
+        assert!(text.contains("storage.googleapis.com"), "{text}");
     }
 
     #[test]

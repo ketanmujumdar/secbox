@@ -1,0 +1,75 @@
+# Builds the public documentation in guide/ and publishes it to GitHub Pages.
+#
+# One-time setup: in the repository's Settings > Pages, set "Source" to
+# "GitHub Actions". Pull requests build the site but do not publish it.
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "guide/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "guide/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MDBOOK_VERSION: "0.5.4"
+  MDBOOK_SHA256: "3f28de05dafca9d0f2eab99c662116b0e37b89b1d96a08f8f430b9eeae958cd7"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install mdBook
+        run: |
+          url="https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/mdbook.tgz" "$url"
+          echo "${MDBOOK_SHA256}  $RUNNER_TEMP/mdbook.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/mdbook.tgz" -C "$RUNNER_TEMP/bin" mdbook
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Find the site address
+        id: pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+
+      - name: Build
+        env:
+          DOCS_BASE_URL: ${{ steps.pages.outputs.base_url || 'https://ketanmujumdar.github.io/secbox' }}
+        run: guide/build.sh
+
+      - name: Upload
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: guide/book
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

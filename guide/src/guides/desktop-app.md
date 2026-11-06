@@ -1,0 +1,75 @@
+# Desktop app
+
+The desktop app is a menu bar icon and a window for the same daemon the command line uses. It keeps `secboxd` running and lets you start, stop and destroy sandboxes, read logs and see blocked hostnames.
+
+> **Early first cut.** It has run on Linux under a virtual display only. Nothing has been built or run on a Mac. There is no signed release.
+
+## What it has
+
+**A menu bar icon** (a tray icon on Linux). It shows whether the daemon is answering and lists known projects with their state, with *Open window*, *Start daemon* or *Restart daemon*, and *Quit*. Closing the window keeps the app in the menu bar. Quitting the app leaves the daemon running.
+
+**A window** with:
+
+- an overview of each project: state, services, ports on `127.0.0.1`, resources and the blocked-traffic count
+- *Start*, *Stop* and *Destroy*
+- a **Logs** tab and a **Blocked traffic** tab
+- a **Terminal & about** tab, with commands to put the bundled CLI on your `PATH`
+- a **Git review** page with a **Compare** button, showing the same comparison as [`secbox diff`](reviewing-changes.md)
+
+The Secrets page says "not built yet".
+
+## How it starts a project
+
+*Start* asks the daemon for the plan and shows it: services, commit, ports to forward, allowed hosts, secret names, limits and findings. The project starts only after you click *Start with this plan*, and the request carries that plan's digest and ports. Cancel has the focus, so pressing Enter never agrees by accident.
+
+*Destroy* asks for its own confirmation, and afterwards tells you to rotate every secret the sandbox was given.
+
+## The daemon
+
+If nothing answers on the socket when the app opens, it starts `secboxd` and says so in the window. It looks beside its own executable first, where the bundled copy is, then on your `PATH`. The daemon runs in its own process group and outlives the app. Its output goes to `secboxd.log` in the app's log folder.
+
+*Restart daemon* stops the daemon listening on the socket and starts it again. Sandboxes are separate processes and keep running.
+
+## Security choices
+
+- **No local web port.** The page is served by the app itself, with no dev server.
+- **No front-end toolchain.** Plain HTML, CSS and JavaScript, with no npm packages.
+- **A strict content security policy.** No inline script or style, nothing remote.
+- **Plain text only.** Everything from the daemon or a sandbox is shown as text, never as HTML.
+- **A short list of commands.** The window can call only the app's own commands, and has no file system, shell or HTTP access.
+- **No powers of its own.** Every button is one request to the daemon, the same request the CLI sends.
+
+## Build it
+
+You need Rust and, on Linux, WebKitGTK:
+
+```sh
+sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev build-essential pkg-config libdbus-1-dev
+cargo install tauri-cli --version '^2' --locked
+```
+
+On macOS, Xcode's command line tools are enough.
+
+```sh
+apps/desktop/scripts/prepare-sidecars.sh --debug   # builds secbox and secboxd for the bundle
+cd apps/desktop/src-tauri
+cargo tauri dev
+```
+
+`cargo tauri build` makes a `.app` and `.dmg` on macOS, and a `.deb` and `.AppImage` on Linux. See [`apps/desktop/README.md`](https://github.com/ketanmujumdar/secbox/blob/main/apps/desktop/README.md) for details.
+
+## Using the bundled CLI
+
+On macOS the app contains the CLI. Link it once:
+
+```sh
+sudo ln -sf /Applications/secbox.app/Contents/MacOS/secbox /usr/local/bin/secbox
+# or, without admin rights, if ~/.local/bin is on your PATH:
+mkdir -p ~/.local/bin && ln -sf /Applications/secbox.app/Contents/MacOS/secbox ~/.local/bin/secbox
+```
+
+On Linux the `.deb` installs `secbox`, `secboxd` and `secbox-desktop` into `/usr/bin`.
+
+## Trying it safely
+
+Set `SECBOX_HOME` to an empty folder before you open the app. The app and the daemon it starts then use `$SECBOX_HOME/.secbox`.

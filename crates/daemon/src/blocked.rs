@@ -465,7 +465,13 @@ pub fn report(
         .map_err(|reason| refused(format!("the engine's log was not read: {reason}")))?;
     let total = read.groups.total;
     let rejected_lines = read.groups.rejected;
-    let (events, omitted_domains) = read.groups.into_events(MAX_EVENTS);
+    let (mut events, omitted_domains) = read.groups.into_events(MAX_EVENTS);
+    // A thief can put a secret in the name it looks up, so the names are
+    // masked like log text before they leave the daemon.
+    let masker = crate::mask::Masker::for_project(service, project)?;
+    for event in &mut events {
+        event.domain = masker.mask_hostname(&event.domain);
+    }
     Ok(BlockedReport {
         recording,
         log_level,
