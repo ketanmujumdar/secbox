@@ -1083,9 +1083,12 @@ fn choices(new: &NewProject, beside_projects: bool, screen: &mut Screen, at: Rec
     };
     let inner = box_w.saturating_sub(4);
     let git_text = "Paste an SSH remote. It is fetched here with your key; the key never goes in.";
-    let folder_text = "Type a path, or start secbox inside the folder and it is offered here.";
+    let folder_text = format!(
+        "Type a path, or start {} inside the folder and it is offered here.",
+        brand::CLI_BIN
+    );
     let mut git_desc = wrap(git_text, inner);
-    let mut folder_desc = wrap(folder_text, inner);
+    let mut folder_desc = wrap(&folder_text, inner);
 
     let box_h = |git: &[String], folder: &[String]| -> usize {
         let desc = if side { git.len().max(folder.len()) } else { 0 };
