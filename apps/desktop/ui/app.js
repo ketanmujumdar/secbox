@@ -40,6 +40,7 @@
     status: null,
     tab: 'overview',
     busy: false,
+    starting: null,
     daemonRunning: false,
     logId: null,
   };
@@ -224,12 +225,19 @@
 
   function updateButtons() {
     const s = state.status;
-    const has = !!state.selected && state.daemonRunning && !state.busy;
+    const ready = !!state.selected && state.daemonRunning;
+    const has = ready && !state.busy;
+    // Stop and Destroy stay on during a start: they are the only way out of one
+    // that is stuck. The status is not refreshed while busy, so for the project
+    // being started it is stale, and the daemon is left to decide.
+    const canEnd = ready && (!state.busy || !!state.starting);
+    const row = selectedRow();
+    const startingThis = !!state.starting && !!row && row.path === state.starting;
     // A button is off only when the known state makes it pointless. With no
     // state at all, the daemon is left to decide, as the terminal does.
     $('btn-start').disabled = !has || (!!s && s.state === 'running');
-    $('btn-stop').disabled = !has || (!!s && s.state !== 'running');
-    $('btn-destroy').disabled = !has || (!!s && s.state === 'none');
+    $('btn-stop').disabled = !canEnd || (!startingThis && !!s && s.state !== 'running');
+    $('btn-destroy').disabled = !canEnd || (!startingThis && !!s && s.state === 'none');
   }
 
   // ---------- overview ----------
@@ -369,6 +377,7 @@
       banner('Nothing was started.', 'info');
       return;
     }
+    state.starting = row.path;
     busy('Starting. A first build can take minutes.');
     const progress = new Channel();
     progress.onmessage = (event) => {
@@ -379,6 +388,7 @@
     } catch (error) {
       banner('Could not start it: ' + errorText(error));
     }
+    state.starting = null;
     busy('');
     await refreshProjects();
     await loadStatus();

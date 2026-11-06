@@ -178,7 +178,7 @@ On each import, pull and push, 1Password asks whether to allow the key. The requ
 
 **Not tested:**
 
-- A real VM. This needs Git in the guest image, and two-way streaming through `msb exec`.
+- A real VM, beyond the first clone. On msb 0.7.13, `msb exec` carries both directions at once and passes on the end of stdin, but reports the end of stdout only when the command ends. The relay script allows for that. Pull and push have not run on a real VM.
 - A real server.
 - 1Password or any agent prompt.
 - The desktop app's Import and Git tab clicked through. Its Rust side was type-checked.

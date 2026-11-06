@@ -14,12 +14,18 @@
 //! The daemon starts Git in the VM through the engine's piped exec, with
 //! `GIT_SSH_COMMAND` pointing at a small script. When Git "connects", the script
 //! writes one header naming the Git service it wants, then joins Git's pipes to
-//! the exec's stdin and stdout through two named pipes. Only one process holds
-//! each end of the exec's pipes, so when Git closes its side of the
-//! connection, the host sees the end of the stream and can pass it on; with
-//! the exec's pipes inherited by Git itself, neither side would ever see an
-//! end, and both would wait for ever. The daemon reads the header, starts the real
-//! `ssh` itself, to the project's own URL only, and copies bytes both ways.
+//! the exec's stdin and stdout through two named pipes. The daemon reads the
+//! header, starts the real `ssh` itself, to the project's own URL only, and
+//! copies bytes both ways.
+//!
+//! The engine reports the end of the exec's stdout only when the exec ends, not
+//! when the guest closes it (seen on msb 0.7.13). Real `ssh` closes the remote's
+//! input when Git closes its side, and that is what lets the remote finish. With
+//! no end to see, the remote would wait for another request while Git waits for
+//! its `ssh` program to exit, for ever. So when Git closes its side, the script
+//! sends a marker the daemon chose for this run, and the daemon closes `ssh`'s
+//! input at that point in the stream. The marker is not a secret: a sandbox that
+//! sends it early only ends its own connection.
 //!
 //! - **The repository is never the VM's choice.** The header's path is ignored;
 //!   `ssh` is always started for the URL the project was imported from.
@@ -88,7 +94,7 @@ cat > "$d/relay" <<'RELAY'
 d=$(dirname "$0")
 for last; do :; done
 cat "$d/in" &
-{ printf 'git-relay 1\n%s\n%s\n' "${GIT_PROTOCOL:-}" "$last"; cat; } > "$d/out"
+{ printf 'git-relay 1\n%s\n%s\n' "${GIT_PROTOCOL:-}" "$last"; cat; printf '%s' "$GIT_RELAY_END"; } > "$d/out"
 wait
 RELAY
 chmod 700 "$d/relay"
@@ -104,6 +110,21 @@ exit $s
 "#;
 
 const HEADER: &str = "git-relay 1";
+/// Tells the relay script what to send when Git closes its side.
+const END_VAR: &str = "GIT_RELAY_END";
+
+/// A marker for one run, unlike anything a pack could hold by chance. It starts
+/// with a letter because `pump_to_end` holds back a partial match until the next
+/// bytes come. Git ends each message it waits on with a newline or a `0000`
+/// flush, so holding back a `g` can never stall a conversation.
+fn end_marker() -> String {
+    use std::hash::{BuildHasher, RandomState};
+    format!(
+        "git-relay-end-{:016x}{:016x}",
+        RandomState::new().hash_one(1u8),
+        RandomState::new().hash_one(2u8)
+    )
+}
 
 /// What `core.sshCommand` says in the VM's clone, for a `git push` typed there.
 fn ssh_stub() -> String {
@@ -362,6 +383,8 @@ fn relay(
     command.extend(git);
     let mut request = ExecRequest::new(command);
     request.workdir = Some(work()?);
+    let end = end_marker();
+    request.env.push((END_VAR.to_owned(), end.clone()));
     let mut vm = service
         .deps()
         .engine()
@@ -425,7 +448,7 @@ fn relay(
                     }
                     if refusal.is_none() {
                         if let Some(input) = ssh_in.take() {
-                            let to_remote = pump(vm_out, input);
+                            let to_remote = pump_to_end(vm_out, input, end.into_bytes());
                             wait_for(&mut vm, deadline);
                             let _ = to_remote.join();
                         }
@@ -616,6 +639,49 @@ fn pump(mut from: impl Read + Send + 'static, mut to: impl Write + Send + 'stati
     })
 }
 
+/// Copies like `pump`, and closes `to` at the marker, or at the end of `from` if
+/// the marker never comes. `from` is still read to its end after the marker, so
+/// the engine never writes to a closed pipe.
+fn pump_to_end(
+    mut from: impl Read + Send + 'static,
+    to: impl Write + Send + 'static,
+    end: Vec<u8>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut to = Some(to);
+        let mut held: Vec<u8> = Vec::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = match from.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => read,
+            };
+            let Some(out) = to.as_mut() else { continue };
+            held.extend_from_slice(&buffer[..read]);
+            let found = held.windows(end.len()).position(|window| window == end);
+            let send = found.unwrap_or_else(|| held.len() - partial_match(&held, &end));
+            let sent = out.write_all(&held[..send]).and_then(|()| out.flush());
+            if found.is_some() || sent.is_err() {
+                to = None;
+                held = Vec::new();
+            } else {
+                held.drain(..send);
+            }
+        }
+        if let Some(mut out) = to {
+            let _ = out.write_all(&held);
+        }
+    })
+}
+
+/// How many bytes at the end of `data` could be the start of `end`.
+fn partial_match(data: &[u8], end: &[u8]) -> usize {
+    (1..end.len().min(data.len() + 1))
+        .rev()
+        .find(|&length| data.ends_with(&end[..length]))
+        .unwrap_or(0)
+}
+
 fn collect(pipe: Option<impl Read + Send + 'static>) -> Arc<Mutex<Vec<u8>>> {
     let kept = Arc::new(Mutex::new(Vec::new()));
     if let Some(mut pipe) = pipe {
@@ -759,5 +825,106 @@ mod tests {
         for bad in ["", "/etc", "-p", "../x", "a/../b", "a//b", "a\nb"] {
             assert!(check_path(bad).is_err(), "{bad:?}");
         }
+    }
+
+    /// Runs the relay script on this machine, with a stub in place of `git`.
+    /// The caller holds the exec's stdin and stdout, as the engine does.
+    fn start_relayed(stub: &str, marker: &str) -> (tempfile::TempDir, Child) {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = tempfile::tempdir().unwrap();
+        let git = bin.path().join("git");
+        std::fs::write(&git, format!("#!/bin/sh\n{stub}\n")).unwrap();
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let child = std::process::Command::new("sh")
+            .args(["-c", RELAYED_GIT, "relayed-git"])
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.path().display()))
+            .env(END_VAR, marker)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        (bin, child)
+    }
+
+    /// The engine does not report the end of the exec's stdout until the exec
+    /// ends, so the marker is the only news the host gets that Git has closed its
+    /// side. It has to arrive while the host is still holding everything open,
+    /// and Git must still get what the server sends afterwards: Git closes its
+    /// side before it reads a pack or a push's report.
+    #[test]
+    fn the_script_sends_the_marker_when_git_closes_and_still_delivers_the_reply() {
+        let (_bin, mut child) =
+            start_relayed(r#"$GIT_SSH_COMMAND git@host "git-upload-pack 'repo'" </dev/null"#, "the-marker");
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        assert_eq!(read_line(&mut stdout).unwrap().as_deref(), Some(HEADER));
+        read_line(&mut stdout).unwrap();
+        read_line(&mut stdout).unwrap();
+        let mut marker = [0u8; 10];
+        stdout.read_exact(&mut marker).unwrap();
+        assert_eq!(&marker, b"the-marker");
+
+        stdin.write_all(b"the-reply\n").unwrap();
+        drop(stdin);
+        let status = wait_for(&mut child, Instant::now() + Duration::from_secs(10));
+        assert!(status.is_some_and(|s| s.success()));
+        let mut seen = String::new();
+        child.stderr.take().unwrap().read_to_string(&mut seen).unwrap();
+        assert!(seen.contains("the-reply"), "{seen:?}");
+    }
+
+    #[test]
+    fn the_pump_closes_at_the_marker_while_the_stream_stays_open() {
+        let (from, mut writer) = io::pipe().unwrap();
+        let (mut result, to) = io::pipe().unwrap();
+        let pump = pump_to_end(from, to, b"END!".to_vec());
+        // The marker split across two reads, which must not lose or leak any of it.
+        writer.write_all(b"abcEN").unwrap();
+        writer.flush().unwrap();
+        thread::sleep(Duration::from_millis(50));
+        writer.write_all(b"D!ignored").unwrap();
+        // Reading to the end proves `to` closed with `writer` still open.
+        let mut seen = String::new();
+        result.read_to_string(&mut seen).unwrap();
+        assert_eq!(seen, "abc");
+        drop(writer);
+        pump.join().unwrap();
+    }
+
+    #[test]
+    fn the_pump_passes_everything_on_at_once_and_closes_if_no_marker_comes() {
+        let (from, mut writer) = io::pipe().unwrap();
+        let (result, to) = io::pipe().unwrap();
+        let pump = pump_to_end(from, to, end_marker().into_bytes());
+        let mut result = BufReader::new(result);
+        // A request must not sit in the pump: the other side answers it first.
+        writer.write_all(b"0009done\n").unwrap();
+        assert_eq!(read_line(&mut result).unwrap().as_deref(), Some("0009done"));
+        // A partial match is passed on once it turns out not to be the marker.
+        writer.write_all(b"git-rel").unwrap();
+        writer.flush().unwrap();
+        thread::sleep(Duration::from_millis(50));
+        writer.write_all(b"ay\n").unwrap();
+        assert_eq!(read_line(&mut result).unwrap().as_deref(), Some("git-relay"));
+        writer.write_all(b"g").unwrap();
+        drop(writer);
+        pump.join().unwrap();
+        let mut rest = String::new();
+        result.read_to_string(&mut rest).unwrap();
+        assert_eq!(rest, "g");
+    }
+
+    #[test]
+    fn a_partial_match_is_the_longest_end_of_the_data_that_starts_the_marker() {
+        assert_eq!(partial_match(b"abc", b"END!"), 0);
+        assert_eq!(partial_match(b"abcE", b"END!"), 1);
+        assert_eq!(partial_match(b"abcEND", b"END!"), 3);
+        assert_eq!(partial_match(b"", b"END!"), 0);
+    }
+
+    #[test]
+    fn each_run_gets_its_own_marker() {
+        assert_ne!(end_marker(), end_marker());
     }
 }
