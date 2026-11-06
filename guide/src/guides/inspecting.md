@@ -67,4 +67,4 @@ There is no SSH server and no open port in the VM. The daemon checks that the sa
 
 ## In the full-screen interface
 
-Press `l` for the Logs panel. It follows new lines by itself. Scrolling up pauses it, and `f` or End follows again. Press `e` on Projects or Logs to open the same shell as `secbox shell`. See [Full-screen terminal interface](terminal-ui.md).
+Press `l` for the selected project's Logs tab. It follows new lines by itself. Scrolling up pauses it, and `f` or End follows again. Press `e` on Overview or Logs to open the same shell as `secbox shell`. See [Full-screen terminal interface](terminal-ui.md).

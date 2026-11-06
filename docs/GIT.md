@@ -52,7 +52,7 @@ Inside the sandbox it's plain Git. `secbox shell --project REMOTE` gives you a s
 
 | What | Command line | Terminal UI | Desktop app | MCP tool |
 | --- | --- | --- | --- | --- |
-| Import | `secbox up REMOTE` | `i`, then paste the URL | Import box in the sidebar | none, a person imports |
+| Import | `secbox up REMOTE` | `g` on the New project page (`+`), then paste the URL | Import box in the sidebar | none, a person imports |
 | Status | `secbox git status` | | Git tab, Status | `git_status` |
 | Pull | `secbox git pull` | `g` | Git tab, Pull | `git_pull` |
 | Commit | `secbox git commit -m MSG [PATHS]` | | Git tab, Commit | `git_commit` |
@@ -174,7 +174,7 @@ On each import, pull and push, 1Password asks whether to allow the key. The requ
   - A push to `main` is refused, `main` doesn't move, and the refusal is logged.
   - Pull brings in someone else's commit without making a new sandbox.
   - An agent commits and pushes over MCP, and is refused on `main`.
-- **The real binary:** the terminal UI's Import box, drawn at 80 columns.
+- **The real binary:** the terminal UI's New project page, drawn at 80 columns.
 
 **Not tested:**
 

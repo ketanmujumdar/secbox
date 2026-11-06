@@ -67,9 +67,9 @@ If the sandbox rewrites its history so it no longer starts from the snapshot, `d
 
 ## In the full-screen interface
 
-Press `r` for the Review panel, then `5` to compare. It shows the same lines, flags first in red. Comparing runs inside the sandbox, so it never starts by itself. Up, down, PgUp and PgDn scroll. See [Full-screen terminal interface](terminal-ui.md).
+Press `c` for the selected project's Changes tab, then `r` to compare. It shows the same lines, flags first in red. Comparing runs inside the sandbox, so it never starts by itself. Up, down, PgUp and PgDn scroll. See [Full-screen terminal interface](terminal-ui.md).
 
-![The Review panel of the full-screen interface, before comparing](../images/cli/tui-review.png)
+![The Changes tab of the full-screen interface, before comparing](../images/cli/tui-review.png)
 
 ## In the desktop app
 

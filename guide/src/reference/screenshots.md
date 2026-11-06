@@ -114,11 +114,11 @@ Real output from the secbox programs, captured from a terminal by `guide/screens
 
 ## Full-screen interface
 
-### The full-screen interface: Projects
+### The full-screen interface: Overview
 
 `secbox`
 
-![The full-screen interface: Projects](../images/cli/tui-projects.png)
+![The full-screen interface: Overview](../images/cli/tui-projects.png)
 
 ### The full-screen interface: Secrets
 
@@ -126,14 +126,14 @@ Real output from the secbox programs, captured from a terminal by `guide/screens
 
 ![The full-screen interface: Secrets](../images/cli/tui-secrets.png)
 
-### The full-screen interface: Traffic
+### The full-screen interface: Network
 
 `secbox`
 
-![The full-screen interface: Traffic](../images/cli/tui-traffic.png)
+![The full-screen interface: Network](../images/cli/tui-traffic.png)
 
-### The full-screen interface: Review, before comparing
+### The full-screen interface: Changes, before comparing
 
 `secbox`
 
-![The full-screen interface: Review, before comparing](../images/cli/tui-review.png)
+![The full-screen interface: Changes, before comparing](../images/cli/tui-review.png)
