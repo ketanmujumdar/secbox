@@ -4,6 +4,8 @@
 
 > Built, and most of it tested only against a fake engine. See [What works today](../start/status.md).
 
+`secbox new` sends the same requests with one review and one question. See [Bringing a project in](new.md).
+
 ## Before you start
 
 - The project must be a **Git repository with at least one commit**. secbox copies a commit into the VM, never your working folder.

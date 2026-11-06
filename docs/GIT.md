@@ -36,6 +36,8 @@ You don't need a clone on your machine. `up`:
 2. **Shows the plan** and waits for your yes, as for any project.
 3. **Clones into the new VM** at `/work` through the relay, at exactly the commit you approved. The VM gets the full history: `log`, `blame`, branches, tags, everything Git normally has.
 
+`secbox new REMOTE [--ref REF]` does the same three steps through the same requests. It shows the plan as what the project will be able to reach, open, get and use, and asks once, defaulting to no. Without a terminal it needs `--yes`. The fetch in step 1 happens before that question, so a remote is fetched onto your machine even if you then say no. Nothing from it runs. See the guide's page [Bringing a project in](../guide/src/guides/new.md).
+
 Every other command takes the remote in place of a folder, and only looks it up: `secbox status REMOTE`, `secbox shell --project REMOTE`, `secbox mcp setup claude FOLDER --project REMOTE`.
 
 **Accepted remotes:**

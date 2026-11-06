@@ -33,6 +33,7 @@ any of it can be called working.
 | `net check <policy> <METHOD> <url>` | Works. Explains a policy decision, but nothing enforces it yet |
 | `net blocked [--project PATH] [-f]` | Works, through the daemon, on a sandbox created since this was added. Blocked hostnames only. See [Blocked hostnames](#blocked-hostnames) |
 | `uninstall --purge` | Works. Removes the state folder only |
+| `new <git-url \| path> [--ref REF] [--port P] [--no-ports] [--yes]` | Built, tested against a fake engine and a fake fetch only: **never run on a real VM or server**. Brings a project in from an SSH remote or a folder. It sends the same requests as `up`, shows the plan as what the project will be able to reach, open, get and use, and asks once, defaulting to no. Without a terminal it needs `--yes`. See [Bringing a project in](guide/src/guides/new.md) |
 | `up`, `down`, `status` | Built, for Compose projects and projects with only a Dockerfile. They need the daemon |
 | `up git@host:org/repo.git [--ref REF]` | Built, never run on a real VM or server. Clones the remote into the sandbox with its history, through a relay that uses your SSH key on this machine. See [docs/GIT.md](docs/GIT.md) |
 | `git status\|pull\|commit\|push [--project P]` | Built, never run on a real VM or server. Pull and push go through the same relay; a push to `main` or `master`, a delete or a tag is refused before anything is sent |
@@ -44,7 +45,7 @@ any of it can be called working.
 | `export` | Not built |
 | Desktop app (`apps/desktop`) | Early first cut. A menu bar icon that keeps the daemon running, and a window for status, start with plan approval, stop, destroy, logs, blocked hostnames, Import from an SSH remote, and a Git tab for pull, commit and push. Same daemon, same powers as the CLI. Run on Linux under Xvfb only; macOS untested. See [its README](apps/desktop/README.md) |
 
-`up`, `down`, `status`, `logs`, `net blocked`, `shell`, `exec` and `diff` send requests to a daemon,
+`new`, `up`, `down`, `status`, `logs`, `net blocked`, `shell`, `exec` and `diff` send requests to a daemon,
 `secboxd`, which holds the secrets, the policy and the approvals. With no daemon
 running they say so.
 
