@@ -187,6 +187,7 @@ mod tests {
                 problem: None,
             }),
             exposure: None,
+            usage: None,
         }
     }
 

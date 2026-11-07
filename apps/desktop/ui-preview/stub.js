@@ -27,6 +27,7 @@
   const daemonRunning = scene !== 'nodaemon';
 
   const resources = { memory: '6 GB', cpus: '4', disk: '30 GB', build_memory: '8 GB', clamped: false };
+  let limitChoice = { memory_bytes: null, millicpus: null, disk_bytes: null };
 
   function status(path) {
     const row = projects.find((p) => p.path === path) || { state: 'none', label: 'No sandbox' };
@@ -43,6 +44,12 @@
       ] : [],
       ports: running ? ['127.0.0.1:3000', '127.0.0.1:8080'] : [],
       resources: row.state === 'none' ? null : resources,
+      usage: running ? {
+        cpu: '1.3 of 4 CPUs', cpu_percent: 32,
+        memory: '5.6 GB of 8 GB', memory_percent: 70,
+        disk: '28.5 GB of 30 GB', disk_percent: 95,
+        host_memory: '7.8 GB',
+      } : null,
       blocked_total: row.state === 'none' ? null : 41,
       blocked_domains: row.state === 'none' ? null : 3,
       exposure: row.state === 'none' ? [] : [
@@ -210,7 +217,17 @@
       case 'status':
         return status(args.project);
       case 'plan':
-        return Object.assign({}, plan, { path: args.project });
+        // Limits a person saved are in the plan, as they are in the daemon's.
+        return Object.assign({}, plan, {
+          path: args.project,
+          resources: {
+            memory: limitChoice.memory_bytes ? limitChoice.memory_bytes / 2 ** 30 + ' GB' : resources.memory,
+            cpus: limitChoice.millicpus ? String(limitChoice.millicpus / 1000) : resources.cpus,
+            disk: limitChoice.disk_bytes ? limitChoice.disk_bytes / 2 ** 30 + ' GB' : resources.disk,
+            build_memory: limitChoice.memory_bytes ? limitChoice.memory_bytes / 2 ** 30 + ' GB' : resources.build_memory,
+            clamped: false,
+          },
+        });
       case 'up': {
         const ch = args.onProgress;
         const steps = ['planning', 'confirm', 'sandbox', 'snapshot', 'docker', 'secrets', 'build'];
@@ -254,6 +271,26 @@
         return null;
       case 'blocked':
         return blocked;
+      case 'resource_choices':
+      case 'set_resources': {
+        const GIB = 1024 * 1024 * 1024;
+        if (args.choice) limitChoice = args.choice;
+        const row = projects.find((p) => p.path === args.project) || { state: 'none' };
+        const current = row.state === 'none' ? null : { memory_bytes: 6 * GIB, millicpus: 4000, disk_bytes: 30 * GIB, build_memory_bytes: 8 * GIB, clamped: false };
+        const next = {
+          memory_bytes: limitChoice.memory_bytes || 6 * GIB,
+          millicpus: limitChoice.millicpus || 4000,
+          disk_bytes: limitChoice.disk_bytes || 30 * GIB,
+          build_memory_bytes: limitChoice.memory_bytes || 8 * GIB,
+          clamped: false,
+        };
+        const differs = !!current && (next.memory_bytes !== current.memory_bytes || next.millicpus !== current.millicpus || next.disk_bytes !== current.disk_bytes);
+        return {
+          project_id: 'p', chosen: limitChoice, current, next, problem: null,
+          restart_needed: row.state === 'running' && differs,
+          max_memory_bytes: 30 * GIB, max_millicpus: 11000, max_disk_bytes: 400 * GIB,
+        };
+      }
       case 'secrets':
         return { rows: JSON.parse(JSON.stringify(secretRows)), services: secretServices.slice(), note: null };
       case 'set_secret': {

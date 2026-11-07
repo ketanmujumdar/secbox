@@ -16,7 +16,7 @@
 use std::time::{Duration, Instant};
 
 use engine::{
-    CreateSpec, ExecRequest, GuestPath, HostPort, NetworkPolicy, Resources, SandboxStatus, TlsMode,
+    CreateSpec, ExecRequest, GuestPath, HostPort, NetworkPolicy, ResizeSpec, Resources, SandboxStatus, TlsMode,
 };
 use proto::{
     text, ApiError, DownReport, PlanReport, RemoveReport, SandboxState, ServiceState, StatusReport, TlsPlan,
@@ -134,6 +134,7 @@ pub fn up(
     match state {
         SandboxState::None => create(service, project, &plan, &ports, args, None)?,
         SandboxState::Stopped => {
+            apply_resources(service, project, &plan.resources)?;
             service
                 .deps()
                 .engine()
@@ -293,16 +294,7 @@ pub(crate) fn create(
         }
     };
 
-    // Memory cannot be raised later either, so the sandbox is created at the
-    // larger of the run and build limits.
-    let peak = plan.resources.memory_bytes.max(plan.resources.build_memory_bytes);
-    let resources = Resources::new(
-        u32::try_from(peak / MIB).map_err(|_| bad("the memory limit is too large"))?,
-        (plan.resources.millicpus.div_ceil(1000)).max(1),
-        u32::try_from((plan.resources.disk_bytes / GIB).max(1))
-            .map_err(|_| bad("the disk limit is too large"))?,
-    )
-    .map_err(|e| bad(e.to_string()))?;
+    let resources = engine_resources(&plan.resources)?;
 
     let spec = CreateSpec {
         name: project.sandbox.clone(),
@@ -347,6 +339,63 @@ pub(crate) fn create(
         audit::entry(service.deps().now_unix(), audit::Action::SandboxCreated)
             .project(project.id.as_str())
             .detail(format!("{} hosts allowed", spec_host_count(&spec))),
+    );
+    Ok(())
+}
+
+/// Memory cannot be raised while a sandbox runs, so its VM is sized for the
+/// larger of the run and build limits.
+fn engine_resources(plan: &proto::ResourcePlan) -> Result<Resources, ApiError> {
+    let peak = plan.memory_bytes.max(plan.build_memory_bytes);
+    Resources::new(
+        u32::try_from(peak / MIB).map_err(|_| bad("the memory limit is too large"))?,
+        (plan.millicpus.div_ceil(1000)).max(1),
+        u32::try_from((plan.disk_bytes / GIB).max(1)).map_err(|_| bad("the disk limit is too large"))?,
+    )
+    .map_err(|e| bad(e.to_string()))
+}
+
+/// Brings a stopped sandbox to the limits of the plan a person just approved,
+/// so that what the review showed is what it starts with.
+fn apply_resources(service: &Service, project: &Project, plan: &proto::ResourcePlan) -> Result<(), ApiError> {
+    // A sandbox with no record cannot be compared with anything, and has nowhere
+    // to say what it was given. It keeps what it has.
+    let Some(mut record) = SandboxRecord::load(&project.dir).map_err(internal)? else {
+        return Ok(());
+    };
+    let same = record.memory_bytes == plan.memory_bytes
+        && record.build_memory_bytes == plan.build_memory_bytes
+        && record.millicpus == plan.millicpus
+        && record.disk_bytes == plan.disk_bytes;
+    if same {
+        return Ok(());
+    }
+    let target = engine_resources(plan)?;
+    let spec = ResizeSpec {
+        memory_mib: target.memory_mib,
+        cpus: target.cpus,
+        // In the units the engine has it in, since it refuses an unchanged size.
+        grow_disk_gib: (target.disk_gib > (record.disk_bytes / GIB).max(1) as u32).then_some(target.disk_gib),
+    };
+    service
+        .deps()
+        .engine()
+        .resize(&project.sandbox, &spec)
+        .map_err(|e| engine_error(e.to_string()))?;
+    record.memory_bytes = plan.memory_bytes;
+    record.build_memory_bytes = plan.build_memory_bytes;
+    record.millicpus = plan.millicpus;
+    record.disk_bytes = plan.disk_bytes;
+    record.save(&project.dir).map_err(internal)?;
+    service.record(
+        audit::entry(service.deps().now_unix(), audit::Action::SandboxResized)
+            .project(project.id.as_str())
+            .detail(format!(
+                "{} MiB memory, {} millicpus, {} MiB disk",
+                plan.memory_bytes.max(plan.build_memory_bytes) / MIB,
+                plan.millicpus,
+                plan.disk_bytes / MIB
+            )),
     );
     Ok(())
 }
@@ -728,7 +777,21 @@ pub fn status(service: &Service, project: &Project) -> Result<StatusReport, ApiE
             secrets: held_secrets(project)?,
             reachable_hosts: record.as_ref().and_then(|r| r.reachable_hosts.clone()),
         })),
+        usage: if matches!(state, SandboxState::Running) { usage_of(service, project) } else { None },
     })
+}
+
+/// A sandbox whose use cannot be read is still a sandbox to report on, so a
+/// failure here leaves the figures out rather than failing the status.
+fn usage_of(service: &Service, project: &Project) -> Option<Box<proto::SandboxUsage>> {
+    let metrics = service.deps().engine().metrics(&project.sandbox).ok()?;
+    Some(Box::new(proto::SandboxUsage {
+        cpu_millis: metrics.cpu_millis,
+        memory_used_bytes: metrics.memory_used_bytes,
+        memory_limit_bytes: metrics.memory_limit_bytes,
+        memory_host_bytes: metrics.memory_host_bytes,
+        disk_used_bytes: metrics.disk_used_bytes,
+    }))
 }
 
 /// The secrets assigned to this project, by name, and who gets each.

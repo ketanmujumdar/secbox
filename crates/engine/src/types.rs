@@ -74,7 +74,25 @@ impl GuestPath {
     }
 }
 
-/// Per-sandbox limits, requested at creation.
+/// What a running sandbox is using now, in numbers only. Some of these are
+/// reported from inside the guest, so they are fit to show and never to act on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SandboxMetrics {
+    /// CPU in use, where 1000 is one whole CPU.
+    pub cpu_millis: u32,
+    /// Memory the guest cannot reclaim. Its page cache is not counted.
+    pub memory_used_bytes: u64,
+    /// The size of the VM's memory.
+    pub memory_limit_bytes: u64,
+    /// What this machine holds for the VM. It does not fall after a build.
+    pub memory_host_bytes: u64,
+    /// What the guest's writes take on this machine's disk. `None` when the
+    /// engine did not report it.
+    pub disk_used_bytes: Option<u64>,
+}
+
+/// Per-sandbox limits, requested at creation and changed with
+/// [`crate::Engine::resize`] while the sandbox is stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Resources {
     pub memory_mib: u32,
@@ -98,6 +116,16 @@ impl Resources {
             disk_gib,
         })
     }
+}
+
+/// New limits for a stopped sandbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResizeSpec {
+    pub memory_mib: u32,
+    pub cpus: u32,
+    /// A larger disk, or `None` to leave it. The engine refuses a disk the same
+    /// size as the one the sandbox has, so an unchanged disk must not be named.
+    pub grow_disk_gib: Option<u32>,
 }
 
 /// How HTTPS to an allowed hostname is checked. The CLI's strict default denies

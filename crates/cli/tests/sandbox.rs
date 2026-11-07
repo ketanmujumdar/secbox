@@ -667,6 +667,7 @@ fn status_on_an_older_daemon_says_the_count_is_unknown_rather_than_zero() {
                 blocked_count: 0,
                 blocked: None,
                 exposure: None,
+                usage: None,
             }))
         }
         fn stream(

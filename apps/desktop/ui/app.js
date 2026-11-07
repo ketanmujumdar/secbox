@@ -411,12 +411,44 @@
     renderSecrets();
     renderSettings();
     if (state.tab === 'secrets') loadSecrets();
+    if (state.tab === 'settings') loadLimits();
   }
 
   function resourcePairs(r) {
     return r
       ? [['Memory', r.memory], ['CPUs', r.cpus], ['Disk', r.disk], ['Memory while building', r.build_memory]]
       : [['No limits on record', 'They are set when it starts']];
+  }
+
+  function usageRow(label, text, percent) {
+    const item = el('div', null, 'usage-row');
+    const line = el('div', null, 'usage-line');
+    line.appendChild(el('span', label, 'label-text'));
+    line.appendChild(el('span', text));
+    item.appendChild(line);
+    if (percent !== null && percent !== undefined) {
+      const meter = el('meter');
+      meter.min = 0;
+      meter.max = 100;
+      meter.low = 70;
+      meter.high = 90;
+      meter.optimum = 0;
+      meter.value = percent;
+      item.appendChild(meter);
+    }
+    return item;
+  }
+
+  function renderUsage(s) {
+    const box = $('usage');
+    clear(box);
+    const usage = s.usage;
+    show(box, !!usage);
+    show($('resources'), !usage);
+    if (!usage) return;
+    box.appendChild(usageRow('CPU', usage.cpu, usage.cpu_percent));
+    box.appendChild(usageRow('Memory', usage.memory, usage.memory_percent));
+    if (usage.disk) box.appendChild(usageRow('Disk', usage.disk, usage.disk_percent));
   }
 
   function renderOverview(failure) {
@@ -429,9 +461,12 @@
     if (!s) return;
 
     kv($('resources'), resourcePairs(s.resources));
-    $('resources-note').textContent = !s.resources ? ''
-      : s.resources.clamped ? 'Lowered to fit your own maximum. Changes apply on the next start.'
-      : 'Limits, not current use. Changes apply on the next start.';
+    renderUsage(s);
+    $('resources-note').textContent = s.usage
+      ? 'This Mac is holding ' + s.usage.host_memory + ' of memory for it. Disk is what the sandbox has written.'
+      : !s.resources ? ''
+      : s.resources.clamped ? 'Lowered to fit your own maximum.'
+      : 'Limits, not current use.';
 
     const services = $('services');
     clear(services);
@@ -812,9 +847,90 @@
     ]);
     kv($('settings-resources'), resourcePairs(s && s.resources));
     $('settings-resources-note').textContent = s && s.resources && s.resources.clamped
-      ? 'Lowered to fit your own maximum. Changes apply on the next start.'
-      : 'Changes apply on the next start.';
+      ? 'Lowered to fit your own maximum.'
+      : '';
   }
+
+  // ---------- limits ----------
+
+  const GB = 1024 * 1024 * 1024;
+  const gb = (bytes) => Math.round((bytes / GB) * 10) / 10;
+
+  async function loadLimits() {
+    const path = state.selected;
+    if (!path) return;
+    let report;
+    try {
+      report = await invoke('resource_choices', { project: path });
+    } catch (error) {
+      if (state.selected === path) $('limits-note').textContent = 'Could not read the limits: ' + errorText(error);
+      return;
+    }
+    if (state.selected === path) renderLimits(report);
+  }
+
+  function renderLimits(report) {
+    const { chosen, next, current } = report;
+    // A blank field leaves that limit to the project, so its placeholder says
+    // what the project would get.
+    $('limit-memory').value = chosen.memory_bytes ? gb(chosen.memory_bytes) : '';
+    $('limit-cpus').value = chosen.millicpus ? chosen.millicpus / 1000 : '';
+    $('limit-disk').value = chosen.disk_bytes ? gb(chosen.disk_bytes) : '';
+    $('limit-memory').placeholder = next ? String(gb(next.memory_bytes)) : '';
+    $('limit-cpus').placeholder = next ? String(next.millicpus / 1000) : '';
+    $('limit-disk').placeholder = next ? String(gb(next.disk_bytes)) : '';
+    $('limit-memory-hint').textContent = 'This Mac can spare ' + Math.floor(gb(report.max_memory_bytes)) + ' GB now.';
+    $('limit-cpus-hint').textContent = 'This Mac can spare ' + Math.floor(report.max_millicpus / 1000) + '.';
+    $('limit-disk-hint').textContent = current
+      ? 'At least ' + gb(current.disk_bytes) + ' GB, since a disk can only grow. ' + Math.floor(gb(report.max_disk_bytes)) + ' GB free.'
+      : Math.floor(gb(report.max_disk_bytes)) + ' GB free.';
+    const words = report.problem
+      ? 'This Mac cannot spare these limits now: ' + report.problem
+      : report.restart_needed
+        ? 'It is running with other limits. Restart it to apply these; its data is kept.'
+        : 'Leave a field blank to use what the project asks for. Changes are shown for review before a start.';
+    $('limits-note').textContent = words;
+    show($('limits-restart'), report.restart_needed);
+    $('limits-restart').disabled = !report.restart_needed || $('menu-restart').disabled;
+  }
+
+  function limitFromField(id, unit) {
+    const text = $(id).value.trim();
+    return text === '' ? null : Math.round(Number(text) * unit);
+  }
+
+  async function saveLimits(choice) {
+    const path = state.selected;
+    if (!path) return;
+    $('limits-save').disabled = true;
+    $('limits-reset').disabled = true;
+    try {
+      const report = await invoke('set_resources', { project: path, choice });
+      if (state.selected === path) renderLimits(report);
+      const row = selectedRow();
+      banner(report.restart_needed
+        ? 'Saved. Restart it to apply them.'
+        : row && row.state === 'stopped' ? 'Saved. It uses them on its next start.'
+        : 'Saved.', 'ok');
+    } catch (error) {
+      banner('Not saved: ' + errorText(error));
+    } finally {
+      $('limits-save').disabled = false;
+      $('limits-reset').disabled = false;
+    }
+  }
+
+  $('limits-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    saveLimits({
+      memory_bytes: limitFromField('limit-memory', GB),
+      millicpus: limitFromField('limit-cpus', 1000),
+      disk_bytes: limitFromField('limit-disk', GB),
+    });
+  });
+  $('limits-reset').addEventListener('click', () => saveLimits({ memory_bytes: null, millicpus: null, disk_bytes: null }));
+  $('limits-restart').addEventListener('click', () => startProject(true));
+  $('btn-limits').addEventListener('click', () => openTab('settings'));
 
   // ---------- review and start ----------
 
@@ -1815,6 +1931,7 @@
     if (tab !== 'logs') stopLogs();
     if (tab !== 'secrets') closeSecretForm();
     if (tab === 'secrets') await loadSecrets();
+    if (tab === 'settings') await loadLimits();
     if (tab === 'network') await readTraffic();
     if (tab === 'changes') {
       renderGitAvailability();

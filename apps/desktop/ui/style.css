@@ -127,7 +127,37 @@ button.link {
 }
 button.link:hover:not(:disabled) { background: none; text-decoration: underline; }
 
-input[type=text], input[type=password], textarea {
+.usage { display: flex; flex-direction: column; gap: 12px; }
+.usage-row { display: flex; flex-direction: column; gap: 5px; }
+.usage-line { display: flex; justify-content: space-between; gap: 18px; }
+.usage-line .label-text { color: var(--muted); }
+meter {
+  width: 100%;
+  height: 6px;
+  display: block;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--line);
+  border-radius: 3px;
+}
+meter::-webkit-meter-bar { background: var(--line); border: 0; border-radius: 3px; height: 6px; }
+meter::-webkit-meter-optimum-value { background: var(--accent); border-radius: 3px; }
+meter::-webkit-meter-suboptimum-value { background: var(--warn); border-radius: 3px; }
+meter::-webkit-meter-even-less-good-value { background: var(--bad); border-radius: 3px; }
+
+.limits-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.limits-note, .limits-actions { grid-column: 1 / -1; }
+.limits-note:empty { display: none; }
+.limits-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+input[type=text], input[type=password], input[type=number], textarea {
   font: inherit;
   width: 100%;
   color: var(--ink);

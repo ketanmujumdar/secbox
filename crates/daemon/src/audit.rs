@@ -42,6 +42,10 @@ pub enum Action {
     SecretDelivered,
     /// A secret was not delivered, and why.
     SecretRefused,
+    /// A person chose limits for a project. Nothing changed in a sandbox yet.
+    ResourcesChosen,
+    /// A stopped sandbox's limits were changed, from a plan a person approved.
+    SandboxResized,
     SnapshotTaken,
     /// A project was fetched from a Git remote, over SSH, on the host.
     RemoteFetched,

@@ -220,9 +220,11 @@
                 <ul class="rows services" id="services"></ul>
               </div>
               <div class="card">
-                <h2>Limits</h2>
+                <h2>Resources</h2>
+                <div class="usage hidden" id="usage"></div>
                 <dl class="kv" id="resources"></dl>
                 <p class="hint" id="resources-note"></p>
+                <button class="link" id="btn-limits">Change limits →</button>
               </div>
               <div class="card" id="blocked-card">
                 <div class="card-head"><h2>Blocked</h2><span class="count" id="blocked-count"></span></div>
@@ -421,6 +423,29 @@
               <h2>Limits</h2>
               <dl class="kv" id="settings-resources"></dl>
               <p class="hint" id="settings-resources-note"></p>
+              <form class="limits-form" id="limits-form" autocomplete="off">
+                <label class="field">
+                  <span class="label">Memory (GB)</span>
+                  <input id="limit-memory" type="number" min="0.5" step="0.5">
+                  <span class="hint" id="limit-memory-hint"></span>
+                </label>
+                <label class="field">
+                  <span class="label">CPUs</span>
+                  <input id="limit-cpus" type="number" min="1" step="1">
+                  <span class="hint" id="limit-cpus-hint"></span>
+                </label>
+                <label class="field">
+                  <span class="label">Disk (GB)</span>
+                  <input id="limit-disk" type="number" min="1" step="1">
+                  <span class="hint" id="limit-disk-hint"></span>
+                </label>
+                <p class="hint limits-note" id="limits-note"></p>
+                <div class="limits-actions">
+                  <button type="submit" class="primary" id="limits-save">Save limits</button>
+                  <button type="button" id="limits-reset">Use the project's own</button>
+                  <button type="button" class="hidden" id="limits-restart">Restart to apply</button>
+                </div>
+              </form>
             </div>
             <div class="card danger-card">
               <h2>Remove</h2>

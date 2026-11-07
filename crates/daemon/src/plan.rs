@@ -18,10 +18,10 @@ use projectcheck::compose::{
 };
 use projectcheck::detect::{detect, ProjectKind, COMPOSE_OVERRIDE_FILES};
 use projectcheck::dockerfile;
-use projectcheck::resources::{self, HostResources};
+use projectcheck::resources::{self, ByteSize, HostResources, MilliCpus, ResolvedResources, ResourceError};
 use secrets::Delivery;
 
-use crate::settings::{Approvals, UserSettings};
+use crate::settings::{Approvals, SandboxRecord, UserSettings};
 use crate::{bad, internal, unsupported, Project, Service};
 
 /// Every host the engine spike measured a real `demo_shop` build needing.
@@ -381,31 +381,13 @@ fn plan_resources(
     model: &ComposeModel,
     blockers: &mut Vec<String>,
 ) -> Result<ResourcePlan, ApiError> {
-    let request = resources::load(&project.root).map_err(|e| {
-        bad(format!(
-            "cannot read {}: {}",
-            brand::CONFIG_FILE,
-            text::escape(&e.to_string())
-        ))
-    })?;
+    let chosen = Approvals::load(&project.dir).map_err(internal)?.resources;
     let settings = UserSettings::load(service.state_dir()).map_err(internal)?;
-    let limits = settings.limits().map_err(internal)?;
-    let info = service.deps().host_info(&project.root);
-
-    let available_memory = info.memory_available.or(info.memory_total).unwrap_or(0);
-    if available_memory == 0 {
+    if host_now(service, project, &settings).available_memory == 0 {
         blockers.push("cannot tell how much memory this machine has free.".to_owned());
     }
-    let host = HostResources {
-        available_memory,
-        memory_reserve: settings.memory_reserve_bytes,
-        available_millicpus: info.cpus.unwrap_or(0).saturating_mul(1000),
-        cpu_reserve_millis: settings.cpu_reserve_millis,
-        available_disk: info.disk_free.unwrap_or(0),
-        disk_reserve: settings.disk_reserve_bytes,
-    };
 
-    let resolved = match resources::resolve(&request, &limits, &host) {
+    let resolved = match resolve_with(service, project, &settings, &chosen)? {
         Ok(resolved) => resolved,
         Err(error) => {
             blockers.push(text::escape(&error.to_string()));
@@ -422,16 +404,74 @@ fn plan_resources(
     let builds = model.default_services().any(|s| s.has_build);
     if builds && resolved.build_memory.bytes() < MIN_BUILD_MEMORY_BYTES {
         blockers.push(format!(
-            "this project builds images, and the build would get {}. The engine spike saw 2G fail every time and 3G succeed, so raise the memory in {}.",
+            "this project builds images, and the build would get {}. The engine spike saw 2G fail every time and 3G succeed, so raise the memory in the app's Settings or in {}.",
             resolved.build_memory,
             brand::CONFIG_FILE
         ));
     }
 
+    resource_plan(&resolved, project)
+}
+
+/// What this machine has now, and what it keeps for itself.
+pub(crate) fn host_now(service: &Service, project: &Project, settings: &UserSettings) -> HostResources {
+    let info = service.deps().host_info(&project.root);
+    HostResources {
+        available_memory: info.memory_available.or(info.memory_total).unwrap_or(0),
+        memory_reserve: settings.memory_reserve_bytes,
+        available_millicpus: info.cpus.unwrap_or(0).saturating_mul(1000),
+        cpu_reserve_millis: settings.cpu_reserve_millis,
+        available_disk: info.disk_free.unwrap_or(0),
+        disk_reserve: settings.disk_reserve_bytes,
+    }
+}
+
+/// Works out limits from the project's request and a person's choice.
+///
+/// The maximums in [`UserSettings`] are there to stop a repository taking over
+/// the machine. A person's own choice is not a repository's request, so it may
+/// pass them, and only what the host must keep for itself still refuses it. The
+/// outer error is a failure to read; the inner one is a machine that cannot
+/// spare the limits.
+pub(crate) fn resolve_with(
+    service: &Service,
+    project: &Project,
+    settings: &UserSettings,
+    chosen: &proto::ResourceChoice,
+) -> Result<Result<ResolvedResources, ResourceError>, ApiError> {
+    let mut request = resources::load(&project.root).map_err(|e| {
+        bad(format!(
+            "cannot read {}: {}",
+            brand::CONFIG_FILE,
+            text::escape(&e.to_string())
+        ))
+    })?;
+    let mut limits = settings.limits().map_err(internal)?;
+    if let Some(memory) = chosen.memory_bytes.and_then(ByteSize::new) {
+        request.memory = Some(memory);
+        request.build_memory = None;
+        limits.max_memory = limits.max_memory.max(memory);
+        limits.max_build_memory = limits.max_build_memory.map(|most| most.max(memory));
+    }
+    if let Some(cpus) = chosen.millicpus.and_then(MilliCpus::new) {
+        request.cpus = Some(cpus);
+        limits.max_cpus = limits.max_cpus.max(cpus);
+    }
+    if let Some(disk) = chosen.disk_bytes.and_then(ByteSize::new) {
+        request.disk = Some(disk);
+        limits.max_disk = limits.max_disk.max(disk);
+    }
+    Ok(resources::resolve(&request, &limits, &host_now(service, project, settings)))
+}
+
+/// The plan for these limits. A sandbox's disk can only grow, so a plan never
+/// says it will be smaller than the one the sandbox has.
+pub(crate) fn resource_plan(resolved: &ResolvedResources, project: &Project) -> Result<ResourcePlan, ApiError> {
+    let existing = SandboxRecord::load(&project.dir).map_err(internal)?;
     Ok(ResourcePlan {
         memory_bytes: resolved.memory.bytes(),
         millicpus: resolved.cpus.millis(),
-        disk_bytes: resolved.disk.bytes(),
+        disk_bytes: resolved.disk.bytes().max(existing.map_or(0, |r| r.disk_bytes)),
         build_memory_bytes: resolved.build_memory.bytes(),
         clamped: !resolved.clamped.is_empty(),
     })

@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use crate::error::{EngineError, Result};
-use crate::types::{
+use crate::types::{ResizeSpec, 
     CreateSpec, ExecRequest, GuestPath, LogOptions, NetworkPolicy, SandboxName, TlsMode,
 };
 
@@ -187,6 +187,27 @@ pub fn start(name: &SandboxName) -> Vec<String> {
 
 pub fn stop(name: &SandboxName) -> Vec<String> {
     strings(["stop", name.as_str()])
+}
+
+pub fn resize(name: &SandboxName, spec: &ResizeSpec) -> Vec<String> {
+    let mut args = vec![
+        "modify".to_owned(),
+        name.as_str().to_owned(),
+        "--memory".to_owned(),
+        format!("{}M", spec.memory_mib),
+        "--cpus".to_owned(),
+        spec.cpus.to_string(),
+    ];
+    if let Some(disk) = spec.grow_disk_gib {
+        args.push("--root-disk".to_owned());
+        args.push(format!("{disk}G"));
+    }
+    args.extend(["--format".to_owned(), "json".to_owned()]);
+    args
+}
+
+pub fn metrics(name: &SandboxName) -> Vec<String> {
+    strings(["metrics", name.as_str(), "--format", "json"])
 }
 
 pub fn destroy(name: &SandboxName) -> Vec<String> {

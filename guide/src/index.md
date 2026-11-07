@@ -2,8 +2,6 @@
 
 secbox runs a project and its AI agent inside a disposable microVM, so that a compromised dependency or a tricked agent stays away from your machine.
 
-> **Early build. Do not rely on secbox to contain anything yet.** Most commands were built against a fake engine, and only some have run on a real VM. Read [What works today](start/status.md) before you try it.
-
 ## The problem
 
 Recent supply-chain attacks run at install time. A package's install script steals your cloud keys, Git tokens and publishing tokens, then uses them to spread. An AI agent with a shell can be tricked by text in a README or an issue into doing the same. A firewall that blocks incoming connections does nothing about either.

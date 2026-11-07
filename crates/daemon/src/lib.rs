@@ -26,6 +26,7 @@ pub mod mask;
 pub mod person;
 pub mod plan;
 pub mod remote;
+pub mod resourceset;
 pub mod run;
 pub mod secret;
 pub mod secretfile;
@@ -238,6 +239,14 @@ impl Service {
             Request::UseSecretFile(args) => {
                 let project = self.open(&args.project)?;
                 secretfile::apply(self, &project, args).map(Reply::UseSecretFile)
+            }
+            Request::ResourceChoices(args) => {
+                let project = self.open(&args.project)?;
+                resourceset::report(self, &project).map(|r| Reply::ResourceChoices(Box::new(r)))
+            }
+            Request::SetResources(args) => {
+                let project = self.open(&args.project)?;
+                resourceset::set(self, &project, args.choice).map(|r| Reply::SetResources(Box::new(r)))
             }
         }
     }

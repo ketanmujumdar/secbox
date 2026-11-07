@@ -109,6 +109,10 @@ pub struct Approvals {
     /// are separate and built in; these are the ones a person added.
     #[serde(default)]
     pub run_hosts: Vec<String>,
+    /// The limits a person chose for this project, kept here and not in the
+    /// project's folder so that nothing in a repository can set them.
+    #[serde(default)]
+    pub resources: proto::ResourceChoice,
 }
 
 impl Approvals {
@@ -265,6 +269,7 @@ mod tests {
             version: 0,
             ports: vec![3000, 8080, 3000],
             run_hosts: vec!["b.example.com".into(), "a.example.com".into()],
+            resources: proto::ResourceChoice::default(),
         };
         approvals.save(dir.path()).unwrap();
         let back = Approvals::load(dir.path()).unwrap();
