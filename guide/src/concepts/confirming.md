@@ -1,5 +1,7 @@
 # Confirming with Touch ID
 
+> **macOS only, and not yet tried on a real Mac.** The prompt is built and checked for macOS, and every rule around it is tested with a stand-in person. Nobody has seen the real prompt appear yet. On Linux there is no prompt at all.
+
 Three actions can send something off your machine, and secbox asks **you**, not the program that asked, before each one:
 
 | Action | What the prompt says |
@@ -23,12 +25,33 @@ So `secboxd` puts up the prompt itself. Clients only show that it is waiting: no
 
 A prompt that gets no answer is withdrawn after two minutes, and counts as cancelled.
 
+## In each client
+
+The prompt is the same wherever the request came from, because the daemon puts it up. What each client shows while it waits:
+
+| Client | While the prompt is up | If you cancel |
+| --- | --- | --- |
+| Command line (`up`, `new`, `net allow`, `git push`, `git run push`) | A line starting "Confirm with Touch ID or your login password" | The command fails with "not confirmed with Touch ID or your login password, so nothing was done", and why |
+| Terminal interface (`u`, `a` on Network, `P` on Changes) | The same sentence on the busy line, and in the start box | The same message on the status line, or in the push box |
+| Desktop app (Start, Approve, Push) | A "Waiting for you to confirm in the system prompt" step on the start page, and the sentence on the busy line | The step reads "Not confirmed, so nothing was started", or a red banner |
+| AI agent (`git_push`, or `git` with `push`) | The tool call waits | The tool returns the refusal. Its description tells the agent not to retry and to ask you |
+
+## On Linux
+
+There is no prompt. The action goes ahead on the request alone, as it did before this was added, and every client says so instead of saying you confirmed:
+
+- the command line and the terminal interface's start box print "This computer has no fingerprint or password check, so this goes ahead on this request alone";
+- the terminal interface adds "Not confirmed by fingerprint" to the result of a start, an approval or a push;
+- the desktop app's start page shows "Started on this window's request alone", and Approve and Push end with "Not confirmed by fingerprint";
+- the audit log records `person_unchecked`.
+
+A Linux build never claims a person confirmed anything. A prompt for Linux, such as polkit with a fingerprint reader, is not planned yet.
+
 ## What it does not do
 
-- **It is macOS only for now.** On Linux, secbox goes ahead on the client's request as before, says so ("This computer has no fingerprint or password check…") and writes `person_unchecked` to the audit log.
 - **It guards what goes through the daemon.** Code already running as you can still use your SSH agent directly, run the engine itself to get into a running sandbox and read the secrets delivered there, or replace secbox's own programs. The prompt makes secbox stop being the easy way to do those things. It does not make a compromised Mac safe.
 - **`shell`, `exec`, pull, stop and destroy do not ask.** Pull only brings code into the sandbox. `shell` and `exec` go to the engine directly, so a prompt in the daemon would not stop them.
-- **It has not been run on a real Mac yet.** The prompt is compiled and checked for macOS, and every rule around it is tested with a stand-in person. See `docs/NEEDS_A_VM.md`.
+- **It has not been run on a real Mac yet.** See the checklist in `docs/NEEDS_A_VM.md` under "Confirming with Touch ID".
 
 ## In the audit log
 

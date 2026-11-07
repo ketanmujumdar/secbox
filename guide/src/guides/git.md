@@ -78,11 +78,12 @@ Inside the project's folder, you can leave `--project` out. `secbox git status`,
 - **A networked command can't choose its own remote program.** `--upload-pack`, `--receive-pack` and `--exec` are refused, and so are `-o` and `--push-option`.
 - **One connection per command.** `fetch --all` across several remotes, submodules and Git LFS are not relayed.
 - **Your name goes on commits.** The command line, the desktop app and MCP read `user.name` and `user.email` from your global Git settings.
+- **On a Mac, every push waits for your Touch ID.** That covers `push`, `run push`, the desktop's Push and an agent's `git_push`. The prompt names the branch, both commits and the remote, and comes after the checks above, so a refused push never asks. Cancel, and the remote gets nothing. Linux has no prompt. See [Confirming with Touch ID](../concepts/confirming.md).
 - **Every command is in the audit log** under its name, such as `git_ran commit`. Arguments are not logged, because they can hold a commit message. Each push is also logged with its branch and both commit ids.
 
 ## What it does not protect
 
-- **The sandbox can push any branch except the protected ones,** to the project's own repository, once your SSH agent approves. Your CI may run on that branch. Don't give CI on unreviewed branches secrets it doesn't need.
+- **The sandbox can push any branch except the protected ones,** to the project's own repository, once you confirm it (Touch ID on a Mac) and your SSH agent approves. The prompt names the commit but not what is in it: read `secbox diff` first. Your CI may run on that branch. Don't give CI on unreviewed branches secrets it doesn't need.
 - **A force-push to a feature branch looks like a normal push.** Telling them apart would mean reading the pack, which the relay never does. Turn on branch protection or rulesets on GitHub to refuse force-pushes.
 - **The clone holds the full history,** including any secret ever committed to it.
 - **Your `~/.ssh/config` runs** on every relayed connection, including any `ProxyCommand` in it. It is your own file.

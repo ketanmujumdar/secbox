@@ -78,15 +78,19 @@ Pressing `u` asks the daemon for the plan and shows it in a box, in the same gro
 
 `y` starts it with those ports. `n`, Esc and Enter cancel: No is the default. A plan longer than the terminal scrolls with up and down, and `y` works only once all of it has been on screen. Keys pressed before the box appeared, such as the rest of a paste, are thrown away. To pick ports one by one, use `secbox up --port` instead. While it starts, a box lists each step as the daemon reports it, the same steps `secbox up` prints. Keys do nothing until it ends.
 
+On a Mac, after `y` the daemon asks you to confirm with Touch ID or your password, in macOS's own prompt. The busy line and the box say "Confirm with Touch ID or your login password" until you answer. The interface can't answer it for you. On Linux there is no prompt: the box says so, and the result ends with "Not confirmed by fingerprint". See [Confirming with Touch ID](../concepts/confirming.md).
+
 ## Changes
 
-The Changes tab shows the same comparison as [`secbox diff`](reviewing-changes.md), flags first in red. Press `r` to compare: it runs inside the sandbox, so it never runs by itself. Up, down, PgUp and PgDn scroll. `p` pulls and `P` pushes the current branch through the daemon's relay, and a box shows what Git said.
+The Changes tab shows the same comparison as [`secbox diff`](reviewing-changes.md), flags first in red. Press `r` to compare: it runs inside the sandbox, so it never runs by itself. Up, down, PgUp and PgDn scroll. `p` pulls and `P` pushes the current branch through the daemon's relay, and a box shows what Git said. On a Mac, each push waits for your Touch ID, in a prompt naming the branch and commits; cancel it and the remote gets nothing.
 
 ![The Review panel, before the redesign](../images/cli/tui-review.png)
 
 ## Network
 
 ![The Traffic panel, before the redesign](../images/cli/tui-traffic.png)
+
+Pressing `a` on a blocked hostname asks for Touch ID on a Mac before anything is saved or restarted.
 
 ## Secrets
 

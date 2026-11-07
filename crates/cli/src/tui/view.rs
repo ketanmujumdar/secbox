@@ -2124,6 +2124,17 @@ pub fn first_key_len(bytes: &[u8]) -> usize {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_start_box_says_when_a_prompt_is_up_or_nobody_was_asked() {
+        let mut progress = Progress::new("Starting shop");
+        progress.push(proto::STEP_CONFIRM, Some("Touch ID or your login password"));
+        progress.push(proto::STEP_UNCONFIRMED, None);
+        progress.push("sandbox", None);
+        assert!(progress.steps[0].starts_with("Confirm with Touch ID or your login password"), "{:?}", progress.steps);
+        assert!(progress.steps[1].contains("no fingerprint"), "{:?}", progress.steps);
+        assert_eq!(progress.steps[2], "sandbox");
+    }
+
     fn model() -> Model {
         Model {
             projects: vec![

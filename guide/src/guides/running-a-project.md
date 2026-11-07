@@ -62,6 +62,8 @@ secbox up --all-ports            # every port in the plan
 
 ### 3. Starting
 
+On a Mac, the daemon first asks you to confirm with Touch ID or your password, in a prompt naming the project and how many secrets, hosts and ports it gets. Cancel, and nothing is created. Linux has no prompt; `up` says so. See [Confirming with Touch ID](../concepts/confirming.md).
+
 The daemon copies the commit in, boots the VM, starts Docker and runs `docker compose up --build`. The first start downloads images and builds, so it can take several minutes. When it finishes:
 
 ```text

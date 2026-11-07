@@ -60,7 +60,7 @@ microVM                                sh -c COMMAND in /work, or docker compose
 | `read_file` | Reads a file under `/work` |
 | `write_file` | Replaces a file under `/work` |
 | `git` | Any Git command in the clone. Only fetch, pull and push reach the remote, through the relay. See [Git without handing over your keys](git.md) |
-| `git_status`, `git_pull`, `git_commit`, `git_push` | Shortcuts for the common ones |
+| `git_status`, `git_pull`, `git_commit`, `git_push` | Shortcuts for the common ones. On a Mac, every push waits for you to confirm with Touch ID |
 
 Arguments and limits are in the [MCP tools reference](../reference/mcp-tools.md).
 
@@ -113,7 +113,7 @@ Configure a **stdio** server whose command is the absolute path of `secbox`, wit
 ## What this does not protect
 
 - **The agent's own host tools.** MCP adds a way into the sandbox. It does not take away anything the agent can already do on your machine. Its settings are the only thing between a tricked agent and your shell.
-- **Your user's access to the daemon.** The socket checks which user connects, not which program. An agent with a host shell can run `secbox down --destroy` or `secbox up --all-ports` as you.
+- **Your user's access to the daemon.** The socket checks which user connects, not which program. An agent with a host shell can run `secbox down --destroy` as you. On a Mac, starting, approving a hostname and pushing need your Touch ID, so it can ask but not agree; on Linux it can do those too.
 - **Secrets in the sandbox.** A secret delivered to a service can be read with `exec`, for example `env` in that service. That output goes to the model, and so to the model's provider. Don't assign a secret to a project an agent works on unless the agent and its provider may see it.
 - **Prompt injection.** Anything in the project, its dependencies or its logs can contain instructions. What limits the damage is that the tools only reach the sandbox, and the agent's host tools are off.
 - **Getting the work out.** Changes stay in the sandbox. There is no reviewed way to bring them back yet. Destroying the sandbox deletes them.

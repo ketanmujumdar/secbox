@@ -39,6 +39,11 @@ Common problems and how to fix them. Start with `secbox doctor`, which checks mo
 | `up: this project does not publish 9000` | `--port` accepts only ports in the plan. Run `secbox up --plan-only` to see them |
 | `unexpected argument '--project'` | `up`, `down` and `status` take the folder as a plain argument: `secbox up ~/code/myapp` |
 | A service cannot reach a website | Only allowed hostnames resolve. Check `secbox net blocked` for the refused name |
+| `not confirmed with Touch ID or your login password, so nothing was done: you cancelled (LocalAuthentication -2)` | The Touch ID prompt was cancelled. Run the command again and confirm, if it was you who asked |
+| `… there is no screen to ask on, such as over SSH` | The daemon can't show a prompt without a logged-in screen. Run it from the Mac itself |
+| `… Touch ID is locked` | Unlock the Mac with its password once, then try again |
+| `… nobody answered within 120 seconds` | The prompt was withdrawn. Try again |
+| A Touch ID prompt you did not expect | Something else on your machine asked. Cancel it, then look at `daemon-audit.jsonl` in the state folder for `person_declined` |
 
 ## Logs, shell and exec
 

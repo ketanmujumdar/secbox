@@ -22,6 +22,8 @@ The Secrets page says "not built yet".
 
 *Start* asks the daemon for the plan and shows it: services, commit, ports to forward, allowed hosts, secret names, limits and findings. The project starts only after you click *Start with this plan*, and the request carries that plan's digest and ports. Cancel has the focus, so pressing Enter never agrees by accident.
 
+On a Mac, the daemon then asks you to confirm with Touch ID or your password. The start page shows *Waiting for you to confirm in the system prompt* until you answer; the window can't answer it. **Approve** on a blocked hostname and **Push** on Changes ask the same way. On Linux there is no prompt, and the start page says *Started on this window's request alone*. See [Confirming with Touch ID](../concepts/confirming.md).
+
 *Destroy* asks for its own confirmation, and afterwards tells you to rotate every secret the sandbox was given.
 
 ## The daemon

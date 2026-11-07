@@ -86,10 +86,15 @@
     return 'Confirm with ' + (method || 'the system prompt') +
       '. Check the prompt names what you asked for; if you did not ask, cancel it.';
   }
+  // Said after an action this computer could not ask the person about, so a
+  // start, approval or push on Linux never reads as confirmed.
+  const NOT_CHECKED = 'Not confirmed by fingerprint: this computer has no fingerprint or password check, so it went ahead on this request alone.';
   function personChannel() {
     const channel = new Channel();
+    channel.unchecked = false;
     channel.onmessage = (event) => {
       if (event.step === 'confirm') busy(confirmWords(event.detail));
+      if (event.step === 'unconfirmed') channel.unchecked = true;
     };
     return channel;
   }
@@ -1107,7 +1112,9 @@
     stopLogs();
     busy('Approving ' + host + '. Its services are restarting.');
     try {
-      banner(await invoke('approve_host', { project: row.path, host, onProgress: personChannel() }), 'ok');
+      const asking = personChannel();
+      const said = await invoke('approve_host', { project: row.path, host, onProgress: asking });
+      banner(asking.unchecked ? said + ' ' + NOT_CHECKED : said, 'ok');
     } catch (error) {
       banner('Could not approve it: ' + errorText(error));
     }
@@ -1258,14 +1265,16 @@
     const waiting = ['pull', 'push', 'fetch', 'ls-remote'].includes(command);
     busy(waiting ? (command === 'push' ? 'Pushing' : 'Fetching') + '. Your SSH agent may ask you to approve.' : 'Asking Git.');
     let view;
+    const asking = personChannel();
     try {
-      view = await invoke('git', { project: row.path, op, commitMessage: message || null, args: args || null, onProgress: personChannel() });
+      view = await invoke('git', { project: row.path, op, commitMessage: message || null, args: args || null, onProgress: asking });
     } catch (error) {
       busy('');
       banner(errorText(error));
       return null;
     }
     busy('');
+    if (asking.unchecked && view.ok) banner(NOT_CHECKED, 'info');
     if (state.selected !== row.path) return view;
     const title = $('git-title');
     title.textContent = view.title;
