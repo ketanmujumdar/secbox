@@ -350,7 +350,7 @@ resources:
 - **Repo values are requests:** a repo can't grant itself more than the user's maximum, so a hostile `secbox.yaml` can't take over the machine.
 - **Host reserve:** secbox refuses to start if the total would leave too little for the host.
 - **Per service:** Compose memory and CPU limits still apply inside the VM.
-- **Changing a limit:** the UI and CLI apply it on restart. Live resizing depends on the engine and needs testing.
+- **Changing a limit:** a person chooses limits in the app, kept on the host and shown in the plan. They reach a stopped sandbox through `msb modify` when it starts, with its data kept. msb 0.7.13 cannot change memory or CPUs on a running VM, and a disk can only grow.
 
 ### Minimum RAM
 

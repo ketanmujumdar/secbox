@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use engine::{
     CreateSpec, Engine, EngineError, ExecRequest, GuestPath, LogOptions, MsbEngine, MsbLocation,
-    NetworkPolicy, Resources, SandboxName, SandboxStatus,
+    NetworkPolicy, ResizeSpec, Resources, SandboxName, SandboxStatus,
 };
 
 fn project_root() -> PathBuf {
@@ -138,4 +138,49 @@ fn full_lifecycle_against_a_real_vm() {
         e.destroy(&name),
         Err(EngineError::NotFound { .. })
     ));
+}
+
+/// The fake cannot show what the engine accepts: it was this test's commands
+/// that found the engine refuses a disk of the size the sandbox already has.
+#[test]
+#[ignore = "boots a small VM"]
+fn resizing_a_stopped_sandbox_keeps_its_data_and_reports_the_new_limits() {
+    let engine = engine();
+    let name = SandboxName::new("resize-itest").unwrap();
+    let _ = engine.destroy(&name);
+    let _cleanup = Cleanup(name.clone());
+    engine
+        .create(&CreateSpec {
+            name: name.clone(),
+            image: "alpine".to_owned(),
+            resources: Resources::new(512, 1, 1).unwrap(),
+            network: NetworkPolicy::PublicInternet,
+            secrets: Vec::new(),
+            ports: Vec::new(),
+            previous_disk: None,
+        })
+        .unwrap();
+    let run = |command: &str| engine.exec(&name, &ExecRequest::new(["sh", "-c", command])).unwrap();
+    assert_eq!(run("echo kept > /root/mark").code, 0);
+
+    let check = |memory_mib: u32, cpus: u32, grow_disk_gib: Option<u32>| {
+        engine.stop(&name).unwrap();
+        engine.resize(&name, &ResizeSpec { memory_mib, cpus, grow_disk_gib }).unwrap();
+        engine.start(&name).unwrap();
+        let limit = engine.metrics(&name).unwrap().memory_limit_bytes;
+        assert_eq!(limit, u64::from(memory_mib) << 20);
+        assert_eq!(run("nproc").stdout.trim(), cpus.to_string());
+        assert_eq!(run("cat /root/mark").stdout.trim(), "kept");
+    };
+    // Memory and CPUs alone, then the disk with them unchanged, then all down.
+    check(1024, 2, None);
+    check(1024, 2, Some(2));
+    assert!(run("df -m / | tail -1 | awk '{print $2}'").stdout.trim().parse::<u32>().unwrap() > 1500);
+    check(768, 1, None);
+
+    // A disk of the same size is refused, and so is a smaller one.
+    engine.stop(&name).unwrap();
+    for disk in [2, 1] {
+        assert!(engine.resize(&name, &ResizeSpec { memory_mib: 768, cpus: 1, grow_disk_gib: Some(disk) }).is_err());
+    }
 }

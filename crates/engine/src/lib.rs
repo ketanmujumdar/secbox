@@ -18,8 +18,8 @@ pub use msb::{MsbEngine, MsbLocation, DERIVED_SOCKET_SUFFIX_BYTES, TESTED_VERSIO
 pub use redact::{LiteralRedactor, NoRedaction, Redactor};
 pub use types::{
     CreateSpec, EngineLocation, ExecOutput, ExecRequest, GuestPath, HostPort, LogOptions,
-    NetworkPolicy, OutputSink, OutputStream, Resources, SandboxName, SandboxStatus, SecretRule,
-    StreamEnd, TlsMode,
+    NetworkPolicy, OutputSink, OutputStream, ResizeSpec, Resources, SandboxMetrics, SandboxName, SandboxStatus,
+    SecretRule, StreamEnd, TlsMode,
 };
 
 use std::path::Path;
@@ -37,6 +37,12 @@ pub trait Engine: Send + Sync {
     fn destroy(&self, name: &SandboxName) -> Result<()>;
     /// Reports state. A sandbox that does not exist is [`SandboxStatus::NotFound`].
     fn status(&self, name: &SandboxName) -> Result<SandboxStatus>;
+    /// Changes a stopped sandbox's limits, for its next start. Everything on its
+    /// disk stays. The disk can only grow: anything else is an error and nothing
+    /// changes. Memory and CPUs cannot be changed while it runs.
+    fn resize(&self, name: &SandboxName, spec: &ResizeSpec) -> Result<()>;
+    /// Reports what a running sandbox is using now.
+    fn metrics(&self, name: &SandboxName) -> Result<SandboxMetrics>;
     /// Runs a command in a running sandbox, without a shell on the host side.
     fn exec(&self, name: &SandboxName, request: &ExecRequest) -> Result<ExecOutput>;
     /// Runs a command in a running sandbox and hands over its output as it

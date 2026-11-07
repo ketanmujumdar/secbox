@@ -389,6 +389,7 @@ mod tests {
                     blocked_count: 0,
                     blocked: None,
                     exposure: None,
+                    usage: None,
                 })),
                 Request::Logs(args) => {
                     if self.state != SandboxState::Running {

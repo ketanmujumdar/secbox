@@ -151,6 +151,83 @@ pub struct ResourceView {
     pub clamped: bool,
 }
 
+/// What a running sandbox is using, in words and as a share of its limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UsageView {
+    pub cpu: String,
+    pub cpu_percent: u32,
+    pub memory: String,
+    pub memory_percent: u32,
+    /// `None` when the engine did not report it.
+    pub disk: Option<String>,
+    pub disk_percent: Option<u32>,
+    pub host_memory: String,
+}
+
+fn percent_of(used: u64, limit: u64) -> u32 {
+    if limit == 0 {
+        return 0;
+    }
+    u32::try_from((u128::from(used) * 100 / u128::from(limit)).min(100)).unwrap_or(100)
+}
+
+fn usage_view(usage: &proto::SandboxUsage, limits: Option<&proto::ResourcePlan>) -> UsageView {
+    let used_cpus = f64::from(usage.cpu_millis) / 1000.0;
+    // The VM has whole CPUs, so that is what its use is measured against.
+    let cpus = limits.map(|l| u64::from(l.millicpus.div_ceil(1000)));
+    let disk_limit = limits.map(|l| l.disk_bytes);
+    UsageView {
+        cpu: match cpus {
+            Some(cpus) => format!("{used_cpus:.1} of {cpus} CPUs"),
+            None => format!("{used_cpus:.1} CPUs"),
+        },
+        cpu_percent: cpus.map_or(0, |cpus| percent_of(u64::from(usage.cpu_millis), cpus * 1000)),
+        memory: format!(
+            "{} of {}",
+            human_bytes(usage.memory_used_bytes),
+            human_bytes(usage.memory_limit_bytes)
+        ),
+        memory_percent: percent_of(usage.memory_used_bytes, usage.memory_limit_bytes),
+        disk: usage.disk_used_bytes.map(|used| match disk_limit {
+            Some(limit) => format!("{} of {}", human_bytes(used), human_bytes(limit)),
+            None => human_bytes(used),
+        }),
+        disk_percent: usage
+            .disk_used_bytes
+            .zip(disk_limit)
+            .map(|(used, limit)| percent_of(used, limit)),
+        host_memory: human_bytes(usage.memory_host_bytes),
+    }
+}
+
+/// The limits a person chose for a project, and how much this machine can spare.
+pub fn resource_choices(client: &Client, path: &str) -> Result<proto::ResourceChoicesReport, CallError> {
+    let reply = client.call(
+        Request::ResourceChoices(ProjectArgs { project: path.to_owned() }),
+        Some(STATUS_LIMIT),
+    )?;
+    let Reply::ResourceChoices(report) = reply else {
+        return Err(wrong_reply());
+    };
+    Ok(*report)
+}
+
+/// Keeps a person's limits for a project. No sandbox changes until its next start.
+pub fn set_resources(
+    client: &Client,
+    path: &str,
+    choice: proto::ResourceChoice,
+) -> Result<proto::ResourceChoicesReport, CallError> {
+    let reply = client.call(
+        Request::SetResources(proto::SetResourcesArgs { project: path.to_owned(), choice }),
+        Some(STATUS_LIMIT),
+    )?;
+    let Reply::SetResources(report) = reply else {
+        return Err(wrong_reply());
+    };
+    Ok(*report)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StatusView {
     pub path: String,
@@ -160,6 +237,8 @@ pub struct StatusView {
     /// Always on 127.0.0.1.
     pub ports: Vec<String>,
     pub resources: Option<ResourceView>,
+    /// `None` unless it is running and the engine could say.
+    pub usage: Option<UsageView>,
     /// `None` when the daemon did not say, which is not zero.
     pub blocked_total: Option<u64>,
     pub blocked_domains: Option<u64>,
@@ -231,6 +310,7 @@ pub fn status_view(report: &StatusReport) -> StatusView {
             .collect(),
         ports: report.ports.iter().map(|p| format!("127.0.0.1:{p}")).collect(),
         resources: report.resources.as_ref().map(resources),
+        usage: report.usage.as_ref().map(|u| usage_view(u, report.resources.as_ref())),
         blocked_total,
         blocked_domains,
         blocked_cut_off: report.blocked.as_ref().is_some_and(|b| b.cut_off),

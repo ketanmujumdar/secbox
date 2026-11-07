@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::error::{EngineError, Result};
 use crate::types::{
     CreateSpec, EngineLocation, ExecOutput, ExecRequest, GuestPath, LogOptions, OutputSink,
-    OutputStream, SandboxName, SandboxStatus, StreamEnd,
+    OutputStream, ResizeSpec, SandboxMetrics, SandboxName, SandboxStatus, StreamEnd,
 };
 use crate::Engine;
 
@@ -22,6 +22,8 @@ pub enum FakeCall {
     Destroy(SandboxName),
     KeepRootDisk(SandboxName, PathBuf),
     Status(SandboxName),
+    Resize(SandboxName, ResizeSpec),
+    Metrics(SandboxName),
     Exec(SandboxName, ExecRequest),
     ExecStream(SandboxName, ExecRequest),
     /// The input is deliberately not recorded here, so that a secret cannot
@@ -61,6 +63,7 @@ struct State {
     inputs: Vec<(Vec<String>, String)>,
     keeps_files: bool,
     lookups_denied: u32,
+    refuses_resizes: bool,
 }
 
 /// In-memory [`Engine`]. `create` leaves a sandbox running, matching the CLI's
@@ -179,6 +182,12 @@ impl FakeEngine {
     /// Makes the next operation fail with this error. The call is still recorded.
     pub fn fail_next(&self, error: EngineError) {
         self.lock().next_error = Some(error);
+    }
+
+    /// Makes every resize fail, for a test of what happens around one, since
+    /// other calls come before it in a start.
+    pub fn refuse_resizes(&self) {
+        self.lock().refuses_resizes = true;
     }
 
     /// Adds a line to a sandbox's log.
@@ -344,6 +353,49 @@ impl Engine for FakeEngine {
             None => SandboxStatus::NotFound,
             Some(b) if b.running => SandboxStatus::Running,
             Some(_) => SandboxStatus::Stopped,
+        })
+    }
+
+    fn resize(&self, name: &SandboxName, spec: &ResizeSpec) -> Result<()> {
+        let mut state = self.begin(FakeCall::Resize(name.clone(), *spec))?;
+        if state.refuses_resizes {
+            return Err(EngineError::InvalidInput {
+                field: "resize",
+                reason: "refused".to_owned(),
+            });
+        }
+        let entry = state.boxes.get_mut(name).ok_or_else(|| not_found(name))?;
+        if entry.running {
+            return Err(EngineError::InvalidState {
+                name: name.to_string(),
+                reason: "is running, and cannot be resized while it runs".to_owned(),
+            });
+        }
+        // The real engine refuses the same size as well as a smaller one.
+        if let Some(disk) = spec.grow_disk_gib {
+            if disk <= entry.spec.resources.disk_gib {
+                return Err(EngineError::InvalidInput {
+                    field: "disk",
+                    reason: "a disk can only grow".to_owned(),
+                });
+            }
+            entry.spec.resources.disk_gib = disk;
+        }
+        entry.spec.resources.memory_mib = spec.memory_mib;
+        entry.spec.resources.cpus = spec.cpus;
+        Ok(())
+    }
+
+    /// Fixed use against the limits the sandbox really has.
+    fn metrics(&self, name: &SandboxName) -> Result<SandboxMetrics> {
+        let mut state = self.begin(FakeCall::Metrics(name.clone()))?;
+        let limits = running_box(&mut state, name)?.spec.resources;
+        Ok(SandboxMetrics {
+            cpu_millis: 500,
+            memory_used_bytes: 1 << 30,
+            memory_limit_bytes: u64::from(limits.memory_mib) << 20,
+            memory_host_bytes: 2 << 30,
+            disk_used_bytes: Some(3 << 30),
         })
     }
 

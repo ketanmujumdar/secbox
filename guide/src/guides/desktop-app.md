@@ -10,7 +10,8 @@ The desktop app is a menu bar icon and a window for the same daemon the command 
 
 **A window** with:
 
-- an overview of each project: state, services, ports on `127.0.0.1`, resources and the blocked-traffic count
+- an overview of each project: state, services, ports on `127.0.0.1`, the blocked-traffic count, and the CPU, memory and disk it is using. See [RAM, CPU and disk](resources.md#seeing-what-it-uses).
+- a **Settings** tab that sets a project's memory, CPU and disk limits. See [RAM, CPU and disk](resources.md#changing-limits-in-the-app).
 - *Start*, *Stop* and *Destroy*
 - a **Logs** tab and a **Blocked traffic** tab
 - a **Terminal & about** tab, with commands to put the bundled CLI on your `PATH`
@@ -18,6 +19,8 @@ The desktop app is a menu bar icon and a window for the same daemon the command 
 
 - an **Open in VS Code** button for a running project, which edits the sandbox's files with nothing copied to your machine. See [Editors](editors.md#editing-inside-the-sandbox).
 - a **Secrets** tab that lists the project's secret names, stored and empty, and lets you set or replace a value and choose which services get it. See [Secrets](secrets.md#from-the-desktop-app).
+
+![The desktop app's Overview tab for a running project, in the app's preview with sample data](../images/app/overview-running.png)
 
 ## How it starts a project
 

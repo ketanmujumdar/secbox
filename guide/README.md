@@ -58,6 +58,11 @@ It also rewrites `src/reference/screenshots.md`, the gallery page, from
 uses a fresh state folder at `/tmp/secbox-demo` and a real daemon with no VM
 engine, so commands that need a running sandbox cannot be captured yet.
 
+The window screenshots in `src/images/app/` are different. They were taken by
+hand in a browser from `apps/desktop/ui-preview`, at 1360 wide: the app's real
+page with sample data from `stub.js`, not a real sandbox. The pages that use
+them say so. No script rebuilds them, so retake them when that page changes.
+
 ## Made for people and for AI
 
 Every page is also served as Markdown at the same address with `.md` in place

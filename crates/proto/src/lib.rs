@@ -140,6 +140,70 @@ pub enum Request {
     /// Stores the values of the names a person agreed to, from one env file,
     /// and gives them to the chosen services.
     UseSecretFile(UseSecretFileArgs),
+    /// The limits a person chose for a project, what the project asks for, and
+    /// how much this machine can spare. Changes nothing.
+    ResourceChoices(ProjectArgs),
+    /// Keeps a person's limits for a project, on the host. Nothing changes in a
+    /// sandbox until it next starts, from a plan that shows them. A sandbox has
+    /// no way to send this: the socket is on the host, and no agent tool reaches
+    /// it.
+    SetResources(SetResourcesArgs),
+}
+
+/// Limits a person chose for one project. An absent value leaves it to the
+/// project's own request, or the default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceChoice {
+    /// Also the limit while building: the person asked for one size of VM.
+    #[serde(default)]
+    pub memory_bytes: Option<u64>,
+    #[serde(default)]
+    pub millicpus: Option<u32>,
+    #[serde(default)]
+    pub disk_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetResourcesArgs {
+    pub project: String,
+    pub choice: ResourceChoice,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceChoicesReport {
+    pub project_id: String,
+    pub chosen: ResourceChoice,
+    /// What the sandbox has now. `None` when there is no sandbox.
+    pub current: Option<ResourcePlan>,
+    /// What the next start would use. `None` when this machine could not spare
+    /// it, and `problem` says why.
+    pub next: Option<ResourcePlan>,
+    pub problem: Option<String>,
+    /// True when it is running with limits other than `next`.
+    pub restart_needed: bool,
+    /// What this machine can spare now, after what it keeps for itself.
+    pub max_memory_bytes: u64,
+    pub max_millicpus: u32,
+    pub max_disk_bytes: u64,
+}
+
+/// What a running sandbox is using. Numbers to show, never to act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxUsage {
+    /// CPU in use, where 1000 is one whole CPU.
+    pub cpu_millis: u32,
+    pub memory_used_bytes: u64,
+    /// The size of the VM's memory, which can be above the run limit when the
+    /// build limit is larger.
+    pub memory_limit_bytes: u64,
+    /// What this machine holds for the VM.
+    pub memory_host_bytes: u64,
+    /// What the guest's writes take on this machine's disk.
+    pub disk_used_bytes: Option<u64>,
 }
 
 /// Where an env file is. The sandbox's copy is hostile data, like anything
@@ -514,6 +578,9 @@ pub enum Reply {
     SecretFiles(SecretFilesReport),
     ReadSecretFile(SecretFilePreview),
     UseSecretFile(UseSecretFileReport),
+    // Boxed for the same reason as a plan.
+    ResourceChoices(Box<ResourceChoicesReport>),
+    SetResources(Box<ResourceChoicesReport>),
 }
 
 /// What changed inside a sandbox since the snapshot it started from.
@@ -1175,6 +1242,10 @@ pub struct StatusReport {
     /// sandbox can reach while it runs. `None` from an older daemon.
     #[serde(default)]
     pub exposure: Option<Box<SecretExposure>>,
+    /// What it is using now. `None` when it is not running, when the engine
+    /// could not say, or from an older daemon.
+    #[serde(default)]
+    pub usage: Option<Box<SandboxUsage>>,
 }
 
 /// Where a project's secrets could be sent. Names only, never a value.

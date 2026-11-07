@@ -299,6 +299,8 @@ fn starting_follows_the_sequence_the_engine_spike_found_works() {
             FakeCall::Destroy(_) => "destroy",
             FakeCall::KeepRootDisk(..) => "keep-disk",
             FakeCall::Status(_) => "status",
+            FakeCall::Resize(..) => "resize",
+            FakeCall::Metrics(_) => "metrics",
             FakeCall::Exec(..) => "exec",
             FakeCall::ExecStream(..) => "exec-stream",
             FakeCall::ExecWithInput(..) => "exec-with-input",
@@ -421,6 +423,252 @@ fn changing_the_ports_of_an_existing_sandbox_is_refused_and_not_reported_as_done
     assert!(!audit.contains("port_forwarded"), "{audit}");
     // The same ports again is an ordinary restart.
     f.up(vec![]).unwrap();
+}
+
+fn choose(f: &Fixture, choice: proto::ResourceChoice) -> Result<proto::ResourceChoicesReport, proto::ApiError> {
+    match f.call(Request::SetResources(proto::SetResourcesArgs {
+        project: f.path(),
+        choice,
+    }))? {
+        Reply::SetResources(report) => Ok(*report),
+        other => panic!("{other:?}"),
+    }
+}
+
+fn stop(f: &Fixture) {
+    f.call(Request::Down(DownArgs {
+        project: f.path(),
+        destroy: false,
+    }))
+    .unwrap();
+}
+
+fn status(f: &Fixture) -> proto::StatusReport {
+    match f.call(Request::Status(ProjectArgs { project: f.path() })).unwrap() {
+        Reply::Status(report) => report,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn resizes(f: &Fixture) -> Vec<engine::ResizeSpec> {
+    f.deps
+        .engine
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            FakeCall::Resize(_, spec) => Some(spec),
+            _ => None,
+        })
+        .collect()
+}
+
+const MORE: proto::ResourceChoice = proto::ResourceChoice {
+    memory_bytes: Some(6 * GIB),
+    millicpus: Some(4000),
+    disk_bytes: Some(40 * GIB),
+};
+
+#[test]
+fn a_new_sandbox_is_created_with_the_limits_a_person_chose() {
+    let f = fixture();
+    choose(&f, MORE).unwrap();
+    f.up(vec![]).unwrap();
+    let calls = f.deps.engine.calls();
+    let spec = calls.iter().find_map(|call| match call {
+        FakeCall::Create(spec) => Some(spec),
+        _ => None,
+    });
+    let resources = spec.unwrap().resources;
+    assert_eq!((resources.memory_mib, resources.cpus, resources.disk_gib), (6 * 1024, 4, 40));
+}
+
+#[test]
+fn a_stopped_sandbox_takes_the_chosen_limits_when_it_starts_and_keeps_them() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    stop(&f);
+    choose(&f, MORE).unwrap();
+    assert!(resizes(&f).is_empty(), "choosing alone must change no sandbox");
+
+    let shown = f.plan().resources;
+    assert_eq!(shown.memory_bytes, 6 * GIB);
+    f.up(vec![]).unwrap();
+
+    let calls = f.deps.engine.calls();
+    let resize = calls.iter().position(|c| matches!(c, FakeCall::Resize(..))).unwrap();
+    let start = calls.iter().position(|c| matches!(c, FakeCall::Start(_))).unwrap();
+    assert!(resize < start, "the limits have to change before it boots");
+    let spec = resizes(&f)[0];
+    assert_eq!((spec.memory_mib, spec.cpus, spec.grow_disk_gib), (6 * 1024, 4, Some(40)));
+
+    let now = status(&f).resources.unwrap();
+    assert_eq!((now.memory_bytes, now.millicpus, now.disk_bytes), (6 * GIB, 4000, 40 * GIB));
+    let audit = std::fs::read_to_string(f.service.audit().path()).unwrap();
+    assert!(audit.contains("resources_chosen") && audit.contains("sandbox_resized"), "{audit}");
+
+    // Nothing has changed since, so the next start asks the engine for nothing.
+    stop(&f);
+    f.up(vec![]).unwrap();
+    assert_eq!(resizes(&f).len(), 1);
+}
+
+/// The real engine refuses a disk the same size as the one it has, with the
+/// whole change, so changing only memory or CPUs must not name the disk.
+#[test]
+fn changing_only_memory_and_cpus_leaves_the_disk_out_of_the_resize() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    stop(&f);
+    choose(&f, proto::ResourceChoice { memory_bytes: Some(6 * GIB), millicpus: Some(4000), disk_bytes: None }).unwrap();
+    f.up(vec![]).unwrap();
+    let spec = resizes(&f)[0];
+    assert_eq!((spec.memory_mib, spec.cpus, spec.grow_disk_gib), (6 * 1024, 4, None));
+}
+
+#[test]
+fn starting_a_sandbox_with_the_limits_it_has_does_not_resize_it() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    stop(&f);
+    f.up(vec![]).unwrap();
+    assert!(resizes(&f).is_empty());
+}
+
+/// The engine refuses a resize while it runs, so this has to wait for a restart
+/// and has to say so.
+#[test]
+fn a_running_sandbox_is_not_resized_and_is_reported_as_needing_a_restart() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    let report = choose(&f, MORE).unwrap();
+    assert!(report.restart_needed);
+    assert_eq!(report.current.unwrap().memory_bytes, 4 * GIB);
+    assert_eq!(report.next.unwrap().memory_bytes, 6 * GIB);
+    assert!(resizes(&f).is_empty());
+    assert_eq!(status(&f).resources.unwrap().memory_bytes, 4 * GIB);
+}
+
+#[test]
+fn a_changed_choice_moves_the_digest_so_an_older_approval_no_longer_starts() {
+    let f = fixture();
+    let before = f.plan().digest;
+    choose(&f, MORE).unwrap();
+    assert_ne!(f.plan().digest, before);
+    let error = f
+        .call(Request::Up(UpArgs {
+            project: f.path(),
+            source: Source::default(),
+            plan_digest: before,
+            approve_ports: vec![],
+        }))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Refused);
+}
+
+#[test]
+fn a_person_may_pass_the_maximum_a_repository_is_held_to() {
+    // 24 GiB free with 2 kept back in the test host; the default maximum is 8.
+    let f = fixture_with(COMPOSE, Some("resources:\n  memory: 16G\n"));
+    assert_eq!(f.plan().resources.memory_bytes, 8 * GIB);
+    assert!(f.plan().resources.clamped);
+    choose(&f, proto::ResourceChoice { memory_bytes: Some(16 * GIB), ..Default::default() }).unwrap();
+    assert_eq!(f.plan().resources.memory_bytes, 16 * GIB);
+    assert!(!f.plan().resources.clamped);
+}
+
+#[test]
+fn a_choice_of_memory_replaces_a_larger_build_limit_from_the_repository() {
+    let f = fixture_with(COMPOSE, Some("resources:\n  memory: 4G\n  build:\n    memory: 6G\n"));
+    choose(&f, proto::ResourceChoice { memory_bytes: Some(5 * GIB), ..Default::default() }).unwrap();
+    let plan = f.plan().resources;
+    assert_eq!((plan.memory_bytes, plan.build_memory_bytes), (5 * GIB, 5 * GIB));
+}
+
+#[test]
+fn clearing_a_choice_goes_back_to_what_the_project_asks_for() {
+    let f = fixture_with(COMPOSE, Some("resources:\n  cpus: 3\n"));
+    choose(&f, MORE).unwrap();
+    assert_eq!(f.plan().resources.millicpus, 4000);
+    choose(&f, proto::ResourceChoice::default()).unwrap();
+    assert_eq!(f.plan().resources.millicpus, 3000);
+}
+
+#[test]
+fn a_choice_this_machine_cannot_spare_is_refused_and_not_kept() {
+    let f = fixture();
+    for choice in [
+        proto::ResourceChoice { memory_bytes: Some(23 * GIB), ..Default::default() },
+        proto::ResourceChoice { millicpus: Some(8000), ..Default::default() },
+        proto::ResourceChoice { disk_bytes: Some(191 * GIB), ..Default::default() },
+    ] {
+        let error = choose(&f, choice).unwrap_err();
+        assert!(error.message.contains("not enough"), "{}", error.message);
+    }
+    assert_eq!(f.plan().resources.memory_bytes, 4 * GIB);
+}
+
+#[test]
+fn nonsense_limits_are_refused() {
+    let f = fixture();
+    for choice in [
+        proto::ResourceChoice { memory_bytes: Some(1), ..Default::default() },
+        proto::ResourceChoice { millicpus: Some(0), ..Default::default() },
+        proto::ResourceChoice { millicpus: Some(1500), ..Default::default() },
+        proto::ResourceChoice { disk_bytes: Some(0), ..Default::default() },
+        proto::ResourceChoice { disk_bytes: Some(GIB + 1), ..Default::default() },
+    ] {
+        assert_eq!(choose(&f, choice).unwrap_err().code, ErrorCode::BadRequest, "{choice:?}");
+    }
+}
+
+#[test]
+fn a_disk_cannot_be_chosen_smaller_than_the_sandbox_has() {
+    let f = fixture_with(COMPOSE, Some("resources:\n  disk: 30G\n"));
+    f.up(vec![]).unwrap();
+    let error = choose(&f, proto::ResourceChoice { disk_bytes: Some(20 * GIB), ..Default::default() }).unwrap_err();
+    assert_eq!(error.code, ErrorCode::WrongState);
+    assert!(error.message.contains("only grow"), "{}", error.message);
+    choose(&f, proto::ResourceChoice { disk_bytes: Some(30 * GIB), ..Default::default() }).unwrap();
+}
+
+/// The project's own file can ask for less than the sandbox has, and the engine
+/// would refuse that at start.
+#[test]
+fn a_repository_asking_for_a_smaller_disk_does_not_stop_a_start() {
+    let f = fixture_with(COMPOSE, Some("resources:\n  disk: 30G\n"));
+    f.up(vec![]).unwrap();
+    stop(&f);
+    std::fs::write(f.project.path().join(brand::CONFIG_FILE), "resources:\n  disk: 20G\n").unwrap();
+    assert_eq!(f.plan().resources.disk_bytes, 30 * GIB);
+    f.up(vec![]).unwrap();
+    assert!(resizes(&f).is_empty());
+}
+
+#[test]
+fn a_failed_resize_does_not_start_it_or_change_the_record() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    stop(&f);
+    choose(&f, MORE).unwrap();
+    let before_starts = f.deps.engine.calls().iter().filter(|c| matches!(c, FakeCall::Start(_))).count();
+    f.deps.engine.refuse_resizes();
+    let error = f.up(vec![]).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Engine, "{}", error.message);
+    let starts = f.deps.engine.calls().iter().filter(|c| matches!(c, FakeCall::Start(_))).count();
+    assert_eq!(starts, before_starts);
+    assert_eq!(status(&f).resources.unwrap().memory_bytes, 4 * GIB);
+}
+
+#[test]
+fn status_reports_use_only_while_it_runs() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    let usage = status(&f).usage.unwrap();
+    assert_eq!(usage.cpu_millis, 500);
+    assert_eq!(usage.memory_limit_bytes, 4 * GIB);
+    assert_eq!(usage.disk_used_bytes, Some(3 * GIB));
+    stop(&f);
+    assert_eq!(status(&f).usage, None);
 }
 
 #[test]

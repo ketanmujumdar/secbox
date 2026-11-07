@@ -50,6 +50,47 @@ If the host has too little free, `resources` says `Refused` and exits 1. `up` re
 
 The maximum comes from the host's current free memory and disk. There is no user setting for it yet.
 
+## Changing limits in the app
+
+Open a project's **Settings** tab, type a memory, CPU or disk limit, and choose **Save limits**. A blank field uses what the project asks for, and **Use the project's own** clears all three. Under each field is what this machine can spare now.
+
+![The Settings tab with blank Memory, CPUs and Disk fields, showing what the machine can spare under each](../images/app/limits-form.png)
+
+If the sandbox is running, it keeps its limits until it restarts, and a **Restart to apply** button appears:
+
+![The Settings tab after saving 12 GB, 6 CPUs and 60 GB, with a Restart to apply button](../images/app/limits-saved.png)
+
+Restarting shows the plan first. Check the new limits under **Use up to**, then choose **Restart with this plan**:
+
+![The restart review, with Use up to showing 12 GB memory, 6 CPUs and 60 GB disk](../images/app/restart-review.png)
+
+The screenshots on this page come from the app's preview, with sample data.
+
+- Your choice is kept on this machine, never in the repository, and it replaces what `secbox.yaml` asks for. Choosing memory also sets the memory while building, so the VM is the size you typed.
+- It can go above the maximum a repository is held to. Only what this machine has to keep for itself can refuse it.
+- A running sandbox keeps its limits until it restarts. **Restart to apply** shows the new limits for review first, then stops and starts it. Its data stays.
+- A disk can only grow. To make one smaller, destroy the sandbox, which deletes its data.
+
+## Seeing what it uses
+
+While a sandbox runs, the **Resources** card on the **Overview** tab shows CPU, memory and disk in use against each limit, every 10 seconds. A bar turns amber at 70% and red at 90%.
+
+![The Overview tab of a running project, with the Resources card showing CPU, memory and disk in use](../images/app/overview-running.png)
+
+A stopped sandbox uses nothing, so the card shows its limits instead:
+
+![The Overview tab of a stopped project, with the Resources card listing its limits](../images/app/overview-stopped.png)
+
+- **Memory** leaves out the guest's page cache. The note under it says what this machine is holding for the VM, which stays high after a build.
+- **Disk** is what the sandbox has written to this machine's disk. It may not fall when files are deleted inside the sandbox.
+- Some of these figures come from inside the guest, so a compromised sandbox could misreport them. Nothing acts on them.
+
+The app follows your system's light or dark setting:
+
+![The Overview tab in dark mode, with the Resources card](../images/app/overview-dark.png)
+
+![The Settings tab in dark mode, with the limits form](../images/app/limits-dark.png)
+
 ## How much to give
 
 Measured with a seven-service Compose project (Go API and Next.js web app):
@@ -65,6 +106,6 @@ Budget the full VM size on the host. Memory is not handed back after a build, so
 
 ## Notes
 
-- `secbox resources` only shows the numbers. No VM is started.
+- `secbox resources` only shows the numbers. No VM is started, and its `--memory` and `--cpus` are not kept. To keep a limit, use the app or `secbox.yaml`.
 - Compose's own per-service memory and CPU limits still apply inside the VM.
-- Changing a limit takes effect on the next start. Live resizing is not supported.
+- A changed limit takes effect the next time a stopped sandbox starts. Live resizing is not supported.

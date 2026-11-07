@@ -461,6 +461,24 @@ async fn set_secret(
     blocking(move || ops::set_secret(&state.client, &project, &name, value, services).map_err(message)).await
 }
 
+/// The limits a person chose for this project, and how much this machine can spare.
+#[tauri::command]
+async fn resource_choices(project: String, state: State<'_, Arc<AppState>>) -> Result<proto::ResourceChoicesReport, String> {
+    let state = Arc::clone(&state);
+    blocking(move || ops::resource_choices(&state.client, &project).map_err(message)).await
+}
+
+/// Keeps a person's limits for this project, for its next start.
+#[tauri::command]
+async fn set_resources(
+    project: String,
+    choice: proto::ResourceChoice,
+    state: State<'_, Arc<AppState>>,
+) -> Result<proto::ResourceChoicesReport, String> {
+    let state = Arc::clone(&state);
+    blocking(move || ops::set_resources(&state.client, &project, choice).map_err(message)).await
+}
+
 /// The env files that could be used for this project's secrets.
 #[tauri::command]
 async fn secret_files(project: String, state: State<'_, Arc<AppState>>) -> Result<proto::SecretFilesReport, String> {
@@ -782,6 +800,8 @@ pub fn run() {
             secret_files,
             read_secret_file,
             use_secret_file,
+            resource_choices,
+            set_resources,
         ])
         .build(tauri::generate_context!())
         .expect("the app could not start");

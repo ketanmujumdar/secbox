@@ -11,7 +11,7 @@ use crate::process;
 use crate::redact::{Chain, LiteralRedactor, NoRedaction, Redactor};
 use crate::types::{
     CreateSpec, EngineLocation, ExecOutput, ExecRequest, GuestPath, LogOptions, OutputSink,
-    SandboxName, SandboxStatus, StreamEnd,
+    ResizeSpec, SandboxMetrics, SandboxName, SandboxStatus, StreamEnd,
 };
 use crate::Engine;
 
@@ -284,6 +284,51 @@ fn parse_status(json: &str) -> Result<SandboxStatus> {
     }
 }
 
+fn parse_metrics(json: &str) -> Result<SandboxMetrics> {
+    let bad = |stderr: String| EngineError::CommandFailed {
+        operation: "msb metrics".to_owned(),
+        code: Some(0),
+        stderr,
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| bad(format!("output was not JSON: {e}")))?;
+    let bytes = |field: &str| value.get(field).and_then(serde_json::Value::as_u64);
+    let required = |field: &str| bytes(field).ok_or_else(|| bad(format!("output had no {field} field")));
+    let percent = value
+        .get("cpu_percent")
+        .and_then(serde_json::Value::as_f64)
+        .ok_or_else(|| bad("output had no cpu_percent field".to_owned()))?;
+    Ok(SandboxMetrics {
+        // A saturating cast: a nonsense figure shows as a nonsense figure and
+        // goes no further.
+        cpu_millis: (percent * 10.0).round() as u32,
+        memory_used_bytes: required("memory_bytes")?,
+        memory_limit_bytes: required("memory_limit_bytes")?,
+        memory_host_bytes: required("memory_host_resident_bytes")?,
+        disk_used_bytes: bytes("upper_host_allocated_bytes"),
+    })
+}
+
+/// The engine answers a change it will not make, such as a smaller disk, with a
+/// plan and `applied: false`, so the exit code alone does not say it was done.
+fn check_resize(json: &str) -> Result<()> {
+    let bad = |stderr: String| EngineError::CommandFailed {
+        operation: "msb modify".to_owned(),
+        code: Some(0),
+        stderr,
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| bad(format!("output was not JSON: {e}")))?;
+    if value.get("applied").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    let why = value
+        .get("conflicts")
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "no reason given".to_owned());
+    Err(bad(format!("the change was not applied: {why}")))
+}
+
 impl Engine for MsbEngine {
     fn create(&self, spec: &CreateSpec) -> Result<()> {
         self.preflight()?;
@@ -339,6 +384,16 @@ impl Engine for MsbEngine {
             code: done.status.code(),
             stderr: done.stderr.trim().to_owned(),
         })
+    }
+
+    fn resize(&self, name: &SandboxName, spec: &ResizeSpec) -> Result<()> {
+        let done = self.run("msb modify", &argv::resize(name, spec), LIFECYCLE_TIMEOUT)?;
+        check_resize(&self.expect_success("msb modify", Some(name), done)?)
+    }
+
+    fn metrics(&self, name: &SandboxName) -> Result<SandboxMetrics> {
+        let done = self.run("msb metrics", &argv::metrics(name), self.timeout)?;
+        parse_metrics(&self.expect_success("msb metrics", Some(name), done)?)
     }
 
     /// A non-zero exit from the guest command is a normal result, not an error. The
@@ -723,6 +778,61 @@ mod tests {
             stub.engine().status(&name()),
             Err(EngineError::CommandFailed { .. })
         ));
+    }
+
+    /// Output of `msb metrics <name> --format json` from msb 0.7.13.
+    const METRICS: &str = r#"{"cpu_percent":126.59,"cpus":2,"disk_read_bytes":1,"disk_write_bytes":2,
+        "memory_available_bytes":3973107712,"memory_bytes":321859584,
+        "memory_host_resident_bytes":209584128,"memory_limit_bytes":4294967296,"name":"demo",
+        "net_rx_bytes":3,"net_tx_bytes":4,"state":"running","upper_free_bytes":null,
+        "upper_host_allocated_bytes":786317312,"upper_used_bytes":null,"uptime_secs":1.5}"#;
+
+    #[test]
+    fn metrics_read_the_figures_the_engine_reports() {
+        assert_eq!(
+            parse_metrics(METRICS).unwrap(),
+            SandboxMetrics {
+                cpu_millis: 1266,
+                memory_used_bytes: 321_859_584,
+                memory_limit_bytes: 4_294_967_296,
+                memory_host_bytes: 209_584_128,
+                disk_used_bytes: Some(786_317_312),
+            }
+        );
+    }
+
+    #[test]
+    fn metrics_without_the_disk_figure_leave_only_that_out() {
+        let json = METRICS.replace("\"upper_host_allocated_bytes\":786317312", "\"upper_host_allocated_bytes\":null");
+        assert_eq!(parse_metrics(&json).unwrap().disk_used_bytes, None);
+    }
+
+    #[test]
+    fn metrics_that_are_not_figures_are_an_error_rather_than_zero() {
+        assert!(parse_metrics("not json").is_err());
+        assert!(parse_metrics("{\"cpu_percent\":1.0}").is_err());
+    }
+
+    #[test]
+    fn a_resize_the_engine_did_not_apply_is_an_error() {
+        assert!(check_resize(r#"{"applied":true,"conflicts":[]}"#).is_ok());
+        let refused = check_resize(r#"{"applied":false,"conflicts":["root disk can only grow"]}"#).unwrap_err();
+        assert!(refused.to_string().contains("can only grow"), "{refused}");
+        assert!(check_resize("{}").is_err());
+    }
+
+    #[test]
+    fn resize_argv_names_the_disk_only_when_it_grows() {
+        let mut spec = ResizeSpec { memory_mib: 6144, cpus: 4, grow_disk_gib: None };
+        assert_eq!(
+            argv::resize(&name(), &spec),
+            ["modify", "demo", "--memory", "6144M", "--cpus", "4", "--format", "json"]
+        );
+        spec.grow_disk_gib = Some(30);
+        assert_eq!(
+            argv::resize(&name(), &spec),
+            ["modify", "demo", "--memory", "6144M", "--cpus", "4", "--root-disk", "30G", "--format", "json"]
+        );
     }
 
     const RUNNING: &str = r#"echo '{"name":"demo","status":"Running"}'"#;
