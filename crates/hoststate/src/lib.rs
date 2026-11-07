@@ -254,6 +254,12 @@ pub struct ProjectMeta {
     pub project_path: String,
     pub secrets: Vec<SecretRecord>,
     pub assignments: AssignmentSet,
+    /// Names the project expects but that have no value yet, such as those
+    /// read from a `.env.example`. Nothing is in the keychain for them. Left
+    /// out of the file when empty, so metadata without any stays readable by
+    /// earlier versions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending: Vec<SecretName>,
 }
 
 impl ProjectMeta {
@@ -269,7 +275,24 @@ impl ProjectMeta {
         self.secrets.iter().any(|r| &r.name == name)
     }
 
+    /// True if the name waits for a value and has none stored.
+    pub fn is_pending(&self, name: &SecretName) -> bool {
+        self.pending.contains(name)
+    }
+
+    /// Notes a name that needs a value. A name that already has one is left
+    /// alone, so a template cannot hide a stored secret. Returns true if added.
+    pub fn add_pending(&mut self, name: &SecretName) -> bool {
+        if self.has(name) || self.is_pending(name) {
+            return false;
+        }
+        self.pending.push(name.clone());
+        self.pending.sort();
+        true
+    }
+
     pub fn record(&mut self, name: &SecretName, source: SecretSource) {
+        self.pending.retain(|n| n != name);
         self.secrets.retain(|r| &r.name != name);
         self.secrets.push(SecretRecord {
             name: name.clone(),

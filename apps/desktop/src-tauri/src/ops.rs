@@ -24,6 +24,7 @@ use crate::client::{CallError, Client, Stopper};
 const STATUS_LIMIT: Duration = Duration::from_secs(15);
 const PLAN_LIMIT: Duration = Duration::from_secs(60);
 const BLOCKED_LIMIT: Duration = Duration::from_secs(15);
+const SECRETS_LIMIT: Duration = Duration::from_secs(15);
 const LOGS_LIMIT: Duration = Duration::from_secs(20);
 /// A comparison bundles the project inside the sandbox, then reviews it.
 const DIFF_LIMIT: Duration = Duration::from_secs(180);
@@ -493,6 +494,112 @@ pub fn approve_host(client: &Client, path: &str, host: &str) -> Result<String, C
     } else {
         format!("{host} is approved, and applies when this project starts.")
     })
+}
+
+/// One row of the Secrets tab. Names only: no request reads a value back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SecretRowView {
+    pub name: String,
+    /// False for a name with no value yet, such as one from a `.env.example`.
+    pub stored: bool,
+    pub services: Vec<String>,
+    /// Where it goes, in words: "api, worker: injected into the environment",
+    /// "no service", or "not set yet".
+    pub goes_to: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SecretsView {
+    pub rows: Vec<SecretRowView>,
+    /// The project's services, which are the only ones a secret can go to.
+    pub services: Vec<String>,
+    /// Why there are no services to choose from, when the project's files
+    /// could not be read.
+    pub note: Option<String>,
+}
+
+pub fn secrets(client: &Client, path: &str) -> Result<SecretsView, CallError> {
+    let reply = client.call(
+        Request::Secrets(ProjectArgs {
+            project: path.to_owned(),
+        }),
+        Some(SECRETS_LIMIT),
+    )?;
+    let Reply::Secrets(report) = reply else {
+        return Err(wrong_reply());
+    };
+    Ok(secrets_view(&report))
+}
+
+pub fn secrets_view(report: &proto::SecretsReport) -> SecretsView {
+    let rows = report
+        .secrets
+        .iter()
+        .map(|secret| {
+            let services: Vec<String> = secret.services.iter().map(|s| text::escape(s)).collect();
+            let goes_to = if !secret.stored {
+                "not set yet".to_owned()
+            } else if services.is_empty() {
+                "no service".to_owned()
+            } else {
+                let how = secret.route.as_deref().map(text::escape).unwrap_or_default();
+                format!("{}: {how}", services.join(", "))
+            };
+            SecretRowView {
+                name: text::escape(&secret.name),
+                stored: secret.stored,
+                services,
+                goes_to,
+            }
+        })
+        .collect();
+    SecretsView {
+        rows,
+        services: report.services.iter().map(|s| text::escape(s)).collect(),
+        note: report.services_note.as_deref().map(text::escape),
+    }
+}
+
+/// Stores one value through the daemon, which writes the keychain. The value
+/// moves into a [`proto::SecretText`] straight away, so this side's copy is
+/// zeroed when the request has been written.
+pub fn set_secret(
+    client: &Client,
+    path: &str,
+    name: &str,
+    value: String,
+    services: Vec<String>,
+) -> Result<String, CallError> {
+    let reply = client.call(
+        Request::SetSecret(proto::SetSecretArgs {
+            project: path.to_owned(),
+            name: name.to_owned(),
+            value: proto::SecretText::new(value),
+            services,
+        }),
+        Some(SECRETS_LIMIT),
+    )?;
+    let Reply::SetSecret(report) = reply else {
+        return Err(wrong_reply());
+    };
+    Ok(set_secret_message(&report))
+}
+
+pub fn set_secret_message(report: &proto::SetSecretReport) -> String {
+    let name = text::escape(&report.name);
+    let verb = if report.replaced { "Replaced" } else { "Stored" };
+    let goes = if report.services.is_empty() {
+        "It goes to no service yet.".to_owned()
+    } else {
+        let services: Vec<String> = report.services.iter().map(|s| text::escape(s)).collect();
+        format!("It goes to {}.", services.join(", "))
+    };
+    let when = if report.applies_on_next_start {
+        " The running sandbox gets it on its next start."
+    } else {
+        ""
+    };
+    format!("{verb} {name} in your keychain. {goes}{when}")
 }
 
 pub fn remove(client: &Client, path: &str) -> Result<String, CallError> {

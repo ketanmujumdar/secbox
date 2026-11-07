@@ -36,7 +36,11 @@ The **State** column says what is real today.
 
 The VM is one boundary around the whole project. **Inside it, a compromise can spread.** If the `app` service is compromised it can attack `db` on the same network.
 
-Because every service's secrets are delivered inside the same VM, a project with any secret assigned will not start if a service asks for a host mount, the Docker socket or `privileged: true`. One hostile service could otherwise read another service's secrets. Without secrets assigned, these are reported as findings.
+Because every service's secrets are delivered inside the same VM, a project with any secret assigned will not start if a service asks for a host mount, the Docker socket or `privileged: true`, or shares another service's mounts or namespaces (`volumes_from`, or `pid`, `ipc` or `network_mode` set to `service:...`). One hostile service could otherwise read another service's secrets. Without secrets assigned, these are reported as findings.
+
+A service you did not choose for a secret gets nothing of it: no environment variable, no file under `/run/secrets`, and no mention in the Compose override. What this cannot stop is a service that holds a secret passing it to another over the project's network.
+
+**The desktop app cannot read a secret.** Its Secrets tab sends a new value to the daemon, which stores it in the keychain. No request reads a value back, so a compromised window could replace a secret but not learn one.
 
 ## Things secbox cannot protect
 

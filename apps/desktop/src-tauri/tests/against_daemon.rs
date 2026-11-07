@@ -284,6 +284,40 @@ fn an_import_sends_its_ref_and_the_daemon_checks_it_before_fetching() {
 /// The rule from the build plan: the product name appears in Rust only in the
 /// brand crate. The main workspace's guard does not look in here.
 #[test]
+fn the_window_lists_names_and_stores_a_secret_through_the_daemon() {
+    let d = daemon();
+    let view = ops::secrets(&d.client, &d.path()).unwrap();
+    assert!(view.rows.is_empty());
+    assert_eq!(view.services, vec!["web", "api"]);
+    assert_eq!(view.note, None);
+
+    let said = ops::set_secret(
+        &d.client,
+        &d.path(),
+        "STRIPE_KEY",
+        "sk-window-sentinel-31".to_owned(),
+        vec!["api".to_owned()],
+    )
+    .unwrap();
+    assert_eq!(said, "Stored STRIPE_KEY in your keychain. It goes to api.");
+
+    let view = ops::secrets(&d.client, &d.path()).unwrap();
+    assert_eq!(view.rows.len(), 1);
+    assert!(view.rows[0].stored);
+    assert_eq!(view.rows[0].goes_to, "api: injected into the environment");
+    assert!(!format!("{view:?}").contains("sentinel"));
+
+    let refused = ops::set_secret(&d.client, &d.path(), "OTHER", "v".to_owned(), vec!["db".to_owned()])
+        .unwrap_err()
+        .message();
+    assert!(refused.contains("no service named db"), "{refused}");
+    let pasted = ops::set_secret(&d.client, &d.path(), "sk-live-pasted-9f", "v".to_owned(), vec![])
+        .unwrap_err()
+        .message();
+    assert!(!pasted.contains("9f"), "{pasted}");
+}
+
+#[test]
 fn rust_code_here_uses_the_brand_constants() {
     fn scan(dir: &Path, hits: &mut Vec<String>) {
         for entry in std::fs::read_dir(dir).unwrap() {

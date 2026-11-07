@@ -98,7 +98,8 @@ See [RAM, CPU and disk](../guides/resources.md).
 ## secrets
 
 ```text
-secbox secrets import [--dry-run] [--project PATH] FILE
+secbox secrets import [--dry-run] [--names-only] [--project PATH] FILE
+secbox secrets fill [--project PATH]
 secbox secrets set [OPTIONS] NAME
 secbox secrets list [--project PATH]
 secbox secrets rm [--project PATH] NAME
@@ -106,7 +107,8 @@ secbox secrets rm [--project PATH] NAME
 
 | Subcommand | |
 | --- | --- |
-| `import FILE` | Import a `.env` file as data into the keychain. Prints names only. `--dry-run` shows the names without touching the keychain |
+| `import FILE` | Import a `.env` file as data into the keychain. Prints names only. Empty values become empty names to fill in. A template such as `.env.example` adds only its names, empty, and its values are dropped; `--names-only` does the same for any file. `--dry-run` shows the names without recording anything |
+| `fill` | Type a value at a hidden prompt for each empty name. Enter on its own skips one |
 | `set NAME` | Store one secret, typed at a hidden prompt |
 | `list` | List secret names and where they go. Never reads the keychain |
 | `rm NAME` | Delete one secret from the keychain and the metadata |

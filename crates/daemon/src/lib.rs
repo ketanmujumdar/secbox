@@ -27,6 +27,7 @@ pub mod plan;
 pub mod remote;
 pub mod run;
 pub mod secret;
+pub mod secretset;
 pub mod server;
 pub mod settings;
 
@@ -202,6 +203,14 @@ impl Service {
             Request::Diff(args) => {
                 let project = self.open(&args.project)?;
                 diff::diff(self, &project, progress).map(Reply::Diff)
+            }
+            Request::Secrets(args) => {
+                let project = self.open(&args.project)?;
+                secretset::list(&project).map(Reply::Secrets)
+            }
+            Request::SetSecret(args) => {
+                let project = self.open(&args.project)?;
+                secretset::set(self, &project, args).map(Reply::SetSecret)
             }
         }
     }

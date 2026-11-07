@@ -337,16 +337,42 @@
           </section>
 
           <section class="panel hidden" data-panel="secrets">
+            <div class="card" id="secret-card">
+              <div class="card-head">
+                <h2>Your secrets</h2>
+                <div class="buttons"><button id="secret-add">+ Add a secret</button></div>
+              </div>
+              <p class="muted">Each value is stored in your keychain by the daemon. You can set or replace one here, but nothing in this window can show a value, even to you.</p>
+              <p class="warn-line hidden" id="secret-empty-note"></p>
+              <ul class="rows secret-rows" id="secret-rows"></ul>
+              <form class="secret-form hidden" id="secret-form" autocomplete="off">
+                <label class="field hidden" id="secret-name-field">
+                  <span class="label">Name</span>
+                  <input id="secret-name" class="mono" type="text" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="STRIPE_KEY">
+                </label>
+                <label class="field">
+                  <span class="label" id="secret-value-label">Value</span>
+                  <input id="secret-value" class="mono" type="password" spellcheck="false" autocapitalize="off" autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore placeholder="Typed here, never shown">
+                </label>
+                <div class="field">
+                  <span class="label">Give it to</span>
+                  <ul class="checks" id="secret-services"></ul>
+                  <p class="hint" id="secret-services-note"></p>
+                </div>
+                <div class="secret-form-actions">
+                  <button type="button" id="secret-cancel">Cancel</button>
+                  <button type="submit" class="primary" id="secret-save">Save to keychain</button>
+                </div>
+              </form>
+              <p class="hint">A service can read every secret it is given. New values reach a running sandbox on its next start. The daemon's audit log records the name, never the value.</p>
+            </div>
             <div class="card">
-              <h2>Secrets</h2>
-              <p>Secrets are stored in your keychain, and assigned ones are delivered on each start. Values are never shown here.</p>
-              <h4>Where this project's secrets could go</h4>
+              <h2>Where they could go</h2>
               <ul class="exposure" id="secrets-exposure"></ul>
               <p class="hint">A service can read what it is given. A secret held by the proxy also needs the gateway to terminate TLS, which is not settled, so a plan with one is refused.</p>
             </div>
             <div class="card">
-              <h2>Adding and assigning</h2>
-              <p class="muted">Managing secrets from this window is not built yet. Use the terminal:</p>
+              <h2>From the terminal</h2>
               <pre class="cmd" id="secrets-cmd"></pre>
             </div>
           </section>

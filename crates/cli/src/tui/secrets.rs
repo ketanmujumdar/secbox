@@ -104,9 +104,31 @@ mod tests {
         assert_eq!(panel.rows.len(), 2);
         assert_eq!(panel.rows[0].name, "API_KEY");
         assert_eq!(panel.rows[0].source, "prompt");
-        assert!(panel.rows[0].goes_to.contains("api, worker"), "{:?}", panel.rows[0]);
+        assert!(
+            panel.rows[0].goes_to.contains("api, worker"),
+            "{:?}",
+            panel.rows[0]
+        );
         assert_eq!(panel.rows[1].name, "DB_PASSWORD");
         assert_eq!(panel.rows[1].goes_to, "no service");
+    }
+
+    #[test]
+    fn empty_names_show_with_the_stored_ones() {
+        let (home, id) = state_with_secrets();
+        let home_os: OsString = home.path().into();
+        let env = |key: &str| (key == home_var()).then(|| home_os.clone());
+        let paths = StatePaths::locate(&env).unwrap();
+        let dir = paths.project(&ProjectId::new(id.clone()).unwrap());
+        let mut meta = crate::state::read_meta(&dir).unwrap().unwrap();
+        assert!(meta.add_pending(&SecretName::new("STRIPE_KEY").unwrap()));
+        assert!(!meta.add_pending(&SecretName::new("API_KEY").unwrap()));
+        write_meta(&dir, &meta).unwrap();
+        let panel = filled(home.path(), &id);
+        assert_eq!(panel.rows.len(), 3);
+        let stripe = panel.rows.iter().find(|r| r.name == "STRIPE_KEY").unwrap();
+        assert_eq!(stripe.source, "empty");
+        assert_eq!(stripe.goes_to, "not set yet");
     }
 
     #[test]

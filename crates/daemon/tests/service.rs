@@ -2273,3 +2273,344 @@ fn a_damaged_record_is_not_a_failure_and_says_something_may_be_missing() {
     assert!(report.cut_off);
     assert_eq!(report.events.len(), 2, "it reads the log again from what is left");
 }
+
+// Secrets from a client such as the desktop window: listed by name, and
+// stored write-only.
+
+impl SecretFixture {
+    fn meta_dir(&self) -> std::path::PathBuf {
+        let paths = StatePaths {
+            state: self._state.path().join(brand::STATE_DIR),
+            overridden: true,
+        };
+        let canonical = std::fs::canonicalize(self.project.path()).unwrap();
+        paths.project(&hoststate::project_id(&canonical).unwrap())
+    }
+
+    fn secrets(&self) -> proto::SecretsReport {
+        match self
+            .service
+            .handle(&Request::Secrets(ProjectArgs { project: self.path() }), &mut Quiet)
+            .unwrap()
+        {
+            Reply::Secrets(report) => report,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    fn set_secret(
+        &self,
+        name: &str,
+        value: &str,
+        services: &[&str],
+    ) -> Result<proto::SetSecretReport, proto::ApiError> {
+        match self.service.handle(
+            &Request::SetSecret(proto::SetSecretArgs {
+                project: self.path(),
+                name: name.to_owned(),
+                value: proto::SecretText::new(value.to_owned()),
+                services: services.iter().map(|s| (*s).to_owned()).collect(),
+            }),
+            &mut Quiet,
+        )? {
+            Reply::SetSecret(report) => Ok(report),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    fn stored(&self, name: &str) -> Option<String> {
+        self.deps
+            .store
+            .get(&secrets::SecretName::new(name).unwrap())
+            .unwrap()
+            .map(|v| v.expose().to_owned())
+    }
+}
+
+const TYPED: &str = "typed-in-the-window-7d41";
+
+#[test]
+fn secrets_lists_stored_and_empty_names_and_the_projects_services() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    let dir = f.meta_dir();
+    let mut meta = hoststate::read_meta(&dir).unwrap().unwrap();
+    meta.record(
+        &secrets::SecretName::new("ENCRYPTION_KEY").unwrap(),
+        hoststate::SecretSource::Prompt,
+    );
+    meta.add_pending(&secrets::SecretName::new("STRIPE_KEY").unwrap());
+    hoststate::write_meta(&dir, &meta).unwrap();
+
+    let report = f.secrets();
+    assert_eq!(report.services, vec!["web", "api"]);
+    assert_eq!(report.services_note, None);
+    let names: Vec<(&str, bool)> = report
+        .secrets
+        .iter()
+        .map(|s| (s.name.as_str(), s.stored))
+        .collect();
+    assert_eq!(names, vec![("ENCRYPTION_KEY", true), ("STRIPE_KEY", false)]);
+    assert_eq!(report.secrets[0].services, vec!["api"]);
+    assert_eq!(
+        report.secrets[0].route.as_deref(),
+        Some("injected into the environment")
+    );
+    assert!(!format!("{report:?}").contains(FAKE_VALUE));
+}
+
+#[test]
+fn set_secret_stores_the_value_assigns_it_and_fills_an_empty_name() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    let dir = f.meta_dir();
+    let mut meta = hoststate::read_meta(&dir).unwrap().unwrap();
+    meta.add_pending(&secrets::SecretName::new("STRIPE_KEY").unwrap());
+    hoststate::write_meta(&dir, &meta).unwrap();
+
+    let report = f.set_secret("STRIPE_KEY", TYPED, &["web", "api", "web"]).unwrap();
+    assert_eq!(report.name, "STRIPE_KEY");
+    assert!(!report.replaced);
+    assert_eq!(report.services, vec!["api", "web"]);
+    assert!(!report.applies_on_next_start);
+    assert!(!format!("{report:?}").contains(TYPED));
+    assert_eq!(f.stored("STRIPE_KEY").as_deref(), Some(TYPED));
+
+    let listed = f.secrets();
+    let stripe = listed.secrets.iter().find(|s| s.name == "STRIPE_KEY").unwrap();
+    assert!(stripe.stored, "no longer empty");
+    assert_eq!(stripe.services, vec!["api", "web"]);
+
+    // The plan now shows it going to both services.
+    let plan = f.plan();
+    let planned = plan.secrets.iter().find(|s| s.name == "STRIPE_KEY").unwrap();
+    assert_eq!(planned.services, vec!["api", "web"]);
+
+    // Nothing written to disk by the daemon holds the value.
+    for entry in walk(f._state.path()) {
+        let body = std::fs::read(&entry).unwrap_or_default();
+        assert!(
+            !String::from_utf8_lossy(&body).contains(TYPED),
+            "{}",
+            entry.display()
+        );
+    }
+}
+
+#[test]
+fn set_secret_keeps_the_delivery_chosen_before_and_can_unassign() {
+    let f = with_secret(secrets::Delivery::InjectedFile, &["api"]);
+    // The fixture assigns it without a record, so it counts as new.
+    f.set_secret("ENCRYPTION_KEY", TYPED, &["web"]).unwrap();
+    let again = f.set_secret("ENCRYPTION_KEY", TYPED, &["web"]).unwrap();
+    assert!(again.replaced);
+    let listed = f.secrets();
+    assert_eq!(
+        listed.secrets[0].route.as_deref(),
+        Some("injected as a file")
+    );
+    assert_eq!(listed.secrets[0].services, vec!["web"]);
+
+    f.set_secret("ENCRYPTION_KEY", TYPED, &[]).unwrap();
+    let listed = f.secrets();
+    assert!(listed.secrets[0].services.is_empty());
+    assert_eq!(listed.secrets[0].route, None);
+    assert_eq!(f.stored("ENCRYPTION_KEY").as_deref(), Some(TYPED));
+}
+
+#[test]
+fn set_secret_refuses_without_storing_and_never_repeats_a_bad_name() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+
+    let unknown = f.set_secret("NEW_KEY", TYPED, &["db"]).unwrap_err();
+    assert_eq!(unknown.code, ErrorCode::BadRequest);
+    assert!(unknown.message.contains("no service named db"), "{}", unknown.message);
+
+    let pasted = "sk-live-4f9a2b-pasted-into-the-name";
+    let bad_name = f.set_secret(pasted, TYPED, &[]).unwrap_err();
+    assert!(!bad_name.message.contains("4f9a2b"), "{}", bad_name.message);
+    assert!(!bad_name.message.contains(TYPED));
+
+    let empty = f.set_secret("NEW_KEY", "", &[]).unwrap_err();
+    assert!(empty.message.contains("empty"), "{}", empty.message);
+
+    let huge = "x".repeat(proto::MAX_SECRET_BYTES + 1);
+    assert!(f.set_secret("NEW_KEY", &huge, &[]).is_err());
+
+    assert_eq!(f.stored("NEW_KEY"), None);
+    assert_eq!(f.stored("ENCRYPTION_KEY").as_deref(), Some(FAKE_VALUE));
+    let listed = f.secrets();
+    assert!(listed.secrets.iter().all(|s| s.name != "NEW_KEY"));
+}
+
+fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+// A service that was not ticked in the window gets nothing: no environment
+// file, no mounted secret, and no line in the override that names one.
+
+/// What one start wrote for each service: its environment file's body, and
+/// the override's block for it.
+fn written_for(f: &SecretFixture) -> (Vec<(String, String)>, String) {
+    let written = f.deps.inner.engine.inputs();
+    let envs = written
+        .iter()
+        .filter_map(|(args, body)| {
+            let path = args.last()?;
+            let service = path.rsplit_once("/env.")?.1;
+            Some((service.to_owned(), body.clone()))
+        })
+        .collect();
+    let yaml = written
+        .iter()
+        .rev()
+        .find(|(_, body)| body.starts_with("# Written by the host"))
+        .map(|(_, body)| body.clone())
+        .unwrap_or_default();
+    (envs, yaml)
+}
+
+/// The lines of the override under one service, up to the next one.
+fn block<'a>(yaml: &'a str, service: &str) -> Vec<&'a str> {
+    let head = format!("  \"{service}\":");
+    let mut lines = yaml.lines().skip_while(|l| *l != head);
+    if lines.next().is_none() {
+        return Vec::new();
+    }
+    lines.take_while(|l| l.starts_with("    ")).collect()
+}
+
+#[test]
+fn a_secret_ticked_for_web_only_never_reaches_api() {
+    // ENCRYPTION_KEY goes to api; STRIPE_KEY is set from the window for web.
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.set_secret("STRIPE_KEY", TYPED, &["web"]).unwrap();
+    f.up().unwrap();
+    let (envs, yaml) = written_for(&f);
+
+    let env = |s: &str| envs.iter().find(|(name, _)| name == s).map(|(_, b)| b.clone());
+    assert_eq!(env("web").as_deref(), Some(format!("STRIPE_KEY={TYPED}\n").as_str()));
+    assert_eq!(env("api").as_deref(), Some(format!("ENCRYPTION_KEY={FAKE_VALUE}\n").as_str()));
+
+    // The override gives each service its own file and nothing else.
+    let web = block(&yaml, "web");
+    let api = block(&yaml, "api");
+    assert!(web.iter().any(|l| l.ends_with("/env.web\"")), "{yaml}");
+    assert!(!web.iter().any(|l| l.contains("env.api")), "{yaml}");
+    assert!(api.iter().any(|l| l.ends_with("/env.api\"")), "{yaml}");
+    assert!(!api.iter().any(|l| l.contains("env.web")), "{yaml}");
+    assert!(!yaml.contains(TYPED) && !yaml.contains(FAKE_VALUE), "{yaml}");
+}
+
+#[test]
+fn unticking_every_service_stops_delivery_but_keeps_the_value() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.set_secret("ENCRYPTION_KEY", TYPED, &[]).unwrap();
+    f.up().unwrap();
+    let (envs, yaml) = written_for(&f);
+    assert!(envs.is_empty(), "{envs:?}");
+    assert!(yaml.is_empty(), "no override at all: {yaml}");
+    let everything: String = f
+        .deps
+        .inner
+        .engine
+        .inputs()
+        .into_iter()
+        .map(|(_, body)| body)
+        .collect();
+    assert!(!everything.contains(TYPED));
+    assert_eq!(f.stored("ENCRYPTION_KEY").as_deref(), Some(TYPED));
+}
+
+#[test]
+fn a_file_secret_moved_to_web_is_mounted_in_web_and_not_in_api() {
+    let f = with_secret(secrets::Delivery::InjectedFile, &["api"]);
+    f.set_secret("ENCRYPTION_KEY", TYPED, &["web"]).unwrap();
+    f.up().unwrap();
+    let (envs, yaml) = written_for(&f);
+    assert!(envs.is_empty(), "a file secret is not put in an environment: {envs:?}");
+    let web = block(&yaml, "web");
+    assert!(web.contains(&"    secrets:") && web.contains(&"      - \"ENCRYPTION_KEY\""), "{yaml}");
+    assert!(block(&yaml, "api").is_empty(), "{yaml}");
+}
+
+#[test]
+fn a_service_that_shares_web_s_mounts_or_processes_stops_the_start() {
+    for sharing in [
+        "    volumes_from:\n      - web\n",
+        "    pid: \"service:web\"\n",
+        "    ipc: \"service:web\"\n",
+        "    network_mode: \"service:web\"\n",
+    ] {
+        let project = tempfile::tempdir().unwrap();
+        let compose = format!("{COMPOSE}{sharing}");
+        std::fs::write(project.path().join("compose.yaml"), compose).unwrap();
+        std::fs::create_dir_all(project.path().join("web")).unwrap();
+        std::fs::write(project.path().join("web/Dockerfile"), "FROM scratch\n").unwrap();
+        std::fs::write(
+            project.path().join(brand::CONFIG_FILE),
+            "resources:\n  memory: 4G\n  cpus: 2\n  disk: 30G\n",
+        )
+        .unwrap();
+        let f = with_secret_in(project, secrets::Delivery::Injected, &["web"], FAKE_VALUE);
+        let plan = f.plan();
+        assert!(
+            plan.blockers.iter().any(|b| b.contains("service api could reach past its container")),
+            "{sharing}: {:?}",
+            plan.blockers
+        );
+        assert!(f.up().is_err(), "{sharing}");
+        assert!(f.deps.inner.engine.inputs().is_empty(), "{sharing}: nothing was delivered");
+    }
+}
+
+#[test]
+fn a_dockerfile_project_offers_its_one_service_and_unticked_means_nowhere() {
+    let f = with_secret_in(dockerfile_project(), secrets::Delivery::Injected, &["app"], FAKE_VALUE);
+    let listed = f.secrets();
+    assert_eq!(listed.services, vec!["app"]);
+
+    // There is no other service to give it to.
+    let refused = f.set_secret("STRIPE_KEY", TYPED, &["api"]).unwrap_err();
+    assert!(refused.message.contains("no service named api"), "{}", refused.message);
+
+    // Stored without ticking app: kept, and delivered nowhere.
+    f.set_secret("STRIPE_KEY", TYPED, &[]).unwrap();
+    f.up().unwrap();
+    let (envs, _) = written_for(&f);
+    assert_eq!(envs.len(), 1, "{envs:?}");
+    assert_eq!(envs[0].0, "app");
+    assert!(!envs[0].1.contains("STRIPE_KEY"), "{envs:?}");
+    assert!(envs[0].1.contains("ENCRYPTION_KEY="));
+}
+
+#[test]
+fn a_dockerfile_projects_secret_is_never_part_of_the_build() {
+    let f = with_secret_in(dockerfile_project(), secrets::Delivery::Injected, &["app"], FAKE_VALUE);
+    f.up().unwrap();
+    // The build runs from the generated Compose file and the project's own
+    // Dockerfile. Neither, nor any command, carries the value: it reaches the
+    // running container through its environment file only.
+    assert!(!f.calls_as_text().contains(FAKE_VALUE));
+    let generated = f
+        .deps
+        .inner
+        .engine
+        .inputs()
+        .into_iter()
+        .filter(|(_, body)| !body.starts_with("ENCRYPTION_KEY="))
+        .map(|(_, body)| body)
+        .collect::<String>();
+    assert!(!generated.contains(FAKE_VALUE), "{generated}");
+}

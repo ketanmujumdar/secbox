@@ -60,12 +60,18 @@ attack in plain Docker for comparison, where seven of them succeeded.
 | Each service gets only the secrets assigned to it | `an_environment_secret_is_written_as_one_line_for_the_named_service_only`, `the_runnable_demo_starts_and_its_secret_goes_only_to_api_over_standard_input` | Tested in code |
 | The audit log and every plan name secrets, never values | `the_host_records_which_secret_went_where_by_name_only`, `a_plan_names_a_secret_and_its_route_but_never_its_value` | Tested in code |
 | A project with only a Dockerfile gets its secrets the same way | `a_dockerfile_projects_secret_reaches_its_one_service` | Tested in code |
+| A service not ticked for a secret gets no environment variable, no `/run/secrets` file and no line in the override for it | `a_secret_ticked_for_web_only_never_reaches_api`, `a_file_secret_moved_to_web_is_mounted_in_web_and_not_in_api`, `unticking_every_service_stops_delivery_but_keeps_the_value` | Tested in code. The daemon's real output also ran in real containers with Docker 29.9 and Compose 5.6, outside a VM (Nov 7, 2026) |
+| A Dockerfile-only project offers its one service, refuses any other, and its secrets never reach the build or the image | `a_dockerfile_project_offers_its_one_service_and_unticked_means_nowhere`, `a_dockerfile_projects_secret_is_never_part_of_the_build` | Tested in code; also ran in a real container, outside a VM: `RUN env` saw no secret and the image's own environment held none |
+| A template such as `.env.example` adds names only; its values are dropped unread and the keychain is not opened | `a_template_adds_empty_names_and_drops_its_values`, `a_template_never_hides_a_stored_value` | Tested in code |
+| The desktop window can set a value but never read one. It has no keychain access: the daemon stores the value, checks the name and that each service is in the project's Compose file, and never repeats a bad name | `set_secret_stores_the_value_assigns_it_and_fills_an_empty_name`, `set_secret_refuses_without_storing_and_never_repeats_a_bad_name`, `the_window_lists_names_and_stores_a_secret_through_the_daemon` | Tested in code; the window was seen only in a browser preview |
+| A value sent by a client never shows in debug output | `a_secret_value_never_shows_in_debug_output` (`proto`) | Tested in code |
 
 ### Isolation between services
 
 | Claim | Proof | Status |
 | --- | --- | --- |
 | With secrets assigned, `privileged`, host namespaces, extra capabilities, devices, Docker socket and VM mounts are blockers with no override | `a_service_that_could_reach_another_services_secret_stops_the_start` | Tested in code |
+| With secrets assigned, a service that shares another's mounts or namespaces (`volumes_from`, `pid`, `ipc` or `network_mode: service:...`) stops the start | `a_service_that_shares_web_s_mounts_or_processes_stops_the_start` | Tested in code |
 | Without secrets, the same settings are shown as findings, since they reach only the disposable VM | `the_same_settings_without_secrets_are_findings_and_not_blockers` | Tested in code |
 
 ### Network

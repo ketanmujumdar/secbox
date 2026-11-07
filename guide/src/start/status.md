@@ -22,7 +22,7 @@ secbox is an early build. This page says exactly which parts work, which are bui
 | `check [PATH]` | Works. Reads a project's Compose file as data and reports what it asks for. For a project with only a Dockerfile, reads its `EXPOSE` lines |
 | `open`, `checks` | Works. Editor safety checks, and the gate before launching an editor |
 | `resources [PATH]` | Works. Shows requested and resolved limits, but nothing applies them yet |
-| `secrets import/set/list/rm` | Works, with the OS keychain. Assigned secrets are delivered on each `up` by environment or file. The proxy route is refused |
+| `secrets import/set/fill/list/rm` | Works, with the OS keychain. A template such as `.env.example` adds names only, to fill in later. Assigned secrets are delivered on each `up` by environment or file. The proxy route is refused |
 | `net check POLICY METHOD URL` | Works. Explains a policy decision. Nothing enforces it yet |
 | `net blocked` | Works, through the daemon, on a sandbox created recently enough. Hostnames only |
 | `uninstall --purge` | Works. Removes the state folder only |
@@ -34,7 +34,7 @@ secbox is an early build. This page says exactly which parts work, which are bui
 | `mcp setup claude`, `mcp setup codex` | Works |
 | `diff [PATH]` | Built, through the daemon, tested against a fake engine only. **Never run on a real VM.** Lists what changed in a running sandbox, with risky files flagged first. Copies nothing out |
 | `export` | Not built. Exits with code 69 |
-| Desktop app | Early first cut. Run on Linux only, under a virtual display. macOS untested |
+| Desktop app | Early first cut. Run on Linux only, under a virtual display. macOS untested. The Secrets tab, which sets values through the daemon, has been seen only in a browser preview |
 
 ## What kind of project can it start
 

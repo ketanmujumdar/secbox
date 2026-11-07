@@ -39,6 +39,26 @@ pub fn every_build_host() -> Vec<&'static str> {
 /// the out-of-memory killer part way through a compile.
 pub const MIN_BUILD_MEMORY_BYTES: u64 = 3 * (1 << 30);
 
+/// The names of the services in a project's Compose file, or the one the
+/// host writes for a project with only a Dockerfile, in file order.
+pub fn service_names(project: &Project) -> Result<Vec<String>, ApiError> {
+    let detection = detect(&project.root)
+        .map_err(|e| bad(format!("cannot read the project: {}", text::escape(&e.to_string()))))?;
+    let mut ignored = Vec::new();
+    let files = match &detection.kind {
+        ProjectKind::Compose { file, overrides } => {
+            compose_project(project, file, overrides, &mut ignored)?
+        }
+        ProjectKind::Dockerfile { file } => dockerfile_project(project, file, &mut ignored)?,
+        _ => {
+            return Err(unsupported(
+                "this project has no Compose file or Dockerfile, so it has no services to give a secret to",
+            ))
+        }
+    };
+    Ok(files.model.services.iter().map(|s| s.name.clone()).collect())
+}
+
 pub fn build(
     service: &Service,
     project: &Project,

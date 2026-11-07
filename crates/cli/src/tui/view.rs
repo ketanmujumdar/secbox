@@ -1575,6 +1575,7 @@ fn secrets_body(model: &Model, screen: &mut Screen, at: Rect) {
         .into_iter()
         .map(|piece| (piece, Style::WindowDim)),
     )
+    .chain(fill_hint(panel, width))
     .collect();
     let footer_y = bottom.saturating_sub(footer.len()).max(y);
     for (offset, (text, style)) in footer.iter().enumerate() {
@@ -1624,7 +1625,9 @@ fn secrets_body(model: &Model, screen: &mut Screen, at: Rect) {
         fits
     };
     for secret in panel.rows.iter().take(shown) {
-        let style = if secret.goes_to == "no service" {
+        let style = if secret.source == EMPTY_SOURCE {
+            Style::WindowWarn
+        } else if secret.goes_to == "no service" {
             Style::WindowDim
         } else {
             Style::Window
@@ -2114,6 +2117,26 @@ pub fn first_key_len(bytes: &[u8]) -> usize {
         [] => 0,
         _ => 1,
     }
+}
+
+/// How the Secrets panel's rows mark a name that has no value yet.
+const EMPTY_SOURCE: &str = "empty";
+
+/// A line under the Secrets panel saying how to fill in the empty names, when
+/// there are any.
+fn fill_hint(panel: &SecretsPanel, width: usize) -> Vec<(String, Style)> {
+    let empty = panel.rows.iter().filter(|r| r.source == EMPTY_SOURCE).count();
+    if empty == 0 {
+        return Vec::new();
+    }
+    let text = format!(
+        "{empty} empty, with no value yet. Fill them in with: {} secrets fill",
+        brand::CLI_BIN
+    );
+    wrap(&text, width)
+        .into_iter()
+        .map(|piece| (piece, Style::WindowWarn))
+        .collect()
 }
 
 #[cfg(test)]
@@ -2795,6 +2818,22 @@ mod tests {
         ] {
             assert!(text.contains(phrase), "{phrase}: {text}");
         }
+    }
+
+    #[test]
+    fn empty_names_stand_out_and_the_panel_says_how_to_fill_them() {
+        let mut m = secrets_model();
+        let text = plain(&m, 120, 30);
+        assert!(!text.contains("secrets fill"), "{text}");
+        m.secrets.rows.push(SecretRow {
+            name: "STRIPE_KEY".to_owned(),
+            source: "empty".to_owned(),
+            goes_to: "not set yet".to_owned(),
+        });
+        let text = plain(&m, 120, 30);
+        assert!(text.contains("1 empty, with no value yet"), "{text}");
+        assert!(text.contains("secrets fill"), "{text}");
+        assert!(text.contains("Values are never shown"), "{text}");
     }
 
     /// Whatever the number of secrets and the size of the screen, the words
