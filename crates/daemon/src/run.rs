@@ -28,7 +28,7 @@ use projectcheck::detect::{COMPOSE_FILES, COMPOSE_OVERRIDE_FILES};
 use crate::secret::{self, Delivered};
 use crate::settings::{Approvals, SandboxRecord};
 use crate::{
-    audit, bad, engine_error, internal, plan, refused, wrong_state, Progress, Project, Service,
+    audit, bad, engine_error, internal, person, plan, refused, wrong_state, Progress, Project, Service,
 };
 
 /// The guest image. The spike ran this one, and it already carries Compose.
@@ -70,6 +70,28 @@ const STOP_LIMIT: Duration = Duration::from_secs(120);
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
 
+/// What the person is asked before a start: "start shop in its sandbox,
+/// with 2 secrets, able to reach 3 hosts, opening port 3000".
+fn start_reason(project: &Project, plan: &proto::PlanReport, ports: &[u16]) -> String {
+    let mut hosts: Vec<&str> = plan.network.build_hosts.iter().chain(&plan.network.run_hosts).map(String::as_str).collect();
+    hosts.sort_unstable();
+    hosts.dedup();
+    let secrets = match plan.secrets.len() {
+        0 => "with no secrets".to_owned(),
+        n => format!("with {}", person::count(n, "secret", "secrets")),
+    };
+    let reach = match hosts.len() {
+        0 => "reaching no hosts".to_owned(),
+        n => format!("able to reach {}", person::count(n, "host", "hosts")),
+    };
+    let ports = match ports {
+        [] => String::new(),
+        [one] => format!(", opening port {one}"),
+        many => format!(", opening ports {}", many.iter().map(u16::to_string).collect::<Vec<_>>().join(" ")),
+    };
+    format!("start {} in its sandbox, {secrets}, {reach}{ports}", person::project_name(project))
+}
+
 pub fn up(
     service: &Service,
     project: &Project,
@@ -102,6 +124,10 @@ pub fn up(
 
     let state = status_of(service, project)?;
     let ports = approved_ports(service, project, &plan, args, state)?;
+
+    // Everything that can refuse on its own has; now the person decides.
+    // Starting delivers the secrets, so this is asked on every start.
+    service.ask_person(project, person::Act::Start, &start_reason(project, &plan, &ports), progress)?;
 
     progress.step("sandbox", None);
     let fresh = matches!(state, SandboxState::None);

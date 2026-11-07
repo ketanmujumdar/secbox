@@ -260,6 +260,10 @@ impl Progress {
     /// the project or the sandbox, so it is escaped and cut here, and a line
     /// break inside one becomes a space rather than a broken box.
     pub fn push(&mut self, step: &str, detail: Option<&str>) {
+        if let Some(line) = proto::person_step_line(step, detail) {
+            self.steps.push(cut(&proto::text::escape(&line), Self::LONGEST));
+            return;
+        }
         let text = match detail {
             Some(detail) => format!("{step}: {detail}"),
             None => step.to_owned(),
@@ -2142,6 +2146,17 @@ fn fill_hint(panel: &SecretsPanel, width: usize) -> Vec<(String, Style)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_start_box_says_when_a_prompt_is_up_or_nobody_was_asked() {
+        let mut progress = Progress::new("Starting shop");
+        progress.push(proto::STEP_CONFIRM, Some("Touch ID or your login password"));
+        progress.push(proto::STEP_UNCONFIRMED, None);
+        progress.push("sandbox", None);
+        assert!(progress.steps[0].starts_with("Confirm with Touch ID or your login password"), "{:?}", progress.steps);
+        assert!(progress.steps[1].contains("no fingerprint"), "{:?}", progress.steps);
+        assert_eq!(progress.steps[2], "sandbox");
+    }
 
     fn model() -> Model {
         Model {

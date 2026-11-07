@@ -12,6 +12,7 @@ secbox is an early build. This page says exactly which parts work, which are bui
 - Starting, stopping and inspecting a sandbox (`up`, `down`, `status`, `logs`, `shell`, `exec`) are built. Most of that was tested against a fake engine. `logs`, `shell` and `exec` have run against a real sandbox.
 - The only network rule on real traffic is the engine's own **hostname allowlist**. The fuller policy engine (HTTP methods, paths) explains decisions but enforces nothing yet.
 - `logs` and `net blocked` replace secret values with their names.
+- On macOS, starting a sandbox, `net allow` and every push wait for your Touch ID or password, asked by the daemon itself. Built and tested with a stand-in person, **never run on a real Mac**. Linux has no prompt. See [Confirming with Touch ID](../concepts/confirming.md).
 - `diff` shows what changed in a sandbox and flags risky files, tested against a fake engine only. There is still **no way to bring changes back** to your machine: `export` is not built.
 
 ## Command by command
@@ -33,6 +34,7 @@ secbox is an early build. This page says exactly which parts work, which are bui
 | `mcp serve` | Built, never run on a real VM |
 | `mcp setup claude`, `mcp setup codex` | Works |
 | `diff [PATH]` | Built, through the daemon, tested against a fake engine only. **Never run on a real VM.** Lists what changed in a running sandbox, with risky files flagged first. Copies nothing out |
+| Touch ID before `up`, `net allow` and each push | macOS only. Built, tested with a stand-in person, **never shown on a real Mac**. No prompt on Linux |
 | `export` | Not built. Exits with code 69 |
 | Desktop app | Early first cut. Run on Linux only, under a virtual display. macOS untested. The Secrets tab, which sets values through the daemon, has been seen only in a browser preview |
 

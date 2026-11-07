@@ -20,7 +20,11 @@ Usually not. A Compose project runs with its own Compose files. A project with o
 
 ### Which platforms are supported?
 
-macOS on Apple Silicon, and Linux with KVM. Not Windows.
+macOS on Apple Silicon, and Linux with KVM. Not Windows. Confirming with Touch ID is macOS only: on Linux, starts, approvals and pushes go ahead without a prompt.
+
+### Why does it ask for my fingerprint?
+
+Before it starts a sandbox, lets one reach a new hostname, or pushes, so that a program running as you can ask but only you can agree. Read what the prompt names, and cancel it if you did not ask. See [Confirming with Touch ID](concepts/confirming.md).
 
 ### Where do my changes go?
 

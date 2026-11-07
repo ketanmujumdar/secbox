@@ -45,6 +45,31 @@ pub use wire::{read_frame, write_frame, WireError, MAX_FRAME_BYTES};
 /// rather than guessing at a field's meaning.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// The progress step sent while the daemon waits for the person at this
+/// computer to confirm an action in the system's own prompt. Its detail is how
+/// they are being asked, such as "Touch ID or your login password". A client
+/// shows that it is waiting and does nothing else: the answer is not its to give.
+pub const STEP_CONFIRM: &str = "confirm";
+/// The progress step sent when this computer has no way to ask the person, so
+/// the action goes ahead on the client's request alone.
+pub const STEP_UNCONFIRMED: &str = "unconfirmed";
+
+/// The line a client shows for [`STEP_CONFIRM`] or [`STEP_UNCONFIRMED`], or
+/// `None` for any other step. The same words everywhere, so the person learns
+/// one sentence: a prompt they did not expect means something else asked.
+pub fn person_step_line(step: &str, detail: Option<&str>) -> Option<String> {
+    match step {
+        STEP_CONFIRM => Some(format!(
+            "Confirm with {} in the system prompt. Check it names what you asked for; if you did not ask, cancel it.",
+            text::escape(detail.unwrap_or("the system prompt"))
+        )),
+        STEP_UNCONFIRMED => Some(
+            "This computer has no fingerprint or password check, so this goes ahead on this request alone.".to_owned(),
+        ),
+        _ => None,
+    }
+}
+
 /// What a client writes: exactly one of these, then it reads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1359,5 +1384,16 @@ mod tests {
     fn an_error_message_cannot_fill_the_screen() {
         let error = ApiError::new(ErrorCode::Internal, "x".repeat(100_000));
         assert!(error.message.chars().count() < 2100);
+    }
+
+    #[test]
+    fn the_person_steps_have_one_wording_and_others_have_none() {
+        let asking = person_step_line(STEP_CONFIRM, Some("Touch ID or your login password")).unwrap();
+        assert!(asking.starts_with("Confirm with Touch ID or your login password"), "{asking}");
+        assert!(asking.contains("cancel it"));
+        let hostile = person_step_line(STEP_CONFIRM, Some("\x1b]0;evil\x07")).unwrap();
+        assert!(!hostile.contains('\x1b') && !hostile.contains('\x07'), "{hostile:?}");
+        assert!(person_step_line(STEP_UNCONFIRMED, None).unwrap().contains("no fingerprint"));
+        assert_eq!(person_step_line("build", Some("web")), None);
     }
 }

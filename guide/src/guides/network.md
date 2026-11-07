@@ -13,6 +13,8 @@ In the desktop app, press **Approve** on a row of Blocked traffic. In the termin
 
 Name one exact host, with no patterns. The approval is stored on your machine, never in the project, and the sandbox has no way to ask for it itself.
 
+On a Mac, the daemon asks you to confirm with Touch ID or your password first ("let shop reach api.example.com while it runs, and restart it"). Cancel, and nothing is saved or restarted. On Linux there is no prompt. See [Confirming with Touch ID](../concepts/confirming.md).
+
 **Everything in the sandbox can then reach that host**, including any service holding a secret. What runs inside chooses which names it looks up, so a name can itself be data trying to get out. Approve only names you recognise.
 
 The engine cannot change the rules of an existing sandbox, so secbox replaces it: it stops the services, keeps the disk, creates a new sandbox with the new rules, copies the data across and starts the services again. This takes about half a minute on the small project it was measured on.

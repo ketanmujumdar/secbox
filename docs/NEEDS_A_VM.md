@@ -41,6 +41,18 @@ Built on Nov 5, 2026 (`docs/GIT.md`). Tested end to end with real Git on both si
 - [ ] The desktop app: Import, then the plan, then the Git tab's Status, Pull, Commit and Push.
 - [ ] The desktop app's Secrets tab on a Mac: set an empty name's value with only `web` ticked, start the project, and check inside `api` that the variable is unset and `/run/secrets` holds none of it. macOS must not ask for keychain access when the daemon later reads a value it stored itself. Typing in the field must not offer to save a password.
 
+## Confirming with Touch ID
+
+Built on Nov 7, 2026 (`crates/personcheck`). Compiled and linted for `aarch64-apple-darwin` from Linux; every rule around it is tested with a stand-in person. **The prompt itself has never been shown on a Mac.**
+
+- [ ] `secboxd` started from a terminal: `secbox up` shows macOS's prompt with the reason, Touch ID confirms it, and Cancel ends `up` with "not confirmed" and no sandbox.
+- [ ] `secboxd` started by the desktop app at login (no terminal): the prompt still appears.
+- [ ] A Mac with no Touch ID, or with the lid closed: the password prompt appears instead.
+- [ ] Over SSH, with no screen: refused at once with "there is no screen to ask on", not left waiting.
+- [ ] No answer for two minutes: the prompt goes away and the request is refused.
+- [ ] Two requests at once (desktop Start and `secbox git push`): the prompts come one after the other, each with its own reason.
+- [ ] A push from the `git_push` MCP tool: the prompt names the branch and commit, and Cancel sends GitHub nothing.
+
 ## AI agents through MCP
 
 Built on Nov 5, 2026 (`docs/MCP.md`). Tested against the real daemon logic with `FakeEngine` and a stub engine binary. The real binary was run on pipes against a real daemon that had no engine, and Claude Code 2.1.318 reported the server as connected. **Nothing ran in a VM.**

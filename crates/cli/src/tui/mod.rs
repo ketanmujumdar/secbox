@@ -825,7 +825,15 @@ fn git_on_selected(deps: &mut Deps, model: &mut Model, push: bool) -> bool {
     } else {
         proto::GitOp::Pull
     };
-    let result = crate::git_cmd::call(std::path::Path::new(&row.path), op, deps);
+    let request = crate::git_cmd::request_for(std::path::Path::new(&row.path), op, deps);
+    let client = deps.daemon;
+    let mut unchecked = false;
+    let result = crate::git_cmd::report_of(
+        client.call(request, &mut |step, detail| {
+            unchecked |= step == proto::STEP_UNCONFIRMED;
+            show_person_step(deps, model, step, detail);
+        }),
+    );
     model.busy = None;
     let report = match result {
         Ok(report) => report,
@@ -855,6 +863,10 @@ fn git_on_selected(deps: &mut Deps, model: &mut Model, push: bool) -> bool {
     if let Some(reason) = &report.refused {
         lines.push(String::new());
         lines.push(reason.clone());
+    }
+    if unchecked {
+        lines.push(String::new());
+        lines.push(NOT_CHECKED.to_owned());
     }
     model.dialog = Some(Dialog::notice(
         title,
@@ -947,6 +959,7 @@ fn start(deps: &mut Deps, model: &mut Model, pending: Pending) {
     // call is still running.
     let client = deps.daemon;
     let mut drawn = Instant::now();
+    let mut unchecked = false;
     let result = client.call(
         Request::Up(proto::UpArgs {
             project: pending.project,
@@ -955,10 +968,14 @@ fn start(deps: &mut Deps, model: &mut Model, pending: Pending) {
             approve_ports: pending.ports,
         }),
         &mut |step, detail| {
+            unchecked |= step == proto::STEP_UNCONFIRMED;
             if let Some(progress) = &mut model.progress {
                 progress.push(step, detail);
             }
-            if drawn.elapsed() >= PROGRESS_EVERY {
+            // Drawn at once: the system prompt is already up.
+            if show_person_step(deps, model, step, detail) {
+                drawn = Instant::now();
+            } else if drawn.elapsed() >= PROGRESS_EVERY {
                 draw(deps, model);
                 drawn = Instant::now();
             }
@@ -967,6 +984,7 @@ fn start(deps: &mut Deps, model: &mut Model, pending: Pending) {
     model.busy = None;
     model.progress = None;
     model.message = Some(match result {
+        Ok(Reply::Up(report)) if unchecked => format!("Started in {}s. {NOT_CHECKED}", report.seconds),
         Ok(Reply::Up(report)) => format!("Started in {}s.", report.seconds),
         Ok(_) => "The daemon answered something else.".to_owned(),
         Err(error) => logs::failure(&error).text,
@@ -977,20 +995,44 @@ fn start(deps: &mut Deps, model: &mut Model, pending: Pending) {
     model.message = said;
 }
 
+/// Added to what an action reports when this computer could not ask the
+/// person, so a start, approval or push on Linux never reads as confirmed.
+const NOT_CHECKED: &str = "Not confirmed by fingerprint: this computer has no fingerprint or password check, so it went ahead on this request alone.";
+
+/// While the daemon waits for the person to confirm in the system's own
+/// prompt, the busy line says so, drawn at once. Returns whether `step` was
+/// that. Nothing here can answer the prompt: it only says one is up.
+fn show_person_step(deps: &mut Deps, model: &mut Model, step: &str, detail: Option<&str>) -> bool {
+    let Some(line) = proto::person_step_line(step, detail) else {
+        return false;
+    };
+    if step == proto::STEP_CONFIRM {
+        model.busy = Some(line);
+        draw(deps, model);
+    }
+    true
+}
+
 fn approve(deps: &mut Deps, model: &mut Model, host: &str) {
     let Some(row) = model.selected_row().cloned() else {
         return;
     };
     model.busy = Some("Approving it. Its services are restarting.".to_owned());
     draw(deps, model);
-    let result = deps.daemon.call(
+    let client = deps.daemon;
+    let mut unchecked = false;
+    let result = client.call(
         Request::ApproveHost(proto::ApproveHostArgs {
             project: row.path,
             host: host.to_owned(),
         }),
-        &mut |_, _| {},
+        &mut |step, detail| {
+            unchecked |= step == proto::STEP_UNCONFIRMED;
+            show_person_step(deps, model, step, detail);
+        },
     );
     model.busy = None;
+    let unchecked = unchecked && result.is_ok();
     model.message = Some(match result {
         Ok(Reply::ApproveHost(report)) if report.already_allowed => "It was already allowed. Nothing changed.".to_owned(),
         Ok(Reply::ApproveHost(report)) if report.applied => {
@@ -1000,7 +1042,16 @@ fn approve(deps: &mut Deps, model: &mut Model, host: &str) {
         Ok(_) => "The daemon answered something else.".to_owned(),
         Err(error) => logs::failure(&error).text,
     });
+    if unchecked {
+        if let Some(said) = &mut model.message {
+            said.push(' ');
+            said.push_str(NOT_CHECKED);
+        }
+    }
+    // Reading the list again clears the line, so what happened is kept.
+    let said = model.message.take();
     load_projects(deps, model);
+    model.message = said;
 }
 
 fn stop(deps: &mut Deps, model: &mut Model, destroy: bool) {

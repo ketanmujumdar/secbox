@@ -266,6 +266,7 @@ async fn git(
     op: String,
     commit_message: Option<String>,
     args: Option<Vec<String>>,
+    on_progress: Channel<ProgressEvent>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<ops::GitView, String> {
     let state = Arc::clone(&state);
@@ -281,7 +282,8 @@ async fn git(
             "run" => proto::GitOp::Run { args: args.unwrap_or_default() },
             _ => return Err("That is not a Git operation this window offers.".to_owned()),
         };
-        ops::git(&state.client, &project, op, ops::host_identity(), ops::agent_socket()).map_err(message)
+        ops::git(&state.client, &project, op, ops::host_identity(), ops::agent_socket(), &mut forward(&on_progress))
+            .map_err(message)
     })
     .await
 }
@@ -325,6 +327,18 @@ struct ProgressEvent {
     detail: Option<String>,
 }
 
+/// Hands each step the daemon reports to the window, escaped. Among them is
+/// the one that says the daemon is waiting for the person to confirm in the
+/// system's own prompt; the window can only say so, never answer it.
+fn forward(channel: &Channel<ProgressEvent>) -> impl FnMut(&str, Option<&str>) + '_ {
+    move |step, detail| {
+        let _ = channel.send(ProgressEvent {
+            step: proto::text::escape(step),
+            detail: detail.map(proto::text::escape),
+        });
+    }
+}
+
 #[tauri::command]
 async fn up(
     app: AppHandle,
@@ -337,13 +351,7 @@ async fn up(
     let state = Arc::clone(&state);
     let result = blocking(move || {
         state.plans.take_matching(&project, &digest, &ports)?;
-        ops::up(&state.client, &project, &digest, ports, &mut |step, detail| {
-            let _ = on_progress.send(ProgressEvent {
-                step: proto::text::escape(step),
-                detail: detail.map(proto::text::escape),
-            });
-        })
-        .map_err(message)
+        ops::up(&state.client, &project, &digest, ports, &mut forward(&on_progress)).map_err(message)
     })
     .await;
     refresh_tray(&app);
@@ -371,10 +379,14 @@ async fn approve_host(
     app: AppHandle,
     project: String,
     host: String,
+    on_progress: Channel<ProgressEvent>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<String, String> {
     let state = Arc::clone(&state);
-    let result = blocking(move || ops::approve_host(&state.client, &project, &host).map_err(message)).await;
+    let result = blocking(move || {
+        ops::approve_host(&state.client, &project, &host, &mut forward(&on_progress)).map_err(message)
+    })
+    .await;
     refresh_tray(&app);
     result
 }

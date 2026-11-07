@@ -103,6 +103,8 @@ Before a push sends anything, Git lists which branches it will change and from w
 
 It also refuses a push that carries push options, which the remote would act on.
 
+If the list passes, the daemon then asks the person, on macOS, with Touch ID or their password, in a prompt naming each branch, its old and new commit, and the remote. Only after they confirm does any byte go on; if they cancel, `ssh` is stopped and the remote has received nothing. Linux has no prompt. See `crates/daemon/src/person.rs`.
+
 What the daemon can't tell: a force-push that rewrites a feature branch looks the same as a normal push, because telling them apart means reading the pack, and the host never parses data from the VM. Turn on branch protection on GitHub to stop those. Every push and every refusal is in the audit log, with the branch and both commit ids.
 
 ## How your SSH key is used

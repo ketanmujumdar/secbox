@@ -97,6 +97,14 @@ impl Deps for RealDeps {
         })
     }
 
+    fn person_check(&self) -> Option<&'static str> {
+        personcheck::method()
+    }
+
+    fn confirm(&self, reason: &str) -> personcheck::Outcome {
+        personcheck::confirm(reason)
+    }
+
     fn fetch_remote(
         &self,
         mirror: &Path,

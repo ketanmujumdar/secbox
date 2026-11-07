@@ -12,6 +12,7 @@
 
 - [How it works](concepts/how-it-works.md)
 - [Security model](concepts/security-model.md)
+- [Confirming with Touch ID](concepts/confirming.md)
 
 # Guides
 

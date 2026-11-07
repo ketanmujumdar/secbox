@@ -475,12 +475,22 @@ pub fn up(
     }
 }
 
-pub fn approve_host(client: &Client, path: &str, host: &str) -> Result<String, CallError> {
-    let reply = client.call(
+/// The daemon asks the person to confirm before anything changes, and
+/// `progress` hears when it does.
+pub fn approve_host(
+    client: &Client,
+    path: &str,
+    host: &str,
+    progress: &mut dyn FnMut(&str, Option<&str>),
+) -> Result<String, CallError> {
+    let reply = client.exchange(
         Request::ApproveHost(proto::ApproveHostArgs {
             project: path.to_owned(),
             host: host.to_owned(),
         }),
+        progress,
+        &mut |_, _| true,
+        None,
         None,
     )?;
     let Reply::ApproveHost(report) = reply else {
@@ -1176,6 +1186,7 @@ pub fn git(
     op: proto::GitOp,
     identity: Option<proto::GitIdentity>,
     agent: Option<String>,
+    progress: &mut dyn FnMut(&str, Option<&str>),
 ) -> Result<GitView, CallError> {
     let name = match &op {
         proto::GitOp::Status => "Status".to_owned(),
@@ -1184,14 +1195,18 @@ pub fn git(
         proto::GitOp::Push => "Push".to_owned(),
         proto::GitOp::Run { args } => format!("git {}", text::escape_short(args.first().map_or("", String::as_str), 40)),
     };
-    let reply = client.call(
+    // A push waits inside this call while the daemon asks the person.
+    let reply = client.exchange(
         Request::Git(proto::GitArgs {
             project: project.to_owned(),
             action: op,
             identity,
             ssh_auth_sock: agent,
         }),
+        progress,
+        &mut |_, _| true,
         Some(GIT_LIMIT),
+        None,
     )?;
     let Reply::Git(report) = reply else {
         return Err(wrong_reply());

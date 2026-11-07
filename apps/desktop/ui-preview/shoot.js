@@ -87,6 +87,20 @@ async function run(browser, scheme) {
   await shot(p, scheme, '04-starting');
   await p.context().close();
 
+  // Starting, waiting for the person at the system's Touch ID prompt.
+  p = await page(browser, scheme, 'confirming');
+  await p.click('#btn-start');
+  await p.waitForSelector('[data-page=review]:not(.hidden)');
+  await p.click('#review-start');
+  await p.waitForSelector('#starting-steps li.active[data-key=confirm]');
+  await p.waitForTimeout(200);
+  const note = await p.textContent('#starting-note');
+  if (!note.includes('Touch ID or your login password') || !note.includes('cancel it')) {
+    problems.push(`[${scheme}] the start page does not say a prompt is up and what to check: ${note}`);
+  }
+  await shot(p, scheme, '04a-confirming');
+  await p.context().close();
+
   // A finished start.
   p = await page(browser, scheme, 'stopped');
   await p.click('#btn-start');

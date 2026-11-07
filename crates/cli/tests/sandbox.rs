@@ -36,6 +36,11 @@ struct Facts {
     git_remote: std::sync::Mutex<Option<PathBuf>>,
     /// Every relay connection: service and agent socket.
     relayed: std::sync::Mutex<Vec<(gitbroker::GitService, Option<PathBuf>)>>,
+    /// A stand-in for the person at the keyboard: `None` means this computer
+    /// cannot ask anyone, `Some(answer)` that they are asked and answer so.
+    person: std::sync::Mutex<Option<bool>>,
+    /// Every reason the person was asked to confirm, in order.
+    asked: std::sync::Mutex<Vec<String>>,
 }
 
 /// Runs system Git to set up or inspect a test repository. The code under
@@ -107,6 +112,18 @@ impl daemon::Deps for Facts {
         std::fs::create_dir_all(mirror.join("objects")).unwrap();
         std::fs::write(mirror.join("HEAD"), format!("{commit}\n")).unwrap();
         Ok(commit)
+    }
+
+    fn person_check(&self) -> Option<&'static str> {
+        self.person.lock().unwrap().map(|_| "a test fingerprint")
+    }
+
+    fn confirm(&self, reason: &str) -> personcheck::Outcome {
+        self.asked.lock().unwrap().push(reason.to_owned());
+        match *self.person.lock().unwrap() {
+            Some(true) => personcheck::Outcome::Confirmed,
+            _ => personcheck::Outcome::Declined("you cancelled".to_owned()),
+        }
     }
 
     fn spawn_ssh(
@@ -258,6 +275,8 @@ fn harness_and_facts() -> (Harness, Arc<Facts>) {
         fetch_error: std::sync::Mutex::new(None),
         git_remote: std::sync::Mutex::new(None),
         relayed: std::sync::Mutex::new(Vec::new()),
+        person: std::sync::Mutex::new(None),
+        asked: std::sync::Mutex::new(Vec::new()),
     });
     let service = daemon::Service::new(
         StatePaths {
@@ -1716,6 +1735,64 @@ fn git_run(w: &RelayWorld, args: &[&str]) -> common::Output {
     all.extend_from_slice(args);
     w.h.run(&all, "")
 }
+
+#[test]
+fn a_push_waits_for_the_person_and_names_the_branch_and_commits() {
+    let w = relay_world();
+    *w.facts.person.lock().unwrap() = Some(true);
+    test_git(&w.work, &["switch", "-q", "-c", "feature/one"]);
+    std::fs::write(w.work.join("new.txt"), "made in the sandbox\n").unwrap();
+    assert_eq!(w.h.run(&["git", "commit", "-m", "Add", "--project", REMOTE], "").code, 0);
+    let push = w.h.run(&["git", "push", "--project", REMOTE], "");
+    assert_eq!(push.code, 0, "{}", push.all());
+    let tip = test_git(&w.work, &["rev-parse", "HEAD"]);
+    let asked = w.facts.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(asked[0].starts_with("push new branch feature/one at "), "{}", asked[0]);
+    assert!(asked[0].contains(&tip[..7]) && asked[0].contains(REMOTE), "{}", asked[0]);
+    assert!(push.all().contains("a test fingerprint"), "says it is waiting: {}", push.all());
+    assert_eq!(test_git(&w.bare, &["rev-parse", "refs/heads/feature/one"]), tip);
+}
+
+#[test]
+fn a_push_the_person_declines_sends_the_remote_nothing() {
+    let w = relay_world();
+    *w.facts.person.lock().unwrap() = Some(false);
+    test_git(&w.work, &["switch", "-q", "-c", "feature/two"]);
+    std::fs::write(w.work.join("new.txt"), "x\n").unwrap();
+    assert_eq!(w.h.run(&["git", "commit", "-m", "Add", "--project", REMOTE], "").code, 0);
+    let push = w.h.run(&["git", "push", "--project", REMOTE], "");
+    assert_eq!(push.code, cli::exit::FAILED, "{}", push.all());
+    assert!(push.all().contains("not confirmed"), "{}", push.all());
+    let branches = test_git(&w.bare, &["branch", "--list", "feature/two"]);
+    assert_eq!(branches, "", "the remote got the branch anyway");
+    let log = std::fs::read_to_string(w.h.state().join("daemon-audit.jsonl")).unwrap_or_default();
+    assert!(log.contains("person_declined"), "{log}");
+}
+
+#[test]
+fn a_push_typed_as_a_git_command_is_asked_about_too() {
+    let w = relay_world();
+    *w.facts.person.lock().unwrap() = Some(false);
+    test_git(&w.work, &["switch", "-q", "-c", "feature/three"]);
+    std::fs::write(w.work.join("new.txt"), "x\n").unwrap();
+    assert_eq!(w.h.run(&["git", "commit", "-m", "Add", "--project", REMOTE], "").code, 0);
+    let push = git_run(&w, &["push", "origin", "feature/three"]);
+    assert_ne!(push.code, 0, "{}", push.all());
+    assert_eq!(w.facts.asked.lock().unwrap().len(), 1);
+    assert_eq!(test_git(&w.bare, &["branch", "--list", "feature/three"]), "");
+}
+
+#[test]
+fn a_pull_never_asks_the_person() {
+    let w = relay_world();
+    *w.facts.person.lock().unwrap() = Some(false);
+    test_git(&w.work, &["checkout", "-q", "-B", "main", "--track", "origin/main"]);
+    let pull = w.h.run(&["git", "pull", "--project", REMOTE], "");
+    assert_eq!(pull.code, 0, "{}", pull.all());
+    assert!(w.facts.asked.lock().unwrap().is_empty());
+}
+
 
 #[test]
 fn typed_git_commands_run_in_the_sandbox_and_push_through_the_relay() {

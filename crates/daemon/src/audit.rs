@@ -69,6 +69,14 @@ pub enum Action {
     BaselineMissing,
     /// A bundle from a sandbox was reviewed on the host. Counts only.
     ChangesReviewed,
+    /// The person at this computer confirmed one action with the system's own
+    /// prompt. The subject names the action.
+    PersonConfirmed,
+    /// The person cancelled the prompt, or it failed or timed out. Nothing was done.
+    PersonDeclined,
+    /// This computer has no way to ask the person, so the action went ahead on
+    /// the client's word alone.
+    PersonUnchecked,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

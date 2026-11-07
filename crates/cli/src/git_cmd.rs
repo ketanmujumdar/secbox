@@ -66,7 +66,16 @@ pub fn run(args: &GitArgsCli, deps: &mut Deps) -> i32 {
         },
         GitOpCli::Run { args } => GitOp::Run { args: args.clone() },
     };
-    match call(&project, op, deps) {
+    // Steps are printed as they come, so the line asking for a fingerprint is
+    // on screen while the system prompt is.
+    let request = request_for(&project, op, deps);
+    let client = deps.daemon;
+    let answer = client.call(request, &mut |step, detail| {
+        if let Some(line) = proto::person_step_line(step, detail) {
+            tell!(deps, "{line}");
+        }
+    });
+    match report_of(answer) {
         Ok(report) => {
             print_report(&report, deps);
             if report.ok {
@@ -84,14 +93,26 @@ pub fn run(args: &GitArgsCli, deps: &mut Deps) -> i32 {
 
 /// Sends one Git request with the person's identity and agent. Shared with
 /// the MCP tools, so an agent's pull and push are exactly the person's.
+///
+/// A push waits here while the daemon asks the person to confirm it, so a
+/// caller with nowhere to show that, such as an MCP tool, simply waits.
 pub(crate) fn call(project: &Path, op: GitOp, deps: &Deps) -> Result<GitReport, String> {
-    let request = Request::Git(GitArgs {
+    report_of(deps.daemon.call(request_for(project, op, deps), &mut |_, _| {}))
+}
+
+/// The request [`call`] sends, for a caller that shows the steps itself.
+pub(crate) fn request_for(project: &Path, op: GitOp, deps: &Deps) -> Request {
+    Request::Git(GitArgs {
         project: project.to_string_lossy().into_owned(),
         action: op,
         identity: host_identity(deps),
         ssh_auth_sock: agent_socket(deps),
-    });
-    match deps.daemon.call(request, &mut |_, _| {}) {
+    })
+}
+
+/// What a Git request's answer means, for a caller that sent it itself.
+pub(crate) fn report_of(answer: Result<Reply, crate::client::CallError>) -> Result<GitReport, String> {
+    match answer {
         Ok(Reply::Git(report)) => Ok(report),
         Ok(_) => Err("the daemon answered something else".to_owned()),
         Err(error) => Err(esc(&error.message())),

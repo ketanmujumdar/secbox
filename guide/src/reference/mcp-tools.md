@@ -10,7 +10,7 @@ The tools `secbox mcp serve` offers to an AI agent, with their arguments and lim
 | `read_file` | `path` (required) | Reads a file under `/work` | 1 MiB, 60 s |
 | `write_file` | `path`, `content` (both required) | Replaces a file under `/work`, making its folders. The content goes in on stdin and the path as an argument, never as part of a script | 1 MiB, 60 s |
 | `git` | `args` (required): the command and its arguments without the leading `git`, such as `["switch", "-c", "fix"]` | Runs any Git command in the clone, inside the sandbox. `fetch`, `pull` and `ls-remote` go through the relay as a fetch, and `push` as a push with its checks. Every other command gets no relay. Options before the command, and `--upload-pack`, `--receive-pack`, `--exec`, `-o` on a networked command, are refused | 64 arguments, 16 KiB each; 5 min, or 15 min with the relay |
-| `git_status`, `git_pull`, `git_commit`, `git_push` | `git_commit`: `message` (required), `paths` | Shortcuts: status, pull with merge, commit everything or the paths given, push the current branch | 60 s, or 15 min with the relay |
+| `git_status`, `git_pull`, `git_commit`, `git_push` | `git_commit`: `message` (required), `paths` | Shortcuts: status, pull with merge, commit everything or the paths given, push the current branch. On a Mac a push waits for the person's Touch ID, and fails if they cancel | 60 s, or 15 min with the relay |
 
 The Git tools are only for a project imported from a remote. See [Git without handing over your keys](../guides/git.md).
 

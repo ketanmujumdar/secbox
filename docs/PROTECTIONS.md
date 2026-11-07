@@ -46,6 +46,7 @@ attack in plain Docker for comparison, where seven of them succeeded.
 | A sidecar reads `/proc` with `pid: host`, or goes `privileged` | Container escape | Refused at plan time when the project has secrets | **Tested in code** |
 | A sidecar mounts the VM's `/run` where secrets are delivered | Container escape | Refused at plan time when the project has secrets | **Tested in code** |
 | A service prints its key, or an encoded form of it | Careless code, or an attacker using logs as a channel | `logs` and `net blocked` show `[NAME]` instead | **Tested in code** |
+| A take-home "coding assignment" runs code on the engineer's machine as soon as it is set up | Binance, $6.3B (Oct 2026), the step that put the attacker on a second engineer's laptop | The project runs only in the VM. `check` and the plan read its files as data. The host export never reads the project's own `.git/config`, so a filter driver planted there (`[filter "x"] smudge = <cmd>` plus `* filter=x`) does not run when `up` snapshots the folder | `a_filter_driver_in_the_repo_config_does_not_run_on_snapshot`: **tested in code**. Before this, `up` on such a folder ran the command on the host |
 | Malware in the app's own environment reaches the daemon | Host-side token theft | The desktop app starts the daemon with eight named variables and a fixed `PATH` | **Tested in code** |
 
 ## Each protection, and its proof
@@ -107,11 +108,53 @@ attack in plain Docker for comparison, where seven of them succeeded.
 | `shell` and `exec` run the engine with an emptied environment | `the_engine_gets_a_cleared_environment_and_a_fixed_argument_list`, `shell_runs_the_engine_with_a_cleared_environment_and_prints_the_notice_first` | Tested in code; ran on a real VM |
 | The desktop app passes the daemon only the variables it reads | `the_daemon_gets_only_the_variables_it_reads` | Tested in code |
 | The desktop app opens no local web port and shows sandbox text only as plain text | `apps/desktop/src-tauri/capabilities/main.json`, CSP in `tauri.conf.json` | By design; ran under Xvfb on Linux |
-| Starting anything needs a person to see the plan and agree; the agreement is bound to the plan's digest | `crates/daemon/tests/service.rs` digest tests | Tested in code |
+| Starting anything needs the plan's digest, so what starts is exactly what was shown | `crates/daemon/tests/service.rs` digest tests | Tested in code. Any process running as you can fetch and send that digest, so on its own it does not prove a person agreed |
+| On macOS, starting a sandbox, allowing a hostname and each relayed push wait for the person in the system's own prompt (Touch ID or login password), put up by the daemon and naming exactly what will happen. Declining does nothing: no sandbox, no saved host, and no bytes to the remote | `a_start_the_person_declines_creates_nothing`, `allowing_a_host_the_person_declines_saves_nothing`, `a_push_the_person_declines_sends_the_remote_nothing`, `a_push_typed_as_a_git_command_is_asked_about_too` | Tested in code with a stand-in person. The macOS prompt is compiled and linted for macOS but **has never run on a Mac** |
 
 ## What it does not protect against yet
 
 Say these alongside any claim above.
+
+### Measured against the Binance attack (Oct 2026)
+
+Binance's report describes: a fake Homebrew site from a search ad; a fake job
+interview whose assignment ran on setup; an internal AI tool used to reach two
+more engineers; a container-deployment token taken from one of their laptops;
+and a container that asked the wallet signing service to sign. secbox answers
+only the assignment step, and only if the assignment never touches the host
+first. Once code runs as you on your machine, secbox does not stop it:
+
+- **Code running as you can still go around the daemon.** Starting, `net
+  allow` and pushes now wait for Touch ID on a Mac, which stops a tricked AI
+  agent or a script that uses secbox's own API. But such code can run the
+  engine itself to `exec` into a running sandbox and read the secrets
+  delivered there, use your SSH agent directly, or replace secbox's programs.
+  `shell` and `exec` are not asked about, since they go to the engine anyway.
+  On Linux nothing is asked yet. Status: **partly done**.
+- **Cloning or unzipping the assignment on the host, then opening it in an
+  editor, runs before secbox is involved.** Use `secbox new git@…` instead: it
+  fetches into secbox's own state folder, where git never runs a checkout,
+  hook or the remote's config, and nothing opens the files. `secbox open` checks automatic tasks and
+  Workspace Trust, but it opens the host copy: an editor extension or language
+  server in a trusted folder can still run project code (rust-analyzer runs
+  `build.rs`, Python tools run the project's interpreter). Status: **not yet**.
+- **A deploy or signing credential in a sandbox is readable by every
+  dependency of the service that gets it**, and can be used directly against
+  the host it is meant for, which the allowlist has to permit. Binance lost a
+  single container-deployment token. Do not give a sandbox production deploy,
+  wallet or signing credentials. Proxy-injected secrets, where the value never
+  enters the VM, are refused for now.
+- **A push does not consult `diff`'s flags.** On a Mac every push, including
+  an AI agent's `git_push`, now needs your fingerprint, and the prompt names
+  the branch and commit. It does not yet say that the commit adds a CI
+  workflow or an AI tool hook, so read `secbox diff` before you agree. Status:
+  **partly done**.
+- **secbox itself has no signed release.** The Homebrew formula is a
+  placeholder. A fake download site is how the Binance attack began, so a
+  release needs published checksums and a signature before anyone is told
+  where to install it from. Status: **not yet**.
+
+### Other gaps
 
 - **Build hosts stay open while the project runs.** The engine fixes a
   sandbox's rules when it is made. A service holding a key can reach the build
