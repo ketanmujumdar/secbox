@@ -27,6 +27,11 @@ struct TestDeps {
     snapshot_fails: bool,
     /// A file the snapshot has that the working tree does not.
     snapshot_adds: Option<(&'static str, &'static str)>,
+    /// The person at the keyboard: `None` when this computer cannot ask
+    /// anyone, `Some(answer)` when they are asked and answer so.
+    person: Option<bool>,
+    /// Every reason the person was asked to confirm, in order.
+    asked: std::sync::Mutex<Vec<String>>,
 }
 
 impl TestDeps {
@@ -35,7 +40,13 @@ impl TestDeps {
             engine: FakeEngine::new(),
             snapshot_fails: false,
             snapshot_adds: None,
+            person: None,
+            asked: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    fn with_person(answer: bool) -> Self {
+        Self { person: Some(answer), ..Self::new() }
     }
 }
 
@@ -62,6 +73,19 @@ impl Deps for TestDeps {
 
     fn store(&self, _project: &ProjectId) -> Box<dyn SecretStore> {
         Box::new(MemoryStore::default())
+    }
+
+    fn person_check(&self) -> Option<&'static str> {
+        self.person.map(|_| "a test fingerprint")
+    }
+
+    fn confirm(&self, reason: &str) -> personcheck::Outcome {
+        self.asked.lock().unwrap().push(reason.to_owned());
+        if self.person == Some(true) {
+            personcheck::Outcome::Confirmed
+        } else {
+            personcheck::Outcome::Declined("you cancelled".to_owned())
+        }
     }
 
     fn snapshot(
@@ -698,9 +722,8 @@ fn a_snapshot_that_cannot_be_taken_stops_the_start() {
     )
     .unwrap();
     let deps = Arc::new(TestDeps {
-        engine: FakeEngine::new(),
         snapshot_fails: true,
-        snapshot_adds: None,
+        ..TestDeps::new()
     });
     let service = Service::new(
         StatePaths {
@@ -773,7 +796,7 @@ fn every_step_of_a_start_is_reported_to_whoever_is_watching() {
         .unwrap();
     assert_eq!(
         steps.0,
-        vec!["planning", "sandbox", "snapshot", "docker", "secrets", "build"]
+        vec!["planning", "unconfirmed", "sandbox", "snapshot", "docker", "secrets", "build"]
     );
 }
 
@@ -2272,4 +2295,86 @@ fn a_damaged_record_is_not_a_failure_and_says_something_may_be_missing() {
     let report = blocked(&f).unwrap();
     assert!(report.cut_off);
     assert_eq!(report.events.len(), 2, "it reads the log again from what is left");
+}
+
+fn fixture_asking(answer: bool) -> Fixture {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("compose.yaml"), COMPOSE).unwrap();
+    std::fs::create_dir_all(project.path().join("web")).unwrap();
+    std::fs::write(project.path().join("web/Dockerfile"), "FROM scratch\n").unwrap();
+    std::fs::write(
+        project.path().join(brand::CONFIG_FILE),
+        "resources:\n  memory: 4G\n  cpus: 2\n  disk: 30G\n",
+    )
+    .unwrap();
+    fixture_from(project, TestDeps::with_person(answer))
+}
+
+fn audit_log(f: &Fixture) -> String {
+    std::fs::read_to_string(f._state.path().join(brand::STATE_DIR).join("daemon-audit.jsonl")).unwrap_or_default()
+}
+
+#[test]
+fn a_start_asks_the_person_and_names_what_it_will_do() {
+    let f = fixture_asking(true);
+    f.up(vec![3000]).unwrap();
+    let asked = f.deps.asked.lock().unwrap().clone();
+    let name = f.project.path().file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(asked[0].starts_with(&format!("start {name} in its sandbox, with no secrets, able to reach ")), "{}", asked[0]);
+    assert!(asked[0].ends_with(", opening port 3000"), "{}", asked[0]);
+    assert!(audit_log(&f).contains("person_confirmed"));
+}
+
+#[test]
+fn a_start_the_person_declines_creates_nothing() {
+    let f = fixture_asking(false);
+    let error = f.up(vec![]).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Refused);
+    assert!(error.message.contains("not confirmed with a test fingerprint"), "{}", error.message);
+    assert!(
+        !f.deps.engine.calls().iter().any(|c| matches!(c, FakeCall::Create(_))),
+        "a sandbox was made without the person"
+    );
+    assert!(audit_log(&f).contains("person_declined"));
+}
+
+#[test]
+fn a_start_is_asked_about_after_the_plan_check_so_a_stale_plan_never_prompts() {
+    let f = fixture_asking(true);
+    let error = f
+        .call(Request::Up(UpArgs {
+            project: f.path(),
+            source: Source::default(),
+            plan_digest: "not the plan".to_owned(),
+            approve_ports: vec![],
+        }))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Refused);
+    assert!(f.deps.asked.lock().unwrap().is_empty());
+}
+
+#[test]
+fn allowing_a_host_the_person_declines_saves_nothing() {
+    let f = fixture_asking(false);
+    let error = approve(&f, "api.example.com").unwrap_err();
+    assert_eq!(error.code, ErrorCode::Refused);
+    assert!(!plan_hosts(&f).contains(&"api.example.com".to_owned()));
+    let asked = f.deps.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].contains("reach api.example.com"), "{}", asked[0]);
+}
+
+#[test]
+fn allowing_a_host_the_person_confirms_is_saved() {
+    let f = fixture_asking(true);
+    approve(&f, "api.example.com").unwrap();
+    assert!(plan_hosts(&f).contains(&"api.example.com".to_owned()));
+}
+
+#[test]
+fn without_a_way_to_ask_the_client_is_told_and_the_log_says_so() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    assert!(audit_log(&f).contains("person_unchecked"));
 }

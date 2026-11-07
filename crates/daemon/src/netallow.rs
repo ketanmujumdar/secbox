@@ -28,7 +28,7 @@ use engine::{argv, ExecRequest};
 use proto::{ApiError, ApproveHostReport, SandboxState, Source, UpArgs};
 
 use crate::settings::{Approvals, SandboxRecord};
-use crate::{audit, bad, engine_error, internal, plan, refused, run, secret, Progress, Project, Service};
+use crate::{audit, bad, engine_error, internal, person, plan, refused, run, secret, Progress, Project, Service};
 
 /// The disk the current sandbox mounts, if it replaced an earlier one.
 const KEPT_DISK: &str = "previous-root.raw";
@@ -86,6 +86,13 @@ pub fn approve(
     if before.run_hosts.contains(&host) && in_place {
         return Ok(report(host, state, false, true, started));
     }
+
+    // Nothing is saved or stopped until the person says yes.
+    let reason = format!(
+        "let {} reach {host} while it runs, and restart it",
+        person::project_name(project)
+    );
+    service.ask_person(project, person::Act::AllowHost, &reason, progress)?;
 
     let mut approvals = before.clone();
     if !approvals.run_hosts.contains(&host) {

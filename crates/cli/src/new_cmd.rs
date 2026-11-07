@@ -179,11 +179,13 @@ pub fn run(args: &NewArgsCli, deps: &mut Deps) -> i32 {
             approve_ports: ports,
         }),
         COMMAND,
-        &mut |deps, step, _detail| {
+        &mut |deps, step, detail| {
             if let Some((done, since)) = current.take() {
                 finished(deps, &done, since.elapsed(), remote, has_secrets);
             }
-            if let Some(line) = starting(step) {
+            if let Some(line) = proto::person_step_line(step, detail) {
+                say!(deps, "{} {line}", paint(deps.color, Tone::Warn, "?"));
+            } else if let Some(line) = starting(step) {
                 say!(deps, "{} {line}", dot(deps));
             }
             current = Some((step.to_owned(), Instant::now()));
@@ -514,6 +516,9 @@ fn starting(step: &str) -> Option<&'static str> {
 /// A step is over once the next one begins, or the start finishes.
 fn finished(deps: &mut Deps, step: &str, took: Duration, remote: bool, has_secrets: bool) {
     let what = match step {
+        // Nobody was asked, and the line saying so is already printed.
+        proto::STEP_UNCONFIRMED => return,
+        proto::STEP_CONFIRM => "Confirmed by you".to_owned(),
         "planning" => "Plan checked again: it is the one you approved".to_owned(),
         "sandbox" => "Virtual machine started".to_owned(),
         "snapshot" if remote => {

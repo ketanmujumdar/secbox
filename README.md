@@ -126,6 +126,12 @@ You don't need a clone on your machine. The sandbox gets a real clone with its w
 
 The terminal UI clones a remote with `g` on its New project page, and pulls and pushes with `p` and `P` on a project's Changes tab. The desktop app clones from *New project*, with an optional branch, tag or commit, and pulls, commits and pushes from a project's Changes tab. AI agents get `git_status`, `git_pull`, `git_commit` and `git_push` over MCP, with the same checks. [docs/GIT.md](docs/GIT.md) explains all of it, including what the relay can't see.
 
+## Confirming with Touch ID
+
+Starting a sandbox, `net allow` and every push through the relay wait for you to confirm in macOS's own prompt, with Touch ID or your login password. The daemon puts it up itself, naming the project and what will happen ("push my-change (1f2a120 to 9c3d4e5) from shop to git@github.com:org/shop.git"), so a program running as you, or an AI agent, can ask but cannot answer. Cancelling does nothing at all. The CLI, terminal interface and desktop app only show that a prompt is up.
+
+On Linux there is no prompt yet: the action goes ahead as before, and every client and the audit log say so. Code already running as you can still reach the engine and your SSH agent without secbox. Built and tested with a stand-in person; **never run on a real Mac**. See [the guide page](guide/src/concepts/confirming.md).
+
 ## AI agents (Claude Code, Codex)
 
 The code is in the sandbox, so an agent on your machine can't see it. `secbox mcp serve` is an MCP server the agent starts as a child process. It speaks over stdin and stdout, never a port, and is bound to one project. Its tools (`status`, `logs`, `exec`, `read_file`, `write_file`) act only inside that project's sandbox, through the daemon, with the same checks as `secbox exec`.

@@ -23,7 +23,7 @@ Each project gets a whole VM with its own Docker daemon, rather than one VM per 
 ## What happens on `secbox up`
 
 1. **Plan.** The CLI asks the daemon for a plan. The daemon reads the project's files as data, without running anything: the Compose file, `secbox.yaml`, which secrets are assigned, and the commit to start from. The plan has a digest, a fingerprint of exactly what was shown.
-2. **Approve.** The CLI shows you the plan and asks which ports to forward. The approval it sends back carries the plan's digest. If anything changed since the plan was made, the daemon refuses.
+2. **Approve.** The CLI shows you the plan and asks which ports to forward. The approval it sends back carries the plan's digest. If anything changed since the plan was made, the daemon refuses. On a Mac, the daemon then asks you itself, with Touch ID or your password, in a prompt naming the project, its secrets, hosts and ports. See [Confirming with Touch ID](confirming.md).
 3. **Snapshot.** The daemon exports the chosen Git commit, by default `HEAD`, and copies it into the VM at `/work`. Uncommitted changes are not included. Files whose names say they hold secrets never enter the snapshot: `.env` files, private keys, cloud and tool credentials, password stores, Terraform state and Git metadata. Example files such as `.env.example` are kept. The `.git` folder itself is not copied.
 4. **Boot.** The engine creates the VM with the resource limits, the approved ports and the allowed hostnames, then starts Docker inside it.
 5. **Build and start.** Docker Compose builds and starts the stack inside the VM. Secrets assigned to a service are delivered to that service only.

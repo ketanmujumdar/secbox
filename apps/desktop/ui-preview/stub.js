@@ -4,13 +4,15 @@
 // frontendDist is ../ui only.
 //
 // The scene comes from ?scene=: empty, projects, starting (holds the start
-// part-way), stopped, nodaemon.
+// part-way), confirming (holds it at the Touch ID prompt), stopped, nodaemon.
 'use strict';
 
 (() => {
   const params = new URLSearchParams(location.search);
   const scene = params.get('scene') || 'projects';
   const hold = scene === 'starting';
+  const holdAtConfirm = scene === 'confirming';
+  const METHOD = 'Touch ID or your login password';
 
   const STATE = '/Users/ana/.secbox';
   const CRM = STATE + '/remote/7f3a9c0e21/demo_shop';
@@ -18,7 +20,7 @@
   const BILLING = '/Users/ana/code/billing-api';
 
   const projects = scene === 'empty' ? [] : [
-    { name: 'demo_shop', path: CRM, state: scene === 'stopped' ? 'stopped' : 'running', label: scene === 'stopped' ? 'Stopped' : 'Running' },
+    { name: 'demo_shop', path: CRM, state: (scene === 'stopped' || scene === 'confirming') ? 'stopped' : 'running', label: (scene === 'stopped' || scene === 'confirming') ? 'Stopped' : 'Running' },
     { name: 'docs-site', path: DOCS, state: 'none', label: 'No sandbox' },
     { name: 'billing-api', path: BILLING, state: 'stopped', label: 'Stopped' },
   ];
@@ -177,10 +179,11 @@
         return Object.assign({}, plan, { path: args.project });
       case 'up': {
         const ch = args.onProgress;
-        const steps = ['planning', 'sandbox', 'snapshot', 'docker', 'secrets', 'build'];
+        const steps = ['planning', 'confirm', 'sandbox', 'snapshot', 'docker', 'secrets', 'build'];
         for (const step of steps) {
-          ch.send({ step, detail: step === 'build' ? 'web, api, worker' : null });
+          ch.send({ step, detail: step === 'build' ? 'web, api, worker' : step === 'confirm' ? METHOD : null });
           if (hold && step === 'docker') return new Promise(() => {});
+          if (holdAtConfirm && step === 'confirm') return new Promise(() => {});
           await later(40);
         }
         const row = projects.find((p) => p.path === args.project);

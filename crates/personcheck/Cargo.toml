@@ -1,0 +1,16 @@
+[package]
+name = "personcheck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Not `lints.workspace`: the workspace forbids unsafe code, and asking macOS
+# for Touch ID is a call into Objective-C. This crate is the one place that
+# does it, and denies unsafe code everywhere but that one module.
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError"] }
+objc2-local-authentication = { version = "0.3", default-features = false, features = ["std", "LAContext", "LAError", "block2"] }
+block2 = "0.6"

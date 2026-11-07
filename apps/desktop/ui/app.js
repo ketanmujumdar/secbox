@@ -79,6 +79,21 @@
     updateButtons();
   }
 
+  // The daemon, not this window, asks the person to confirm a start, a new
+  // hostname or a push, in the system's own prompt. This window cannot answer
+  // that prompt; it only says one is up and what to check.
+  function confirmWords(method) {
+    return 'Confirm with ' + (method || 'the system prompt') +
+      '. Check the prompt names what you asked for; if you did not ask, cancel it.';
+  }
+  function personChannel() {
+    const channel = new Channel();
+    channel.onmessage = (event) => {
+      if (event.step === 'confirm') busy(confirmWords(event.detail));
+    };
+    return channel;
+  }
+
   // ---------- dialog ----------
 
   let dialogResolve = null;
@@ -684,9 +699,10 @@
     runStart(review, ports);
   });
 
-  const STEP_ORDER = ['planning', 'sandbox', 'snapshot', 'docker', 'secrets', 'build'];
+  const STEP_ORDER = ['planning', 'confirm', 'sandbox', 'snapshot', 'docker', 'secrets', 'build'];
   const STEP_WORDS = {
     planning: 'Checking the plan again',
+    confirm: 'Waiting for you to confirm in the system prompt',
     sandbox: 'Getting the virtual machine ready',
     snapshot: 'Copying the snapshot in',
     docker: 'Waiting for Docker inside it',
@@ -737,6 +753,10 @@
     }, 1000);
     function finishCurrent(status) {
       if (!current) return;
+      const words = current.querySelector('.step-words');
+      if (current.dataset.key === 'confirm' && words.textContent === STEP_WORDS.confirm) {
+        words.textContent = status === 'done' ? 'Confirmed by you in the system prompt' : 'Not confirmed, so nothing was started';
+      }
       current.className = 'step ' + status;
       current.querySelector('.step-time').textContent = seconds(Date.now() - since);
       current = null;
@@ -780,8 +800,17 @@
       }
     }
 
+    const leaveNote = 'You can leave this page; it keeps going and shows up on the left.';
     const progress = new Channel();
-    progress.onmessage = (event) => begin(event.step, STEP_WORDS[event.step], event.detail);
+    progress.onmessage = (event) => {
+      if (event.step === 'unconfirmed') {
+        begin('confirm', null, 'not asked: this computer has no fingerprint check');
+        current.querySelector('.step-words').textContent = 'Started on this window\u2019s request alone';
+        return;
+      }
+      $('starting-note').textContent = event.step === 'confirm' ? confirmWords(event.detail) : leaveNote;
+      begin(event.step, STEP_WORDS[event.step], event.detail);
+    };
     try {
       const said = await invoke('up', { project: path, digest: review.plan.digest, ports, onProgress: progress });
       finishCurrent('done');
@@ -1078,7 +1107,7 @@
     stopLogs();
     busy('Approving ' + host + '. Its services are restarting.');
     try {
-      banner(await invoke('approve_host', { project: row.path, host }), 'ok');
+      banner(await invoke('approve_host', { project: row.path, host, onProgress: personChannel() }), 'ok');
     } catch (error) {
       banner('Could not approve it: ' + errorText(error));
     }
@@ -1230,7 +1259,7 @@
     busy(waiting ? (command === 'push' ? 'Pushing' : 'Fetching') + '. Your SSH agent may ask you to approve.' : 'Asking Git.');
     let view;
     try {
-      view = await invoke('git', { project: row.path, op, commitMessage: message || null, args: args || null });
+      view = await invoke('git', { project: row.path, op, commitMessage: message || null, args: args || null, onProgress: personChannel() });
     } catch (error) {
       busy('');
       banner(errorText(error));

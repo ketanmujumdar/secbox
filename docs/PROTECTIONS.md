@@ -102,7 +102,8 @@ attack in plain Docker for comparison, where seven of them succeeded.
 | `shell` and `exec` run the engine with an emptied environment | `the_engine_gets_a_cleared_environment_and_a_fixed_argument_list`, `shell_runs_the_engine_with_a_cleared_environment_and_prints_the_notice_first` | Tested in code; ran on a real VM |
 | The desktop app passes the daemon only the variables it reads | `the_daemon_gets_only_the_variables_it_reads` | Tested in code |
 | The desktop app opens no local web port and shows sandbox text only as plain text | `apps/desktop/src-tauri/capabilities/main.json`, CSP in `tauri.conf.json` | By design; ran under Xvfb on Linux |
-| Starting anything needs the plan's digest, so what starts is exactly what was shown | `crates/daemon/tests/service.rs` digest tests | Tested in code. Any process running as you can fetch and send that digest, so it does not prove a person agreed: see below |
+| Starting anything needs the plan's digest, so what starts is exactly what was shown | `crates/daemon/tests/service.rs` digest tests | Tested in code. Any process running as you can fetch and send that digest, so on its own it does not prove a person agreed |
+| On macOS, starting a sandbox, allowing a hostname and each relayed push wait for the person in the system's own prompt (Touch ID or login password), put up by the daemon and naming exactly what will happen. Declining does nothing: no sandbox, no saved host, and no bytes to the remote | `a_start_the_person_declines_creates_nothing`, `allowing_a_host_the_person_declines_saves_nothing`, `a_push_the_person_declines_sends_the_remote_nothing`, `a_push_typed_as_a_git_command_is_asked_about_too` | Tested in code with a stand-in person. The macOS prompt is compiled and linted for macOS but **has never run on a Mac** |
 
 ## What it does not protect against yet
 
@@ -117,13 +118,13 @@ and a container that asked the wallet signing service to sign. secbox answers
 only the assignment step, and only if the assignment never touches the host
 first. Once code runs as you on your machine, secbox does not stop it:
 
-- **Any process running as you can drive the daemon.** The socket checks the
-  user id only. A plan "approval" is a digest the same process can ask for and
-  send back, and `net allow` and Git push need no person at all. Malware on the
-  host can approve a plan, open a hostname, run `exec` in a sandbox to read its
-  secrets, or push a branch with your SSH key. Fix: approval that needs a
-  person, such as a desktop prompt with Touch ID, which a background process
-  cannot complete. Status: **not yet**.
+- **Code running as you can still go around the daemon.** Starting, `net
+  allow` and pushes now wait for Touch ID on a Mac, which stops a tricked AI
+  agent or a script that uses secbox's own API. But such code can run the
+  engine itself to `exec` into a running sandbox and read the secrets
+  delivered there, use your SSH agent directly, or replace secbox's programs.
+  `shell` and `exec` are not asked about, since they go to the engine anyway.
+  On Linux nothing is asked yet. Status: **partly done**.
 - **Cloning or unzipping the assignment on the host, then opening it in an
   editor, runs before secbox is involved.** Use `secbox new git@…` instead: it
   fetches into secbox's own state folder, where git never runs a checkout,
@@ -137,10 +138,11 @@ first. Once code runs as you on your machine, secbox does not stop it:
   single container-deployment token. Do not give a sandbox production deploy,
   wallet or signing credentials. Proxy-injected secrets, where the value never
   enters the VM, are refused for now.
-- **An AI agent connected over MCP can call `git_push` without a person**,
-  and push does not consult `diff`'s flags. A sandbox that prompt-injects the
-  agent can get a branch with a new CI workflow pushed under your key. Status:
-  **not yet**.
+- **A push does not consult `diff`'s flags.** On a Mac every push, including
+  an AI agent's `git_push`, now needs your fingerprint, and the prompt names
+  the branch and commit. It does not yet say that the commit adds a CI
+  workflow or an AI tool hook, so read `secbox diff` before you agree. Status:
+  **partly done**.
 - **secbox itself has no signed release.** The Homebrew formula is a
   placeholder. A fake download site is how the Binance attack began, so a
   release needs published checksums and a signature before anyone is told

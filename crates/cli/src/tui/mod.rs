@@ -825,7 +825,13 @@ fn git_on_selected(deps: &mut Deps, model: &mut Model, push: bool) -> bool {
     } else {
         proto::GitOp::Pull
     };
-    let result = crate::git_cmd::call(std::path::Path::new(&row.path), op, deps);
+    let request = crate::git_cmd::request_for(std::path::Path::new(&row.path), op, deps);
+    let client = deps.daemon;
+    let result = crate::git_cmd::report_of(
+        client.call(request, &mut |step, detail| {
+            show_person_step(deps, model, step, detail);
+        }),
+    );
     model.busy = None;
     let report = match result {
         Ok(report) => report,
@@ -958,7 +964,10 @@ fn start(deps: &mut Deps, model: &mut Model, pending: Pending) {
             if let Some(progress) = &mut model.progress {
                 progress.push(step, detail);
             }
-            if drawn.elapsed() >= PROGRESS_EVERY {
+            // Drawn at once: the system prompt is already up.
+            if show_person_step(deps, model, step, detail) {
+                drawn = Instant::now();
+            } else if drawn.elapsed() >= PROGRESS_EVERY {
                 draw(deps, model);
                 drawn = Instant::now();
             }
@@ -977,18 +986,35 @@ fn start(deps: &mut Deps, model: &mut Model, pending: Pending) {
     model.message = said;
 }
 
+/// While the daemon waits for the person to confirm in the system's own
+/// prompt, the busy line says so, drawn at once. Returns whether `step` was
+/// that. Nothing here can answer the prompt: it only says one is up.
+fn show_person_step(deps: &mut Deps, model: &mut Model, step: &str, detail: Option<&str>) -> bool {
+    let Some(line) = proto::person_step_line(step, detail) else {
+        return false;
+    };
+    if step == proto::STEP_CONFIRM {
+        model.busy = Some(line);
+        draw(deps, model);
+    }
+    true
+}
+
 fn approve(deps: &mut Deps, model: &mut Model, host: &str) {
     let Some(row) = model.selected_row().cloned() else {
         return;
     };
     model.busy = Some("Approving it. Its services are restarting.".to_owned());
     draw(deps, model);
-    let result = deps.daemon.call(
+    let client = deps.daemon;
+    let result = client.call(
         Request::ApproveHost(proto::ApproveHostArgs {
             project: row.path,
             host: host.to_owned(),
         }),
-        &mut |_, _| {},
+        &mut |step, detail| {
+            show_person_step(deps, model, step, detail);
+        },
     );
     model.busy = None;
     model.message = Some(match result {

@@ -167,14 +167,14 @@ pub(crate) fn list() -> Value {
         {
             "name": "git_push",
             "title": "Push the current branch",
-            "description": "Pushes the current branch to the same name on the remote, with the person's SSH key on their machine. Pushing to main or master, deleting a branch and pushing tags are refused before anything is sent: make a branch first with exec `git switch -c NAME`. The person's SSH agent may ask them to approve.",
+            "description": "Pushes the current branch to the same name on the remote, with the person's SSH key on their machine. Pushing to main or master, deleting a branch and pushing tags are refused before anything is sent: make a branch first with exec `git switch -c NAME`. On a Mac the person must confirm each push with Touch ID or their password, in a prompt naming the branch and commit; this call waits for them, and if they cancel nothing is sent. Do not retry a push they cancelled: ask them. The person's SSH agent may also ask them to approve.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
             "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": true },
         },
         {
             "name": "git",
             "title": "Run a Git command",
-            "description": "Runs any Git command in the sandbox clone at /work, given as its arguments after `git`: [\"switch\", \"-c\", \"fix\"], [\"stash\"], [\"log\", \"--oneline\", \"-10\"], [\"rebase\", \"main\"]. It runs inside the sandbox, never on the person's machine. Only fetch, pull and ls-remote reach the remote, and push, through the relay with the person's SSH key on their machine; their SSH agent may ask them to approve. A push to main or master, deleting a branch, pushing a tag or sending push options is refused before anything is sent. There is no terminal: give commit messages with -m, and use --no-edit for merges. Options before the command, such as -c and -C, are refused.",
+            "description": "Runs any Git command in the sandbox clone at /work, given as its arguments after `git`: [\"switch\", \"-c\", \"fix\"], [\"stash\"], [\"log\", \"--oneline\", \"-10\"], [\"rebase\", \"main\"]. It runs inside the sandbox, never on the person's machine. Only fetch, pull and ls-remote reach the remote, and push, through the relay with the person's SSH key on their machine; on a Mac the person confirms each push with Touch ID or their password, and their SSH agent may ask them to approve. A push to main or master, deleting a branch, pushing a tag or sending push options is refused before anything is sent. There is no terminal: give commit messages with -m, and use --no-edit for merges. Options before the command, such as -c and -C, are refused.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

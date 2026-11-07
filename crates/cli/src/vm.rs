@@ -720,6 +720,10 @@ fn request(deps: &mut Deps, request: Request, command: &str) -> Result<Reply, i3
 
 /// How `up` shows a step: dimmed dots and the daemon's own words.
 fn dots(deps: &mut Deps, step: &str, detail: Option<&str>) {
+    if let Some(line) = proto::person_step_line(step, detail) {
+        say!(deps, "{} {}", paint(deps.color, Tone::Warn, "?"), line);
+        return;
+    }
     let line = match detail {
         Some(detail) => format!("{step}: {detail}"),
         None => step.to_owned(),

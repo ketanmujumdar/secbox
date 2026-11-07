@@ -59,7 +59,7 @@ use gitbroker::GitService;
 use proto::text::TerminalFilter;
 use proto::{ApiError, GitArgs, GitIdentity, GitOp, GitReport, RefUpdate};
 
-use crate::{audit, bad, engine_error, internal, refused, remote, run, Project, Service};
+use crate::{audit, bad, engine_error, internal, person, refused, remote, run, Progress, Project, Service};
 
 /// Branches no relayed push may change. Branch protection on the remote is
 /// still the stronger rule, because it holds whatever reaches the remote.
@@ -137,7 +137,12 @@ fn ssh_stub() -> String {
 }
 
 /// Answers a `git` request.
-pub fn handle(service: &Service, project: &Project, args: &GitArgs) -> Result<GitReport, ApiError> {
+pub fn handle(
+    service: &Service,
+    project: &Project,
+    args: &GitArgs,
+    progress: &mut dyn Progress,
+) -> Result<GitReport, ApiError> {
     let remote = remote::remote_of(service, project).ok_or_else(|| {
         bad(format!(
             "this project was not started from a Git remote, so there is nothing to pull from or push to. Start one with: {} up git@host:org/repo.git",
@@ -170,7 +175,7 @@ pub fn handle(service: &Service, project: &Project, args: &GitArgs) -> Result<Gi
         GitOp::Pull => {
             let mut git = with_identity(&identity);
             git.extend(["pull", "--no-rebase", "--no-edit"].map(str::to_owned));
-            let done = relay(service, project, &remote.url, git, GitService::UploadPack, agent.as_deref())?;
+            let done = relay(service, project, &remote.url, git, GitService::UploadPack, agent.as_deref(), progress)?;
             service.record(
                 audit::entry(service.deps().now_unix(), audit::Action::GitPulled)
                     .project(project.id.as_str())
@@ -180,11 +185,11 @@ pub fn handle(service: &Service, project: &Project, args: &GitArgs) -> Result<Gi
         }
         GitOp::Push => {
             let git = ["push", "--set-upstream", "origin", "HEAD"].map(str::to_owned).to_vec();
-            let done = relay(service, project, &remote.url, git, GitService::ReceivePack, agent.as_deref())?;
+            let done = relay(service, project, &remote.url, git, GitService::ReceivePack, agent.as_deref(), progress)?;
             record_push(service, project, &done);
             done
         }
-        GitOp::Run { args } => run_typed(service, project, &remote.url, args, &identity, agent.as_deref())?,
+        GitOp::Run { args } => run_typed(service, project, &remote.url, args, &identity, agent.as_deref(), progress)?,
     };
     report.branch = current_branch(service, project);
     Ok(report)
@@ -213,7 +218,7 @@ pub fn clone_into_sandbox(
     }
     git.extend(["--", url, "."].map(str::to_owned));
     let agent = remote::last_agent(url);
-    let done = relay(service, project, url, git, GitService::UploadPack, agent.as_deref())?;
+    let done = relay(service, project, url, git, GitService::UploadPack, agent.as_deref(), &mut crate::Quiet)?;
     if !done.ok {
         return Err(refused(format!("cloning into the sandbox failed:\n{}", done.output.trim_end())));
     }
@@ -247,6 +252,7 @@ fn run_typed(
     args: &[String],
     identity: &GitIdentity,
     agent: Option<&Path>,
+    progress: &mut dyn Progress,
 ) -> Result<GitReport, ApiError> {
     let route = crate::gitrun::classify(args).map_err(bad)?;
     let name = crate::gitrun::subcommand(args).to_owned();
@@ -254,7 +260,7 @@ fn run_typed(
     git.extend(args.iter().cloned());
     let report = match route {
         crate::gitrun::Route::Relayed(allowed) => {
-            let done = relay(service, project, url, git, allowed, agent)?;
+            let done = relay(service, project, url, git, allowed, agent, progress)?;
             if allowed == GitService::ReceivePack {
                 record_push(service, project, &done);
             }
@@ -455,6 +461,7 @@ fn relay(
     git: Vec<String>,
     allowed: GitService,
     agent: Option<&Path>,
+    progress: &mut dyn Progress,
 ) -> Result<GitReport, ApiError> {
     let mut command: Vec<String> = vec!["sh".to_owned(), "-c".to_owned(), RELAYED_GIT.to_owned(), "relayed-git".to_owned()];
     command.extend(git);
@@ -513,12 +520,23 @@ fn relay(
                     if header.service == GitService::ReceivePack {
                         match read_commands(&mut vm_out) {
                             Ok((raw, commands)) => match check_commands(&commands) {
-                                Ok(found) => {
-                                    updates = found;
-                                    if let Some(input) = ssh_in.as_mut() {
-                                        let _ = input.write_all(&raw).and_then(|()| input.flush());
+                                // The person sees the exact branches and
+                                // commits, and nothing reaches the remote
+                                // until they confirm.
+                                Ok(found) => match service.ask_person(
+                                    project,
+                                    person::Act::Push,
+                                    &push_reason(project, url, &found),
+                                    progress,
+                                ) {
+                                    Ok(()) => {
+                                        updates = found;
+                                        if let Some(input) = ssh_in.as_mut() {
+                                            let _ = input.write_all(&raw).and_then(|()| input.flush());
+                                        }
                                     }
-                                }
+                                    Err(error) => refusal = Some(error.message),
+                                },
                                 Err(reason) => refusal = Some(reason),
                             },
                             Err(reason) => refusal = Some(reason),
@@ -573,6 +591,24 @@ fn relay(
         updates,
         refused: refusal,
     })
+}
+
+/// "push my-change (1f2a120 to 9c3d4e5) from shop to git@github.com:org/shop.git".
+fn push_reason(project: &Project, url: &str, updates: &[RefUpdate]) -> String {
+    let short = |id: &str| id.get(..7).unwrap_or(id).to_owned();
+    let changes = updates
+        .iter()
+        .map(|u| {
+            let branch = u.name.strip_prefix("refs/heads/").unwrap_or(&u.name);
+            if u.old.bytes().all(|b| b == b'0') {
+                format!("new branch {branch} at {}", short(&u.new))
+            } else {
+                format!("{branch} ({} to {})", short(&u.old), short(&u.new))
+            }
+        })
+        .collect::<Vec<_>>();
+    let changes = if changes.is_empty() { "nothing".to_owned() } else { changes.join(", ") };
+    format!("push {changes} from {} to {url}", person::project_name(project))
 }
 
 struct RelayHeader {

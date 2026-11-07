@@ -260,6 +260,10 @@ impl Progress {
     /// the project or the sandbox, so it is escaped and cut here, and a line
     /// break inside one becomes a space rather than a broken box.
     pub fn push(&mut self, step: &str, detail: Option<&str>) {
+        if let Some(line) = proto::person_step_line(step, detail) {
+            self.steps.push(cut(&proto::text::escape(&line), Self::LONGEST));
+            return;
+        }
         let text = match detail {
             Some(detail) => format!("{step}: {detail}"),
             None => step.to_owned(),

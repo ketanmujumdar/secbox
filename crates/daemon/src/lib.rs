@@ -23,6 +23,7 @@ pub mod gitrelay;
 pub mod gitrun;
 pub mod netallow;
 pub mod mask;
+pub mod person;
 pub mod plan;
 pub mod remote;
 pub mod run;
@@ -104,6 +105,19 @@ pub trait Deps: Send + Sync {
         _agent_socket: Option<&Path>,
     ) -> Result<std::process::Child, String> {
         Err("reaching a Git remote is not available in this build".to_owned())
+    }
+
+    /// How this computer asks the person to confirm an action, for showing to
+    /// them, or `None` when it cannot ask anyone. The default is `None`, so a
+    /// test never puts up a real prompt; the real daemon asks the system.
+    fn person_check(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Asks the person to confirm the action `reason` describes. Called only
+    /// when [`Deps::person_check`] is `Some`, and blocks until they answer.
+    fn confirm(&self, _reason: &str) -> personcheck::Outcome {
+        personcheck::Outcome::Declined("there is no way to ask the person in this build".to_owned())
     }
 }
 
@@ -197,7 +211,7 @@ impl Service {
             Request::Fetch(args) => remote::fetch(self, args, progress).map(Reply::Fetch),
             Request::Git(args) => {
                 let project = self.open(&args.project)?;
-                gitrelay::handle(self, &project, args).map(Reply::Git)
+                gitrelay::handle(self, &project, args, progress).map(Reply::Git)
             }
             Request::Diff(args) => {
                 let project = self.open(&args.project)?;
