@@ -133,6 +133,8 @@ fn hypervisor(info: &HostInfo) -> Row {
 fn cpus(info: &HostInfo) -> Row {
     match info.cpus {
         Some(count) if count >= 4 => row("CPU", Level::Ok, format!("{count} logical CPUs")),
+        Some(1) => row("CPU", Level::Warn, "1 logical CPU")
+            .next("builds will be slow; 4 or more is better"),
         Some(count) => row("CPU", Level::Warn, format!("{count} logical CPUs"))
             .next("builds will be slow; 4 or more is better"),
         None => row("CPU", Level::Warn, "could not read the CPU count")

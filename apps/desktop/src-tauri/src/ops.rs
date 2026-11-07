@@ -178,6 +178,7 @@ fn usage_view(usage: &proto::SandboxUsage, limits: Option<&proto::ResourcePlan>)
     let disk_limit = limits.map(|l| l.disk_bytes);
     UsageView {
         cpu: match cpus {
+            Some(1) => format!("{used_cpus:.1} of 1 CPU"),
             Some(cpus) => format!("{used_cpus:.1} of {cpus} CPUs"),
             None => format!("{used_cpus:.1} CPUs"),
         },
@@ -362,11 +363,16 @@ pub struct PlanView {
     pub blockers: Vec<String>,
 }
 
+/// "1 service", "2 services".
+fn count(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
 /// What the terminal interface's start box says, line for line.
 pub fn dialog_lines(plan: &PlanReport, ports: &[u16]) -> Vec<String> {
     let mut lines = vec![format!(
-        "{} services from commit {}",
-        plan.services.len(),
+        "{} from commit {}",
+        count(plan.services.len(), "service", "services"),
         plan.snapshot
             .revision
             .as_deref()
@@ -382,8 +388,8 @@ pub fn dialog_lines(plan: &PlanReport, ports: &[u16]) -> Vec<String> {
         lines.push("Anything on this machine could then reach them.".to_owned());
     }
     lines.push(format!(
-        "{} hosts allowed for the build, {} while it runs.",
-        plan.network.build_hosts.len(),
+        "{} allowed for the build, {} while it runs.",
+        count(plan.network.build_hosts.len(), "host", "hosts"),
         plan.network.run_hosts.len()
     ));
     if plan.network.merged_for_whole_life {
@@ -1252,9 +1258,9 @@ mod tests {
     fn the_start_summary_matches_the_terminal_box() {
         let plan = sample_plan();
         let lines = dialog_lines(&plan, &[3000]);
-        assert_eq!(lines[0], "1 services from commit 0123456789ab");
+        assert_eq!(lines[0], "1 service from commit 0123456789ab");
         assert_eq!(lines[1], "Forward to 127.0.0.1:  3000");
-        assert!(lines.iter().any(|l| l == "1 hosts allowed for the build, 0 while it runs."));
+        assert!(lines.iter().any(|l| l == "1 host allowed for the build, 0 while it runs."));
     }
 
     #[test]

@@ -29,7 +29,7 @@ group = "Getting started"
 [[shot]]
 name = "doctor"
 args = ["doctor"]
-title = "secbox doctor, on a Linux machine without KVM"
+title = "secbox doctor: what this machine can run"
 group = "Getting started"
 
 [[shot]]

@@ -560,9 +560,9 @@ pub(crate) fn describe_resources(resources: &proto::ResourcePlan) -> String {
         ""
     };
     format!(
-        "{} memory{build}, {} CPUs, {} disk{clamped}",
+        "{} memory{build}, {}, {} disk{clamped}",
         human_bytes(resources.memory_bytes),
-        f64::from(resources.millicpus) / 1000.0,
+        proto::cpus_text(resources.millicpus),
         human_bytes(resources.disk_bytes)
     )
 }

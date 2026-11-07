@@ -150,6 +150,12 @@ pub enum Request {
     SetResources(SetResourcesArgs),
 }
 
+/// A CPU limit in words: "1 CPU", "1.5 CPUs", "2 CPUs".
+pub fn cpus_text(millicpus: u32) -> String {
+    let cpus = f64::from(millicpus) / 1000.0;
+    format!("{cpus} {}", if millicpus == 1000 { "CPU" } else { "CPUs" })
+}
+
 /// Limits a person chose for one project. An absent value leaves it to the
 /// project's own request, or the default.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1392,6 +1398,14 @@ mod secret_text_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_cpu_is_singular_and_any_other_amount_is_not() {
+        assert_eq!(cpus_text(1000), "1 CPU");
+        assert_eq!(cpus_text(500), "0.5 CPUs");
+        assert_eq!(cpus_text(1500), "1.5 CPUs");
+        assert_eq!(cpus_text(2000), "2 CPUs");
+    }
 
     #[test]
     fn exposure_names_every_reachable_host_and_never_says_nowhere_when_unknown() {

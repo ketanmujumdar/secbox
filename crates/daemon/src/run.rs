@@ -338,7 +338,7 @@ pub(crate) fn create(
     service.record(
         audit::entry(service.deps().now_unix(), audit::Action::SandboxCreated)
             .project(project.id.as_str())
-            .detail(format!("{} hosts allowed", spec_host_count(&spec))),
+            .detail(format!("{} allowed", person::count(spec_host_count(&spec), "host", "hosts"))),
     );
     Ok(())
 }

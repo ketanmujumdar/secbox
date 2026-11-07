@@ -65,9 +65,9 @@ fn host_limits(info: &HostInfo) -> Result<(UserLimits, HostResources), String> {
 pub fn suggestion(info: &HostInfo) -> Option<String> {
     let (limits, _) = host_limits(info).ok()?;
     Some(format!(
-        "{} memory, {} CPUs, {} disk",
+        "{} memory, {}, {} disk",
         DEFAULT_MEMORY.min(limits.max_memory),
-        DEFAULT_CPUS.min(limits.max_cpus),
+        proto::cpus_text(DEFAULT_CPUS.min(limits.max_cpus).millis()),
         DEFAULT_DISK.min(limits.max_disk),
     ))
 }

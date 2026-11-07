@@ -92,9 +92,9 @@ pub fn start_lines(plan: &PlanReport) -> Vec<Line> {
     lines.push(Line::heading("Use up to"));
     let r = &plan.resources;
     lines.push(Line::plain(format!(
-        "  {} memory, {} CPUs, {} disk",
+        "  {} memory, {}, {} disk",
         human_bytes(r.memory_bytes),
-        f64::from(r.millicpus) / 1000.0,
+        proto::cpus_text(r.millicpus),
         human_bytes(r.disk_bytes)
     )));
     if r.build_memory_bytes != r.memory_bytes {

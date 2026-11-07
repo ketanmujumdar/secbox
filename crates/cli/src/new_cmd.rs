@@ -396,9 +396,9 @@ fn review(plan: &PlanReport, ports: &[u16], no_ports: bool, deps: &mut Deps) {
         deps,
         "use",
         &[format!(
-            "{} memory · {} CPUs · {} disk{building}{clamped}",
+            "{} memory · {} · {} disk{building}{clamped}",
             human_bytes(r.memory_bytes),
-            f64::from(r.millicpus) / 1000.0,
+            proto::cpus_text(r.millicpus),
             human_bytes(r.disk_bytes)
         )],
     );
