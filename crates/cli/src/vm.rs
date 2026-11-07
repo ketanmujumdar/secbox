@@ -425,7 +425,11 @@ fn show_plan(plan: &PlanReport, deps: &mut Deps) {
     field(
         deps,
         "Kind",
-        &format!("{}, {}", esc(&plan.kind), count(plan.services.len(), "service", "services")),
+        &format!(
+            "{}, {}",
+            esc(&plan.kind),
+            count(plan.services.len(), "service", "services")
+        ),
     );
     let snapshot = match (&plan.snapshot.revision, &plan.snapshot.counts) {
         (Some(revision), _) => format!("commit {}", short(revision)),

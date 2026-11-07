@@ -11,7 +11,6 @@ class Secbox < Formula
   desc "Run a project and its AI agent in a disposable microVM (early build)"
   homepage "https://github.com/ketanmujumdar/secbox"
   url "https://github.com/ketanmujumdar/secbox/releases/download/v@VERSION@/secbox-@VERSION@-darwin-aarch64.tar.gz"
-  version "@VERSION@"
   sha256 "@SHA256@"
   license "FSL-1.1-ALv2"
 
