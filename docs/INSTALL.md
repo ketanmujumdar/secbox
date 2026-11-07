@@ -44,19 +44,17 @@ secbox doctor
 
 ## Homebrew through a tap (NOT AVAILABLE YET)
 
-**None of this works today.** There is no release, repository or tap. These are the commands it would use later, with `<org>` standing for an account that does not exist yet:
+**Nothing has been released yet**, so these commands don't work today. They are what the first release will offer, on Apple Silicon Macs:
 
 ```sh
-brew tap <org>/tap
-brew install <org>/tap/secbox
+brew install --cask ketanmujumdar/tap/secbox-desktop   # the desktop app, which pulls in the formula
+brew install ketanmujumdar/tap/secbox                   # or only the CLI and the daemon
+brew services start secbox                              # run the daemon now and at login
 ```
 
-To make that real:
+The formula installs `secbox` and `secboxd`, and the engine pinned to the version secbox was tested on, under its own `libexec`. Nothing else on your `PATH` changes. To uninstall: `brew services stop secbox`, the steps in [Uninstalling](#uninstalling), then `brew uninstall --cask secbox-desktop` and `brew uninstall secbox`.
 
-1. Publish a tagged source release, and note the tarball's URL and sha256.
-2. Create a public repository named `<org>/homebrew-tap`.
-3. Copy `packaging/homebrew/secbox.rb` to `Formula/secbox.rb` there, then replace the placeholder `homepage`, `url` and `sha256`.
-4. Run `brew audit --strict --new secbox` and `brew test secbox` against the tap.
+How releases are built, signed and published, and what has not been tested, is in [RELEASING.md](RELEASING.md). The templates are `packaging/homebrew/secbox.rb` and `packaging/homebrew/secbox-desktop.rb`.
 
 `brew audit` does not accept a file path, so it can only check a formula inside a tap. It also turns on Homebrew's developer mode and installs its own gems the first time it runs. `brew developer off` turns the mode off again.
 
@@ -65,7 +63,7 @@ To make that real:
 Getting into the main Homebrew repository would let people run `brew install secbox`. Its [acceptable formulae](https://docs.brew.sh/Acceptable-Formulae) rules are the ones to check at that point. Expect to need:
 
 - A stable, tagged release with a working source tarball.
-- An open-source license. The project uses Apache-2.0.
+- An open-source license. The project uses FSL-1.1-ALv2, which homebrew-core does not accept, so secbox stays in its own tap. Each version becomes Apache-2.0 two years after release.
 - Evidence of real use. Homebrew's notability checks look at things like stars, forks and watchers, and it does not accept tools that are too new or too niche.
 - No name clash. An openSUSE package is already called `secbox`, so settle the final name first.
 - A meaningful `test do` block, and a passing `brew audit --new --formula secbox`.

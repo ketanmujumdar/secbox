@@ -1325,10 +1325,10 @@ pub fn exposure_lines(secrets: &[HeldSecret], hosts: Option<&[String]>, one_line
             "They cannot be sent anywhere: every outgoing connection is refused.".to_owned(),
         ),
         Some(hosts) => {
-            lines.push(format!(
-                "Code in those services could send them to any of these {} hosts, and nowhere else:",
-                hosts.len()
-            ));
+            lines.push(match hosts.len() {
+                1 => "Code in those services could send them to this host, and nowhere else:".to_owned(),
+                n => format!("Code in those services could send them to any of these {n} hosts, and nowhere else:"),
+            });
             if one_line {
                 lines.push(hosts.join(", "));
             } else {
@@ -1340,8 +1340,9 @@ pub fn exposure_lines(secrets: &[HeldSecret], hosts: Option<&[String]>, one_line
                 .filter(|h| hosts.iter().any(|x| x == h))
                 .collect();
             if !open.is_empty() {
+                let verb = if open.len() == 1 { "accepts" } else { "accept" };
                 lines.push(format!(
-                    "Of these, {} accept uploads to an account anyone can make, so a stolen value could be sent there.",
+                    "Of these, {} {verb} uploads to an account anyone can make, so a stolen value could be sent there.",
                     open.join(", ")
                 ));
             }
@@ -1404,7 +1405,8 @@ mod tests {
         assert!(!lines.iter().any(|l| l.contains("uploads")));
         let npm = vec!["registry.npmjs.org".to_owned()];
         let warned = exposure_lines(&held, Some(&npm), false);
-        assert!(warned.iter().any(|l| l.contains("registry.npmjs.org accept uploads")), "{warned:?}");
+        assert!(warned.iter().any(|l| l.contains("registry.npmjs.org accepts uploads")), "{warned:?}");
+        assert!(warned.iter().any(|l| l.contains("send them to this host, and nowhere else")), "{warned:?}");
         let none = exposure_lines(&held, Some(&[]), false);
         assert!(none.iter().any(|l| l.contains("cannot be sent anywhere")));
         let unknown = exposure_lines(&held, None, false);
