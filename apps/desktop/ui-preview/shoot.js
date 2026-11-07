@@ -137,7 +137,25 @@ async function run(browser, scheme) {
   await p.waitForFunction(() => document.getElementById('git-output').textContent.includes('Fix the refund total'));
   await shot(p, scheme, '08c-changes-git-command');
   await p.click('.tab[data-tab=secrets]');
+  await p.waitForSelector('#secret-rows li[data-name]');
   await shot(p, scheme, '09a-secrets');
+  // Fill in an empty name: the form opens under its row, masked.
+  await p.click('#secret-rows li[data-name=SENDGRID_API_KEY] button');
+  if (await p.evaluate(() => document.getElementById('secret-value').type) !== 'password') problems.push(`[${scheme}] the secret field is not masked`);
+  if (await p.evaluate(() => document.activeElement.id) !== 'secret-value') problems.push(`[${scheme}] the secret field does not have the focus`);
+  const typed = 'SG.preview-sentinel-value-0042';
+  await p.fill('#secret-value', typed);
+  await p.check('#secret-services input[value=api]');
+  await p.check('#secret-services input[value=worker]');
+  await shot(p, scheme, '09b-secret-form');
+  await p.click('#secret-save');
+  await p.waitForSelector('#secret-form.hidden', { state: 'attached' });
+  await p.waitForFunction(() => document.querySelector('#secret-rows li[data-name=SENDGRID_API_KEY] .tag.good'));
+  const sent = await p.evaluate(() => window.__calls.filter((c) => c.cmd === 'set_secret').pop());
+  if (!sent || sent.args.value !== typed || sent.args.services.join() !== 'api,worker') problems.push(`[${scheme}] set_secret was not sent as typed: ${JSON.stringify(sent && sent.args.services)}`);
+  const left = await p.evaluate((t) => ({ field: document.getElementById('secret-value').value, html: document.documentElement.outerHTML.includes(t) }), typed);
+  if (left.field || left.html) problems.push(`[${scheme}] the typed value was left on the page`);
+  await shot(p, scheme, '09c-secret-saved');
   await p.click('.tab[data-tab=settings]');
   await shot(p, scheme, '09-settings');
   await p.click('.tab[data-tab=overview]');

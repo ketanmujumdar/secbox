@@ -96,4 +96,4 @@ Pressing `a` on a blocked hostname asks for Touch ID on a Mac before anything is
 
 ![The Secrets panel, before the redesign](../images/cli/tui-secrets.png)
 
-Reads the same metadata as `secbox secrets list`. It never opens the keychain and changes nothing. Use the `secrets` commands to change secrets.
+Reads the same metadata as `secbox secrets list`. It never opens the keychain and changes nothing. Names added from a template such as `.env.example` that have no value yet show in amber as `empty / not set yet`, and a line at the bottom counts them and names `secbox secrets fill`. Use the `secrets` commands, or the desktop app's Secrets tab, to change secrets.

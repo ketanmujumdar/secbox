@@ -35,6 +35,9 @@ pub enum Action {
     PortForwarded,
     /// A port the project asked for was not forwarded.
     PortRefused,
+    /// A secret's value was stored from a client, and the services it goes
+    /// to chosen. The name only.
+    SecretStored,
     /// A secret was delivered to a service. The name only.
     SecretDelivered,
     /// A secret was not delivered, and why.

@@ -399,6 +399,27 @@ async fn remove_project(app: AppHandle, project: String, state: State<'_, Arc<Ap
     result
 }
 
+/// Secret names for the Secrets tab. Never a value.
+#[tauri::command]
+async fn secrets(project: String, state: State<'_, Arc<AppState>>) -> Result<ops::SecretsView, String> {
+    let state = Arc::clone(&state);
+    blocking(move || ops::secrets(&state.client, &project).map_err(message)).await
+}
+
+/// Stores one secret through the daemon. Write-only: nothing reads it back.
+/// The value is not logged and is moved, not copied, into the request.
+#[tauri::command]
+async fn set_secret(
+    project: String,
+    name: String,
+    value: String,
+    services: Vec<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let state = Arc::clone(&state);
+    blocking(move || ops::set_secret(&state.client, &project, &name, value, services).map_err(message)).await
+}
+
 #[derive(Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum LogEvent {
@@ -667,6 +688,8 @@ pub fn run() {
             import_remote,
             git,
             diff,
+            secrets,
+            set_secret,
         ])
         .build(tauri::generate_context!())
         .expect("the app could not start");

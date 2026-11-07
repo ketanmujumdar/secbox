@@ -16,7 +16,7 @@ The desktop app is a menu bar icon and a window for the same daemon the command 
 - a **Terminal & about** tab, with commands to put the bundled CLI on your `PATH`
 - a **Git review** page with a **Compare** button, showing the same comparison as [`secbox diff`](reviewing-changes.md)
 
-The Secrets page says "not built yet".
+- a **Secrets** tab that lists the project's secret names, stored and empty, and lets you set or replace a value and choose which services get it. See [Secrets](secrets.md#from-the-desktop-app).
 
 ## How it starts a project
 

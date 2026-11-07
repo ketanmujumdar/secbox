@@ -124,6 +124,59 @@ pub enum Request {
     /// relay, which reaches only the project's own remote, with the user's SSH
     /// key on the host, and checks every push before it leaves.
     Git(GitArgs),
+    /// A project's secret names: the stored ones and where they go, and the
+    /// empty ones still waiting for a value. Never a value, and the keychain
+    /// is not read.
+    Secrets(ProjectArgs),
+    /// Store one secret's value in the keychain and choose the services that
+    /// get it. Write-only: no request reads a value back.
+    SetSecret(SetSecretArgs),
+}
+
+/// One secret to store. The value is a [`SecretText`], so it never shows in
+/// debug output and its memory is wiped when it is dropped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSecretArgs {
+    pub project: String,
+    pub name: String,
+    pub value: SecretText,
+    /// The project's services that may receive it. Each must be one of the
+    /// services in the project's own Compose file. Empty stores the value and
+    /// delivers it nowhere.
+    pub services: Vec<String>,
+}
+
+/// The longest secret value a client may send.
+pub const MAX_SECRET_BYTES: usize = 64 * 1024;
+
+/// A secret value on its way to the daemon. Its `Debug` is redacted, and its
+/// buffer is zeroed on drop. Serde copies through it, so a client should drop
+/// its own copies as soon as the request is written.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SecretText(String);
+
+impl SecretText {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SecretText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretText([redacted])")
+    }
+}
+
+impl Drop for SecretText {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -416,6 +469,8 @@ pub enum Reply {
     Fetch(FetchReport),
     Git(GitReport),
     Diff(DiffReport),
+    Secrets(SecretsReport),
+    SetSecret(SetSecretReport),
 }
 
 /// What changed inside a sandbox since the snapshot it started from.
@@ -820,6 +875,45 @@ pub struct ApproveHostReport {
     pub seconds: u64,
 }
 
+/// A project's secrets, by name. Never a value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretsReport {
+    pub project_id: String,
+    /// Stored and empty names together, sorted by name.
+    pub secrets: Vec<SecretEntry>,
+    /// The services in the project's Compose file, which are the only ones a
+    /// secret can be given to.
+    pub services: Vec<String>,
+    /// Why `services` is empty when the project's files could not be read.
+    pub services_note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretEntry {
+    pub name: String,
+    /// False for a name with no value yet, such as one from a `.env.example`.
+    pub stored: bool,
+    /// The services it is given to. Empty for none.
+    pub services: Vec<String>,
+    /// How it reaches them, in words, such as "injected into the environment".
+    pub route: Option<String>,
+}
+
+/// What storing a secret did. Names only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSecretReport {
+    pub name: String,
+    /// True if it replaced a value that was already stored.
+    pub replaced: bool,
+    pub services: Vec<String>,
+    /// True if the project's sandbox is running, so the new value reaches it
+    /// only on the next start.
+    pub applies_on_next_start: bool,
+}
+
 /// What removing a project took with it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -975,6 +1069,24 @@ pub struct ServiceState {
 }
 
 #[cfg(test)]
+mod secret_text_tests {
+    use super::*;
+
+    #[test]
+    fn a_secret_value_never_shows_in_debug_output() {
+        let args = SetSecretArgs {
+            project: "/p".to_owned(),
+            name: "API_KEY".to_owned(),
+            value: SecretText::new("hunter2-sentinel".to_owned()),
+            services: vec![],
+        };
+        let shown = format!("{:?}", Envelope::new(Request::SetSecret(args)));
+        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1055,6 +1167,15 @@ mod tests {
         }));
         round_trip(Request::Diff(ProjectArgs {
             project: "/p".to_owned(),
+        }));
+        round_trip(Request::Secrets(ProjectArgs {
+            project: "/p".to_owned(),
+        }));
+        round_trip(Request::SetSecret(SetSecretArgs {
+            project: "/p".to_owned(),
+            name: "API_KEY".to_owned(),
+            value: SecretText::new("v".to_owned()),
+            services: vec!["api".to_owned()],
         }));
         round_trip(Request::Git(GitArgs {
             project: "/p".to_owned(),

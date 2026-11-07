@@ -39,6 +39,7 @@ Built on Nov 5, 2026 (`docs/GIT.md`). Tested end to end with real Git on both si
 - [ ] A large repository cloning inside the 15-minute limit.
 - [ ] The MCP tools from Claude Code: `git_pull`, `git_commit` and `git_push` on a branch, and refused on `main`.
 - [ ] The desktop app: Import, then the plan, then the Git tab's Status, Pull, Commit and Push.
+- [ ] The desktop app's Secrets tab on a Mac: set an empty name's value with only `web` ticked, start the project, and check inside `api` that the variable is unset and `/run/secrets` holds none of it. macOS must not ask for keychain access when the daemon later reads a value it stored itself. Typing in the field must not offer to save a password.
 
 ## Confirming with Touch ID
 
@@ -139,6 +140,8 @@ Three assumptions hold the design up, and none has been seen working:
 - **`msb exec` accepts standard input.** The adapter stops passing `--no-stdin` and writes the value to the child. If the engine does not read it, no secret arrives. This is the whole delivery channel.
 - **A `tmpfs` can be mounted inside the guest.** Delivery refuses rather than falling back to the sandbox's own disk, so if the mount fails on a real guest, every project with a secret stops starting. That is the right failure, but it has to be seen.
 - **Compose merges the generated override as expected.** Verified here against Compose v5.6.1 by parsing only: a relative base file plus an absolute override keeps the project directory, resolves build contexts correctly, puts the value on the named service alone, and leaves `${VAR}` in another service empty. Never run against the guest's own Compose v5.7.0 with a daemon behind it.
+
+Seen outside a VM on Nov 7, 2026: the daemon's own override and environment files, used with real Docker 29.9 and Compose 5.6 on Linux, gave a secret ticked for `web` only to `web`; `api` had neither the variable nor the file, and neither container could see `/run/secbox`. A Dockerfile-only project's `RUN env` saw no secret, and the built image held none. This shows the files are right, not that the guest delivers them.
 
 Also unverified: that a value written over standard input does not transit the engine's guest-state share on the host. The argument-list route was avoided for exactly this reason, but `copy_in` was never measured either.
 
