@@ -102,17 +102,17 @@ A file that is not shown says why: it looks like it holds a secret, or it is bin
 
 `m` commits every change, under your own Git name, and asks for the message. `g` runs any Git command inside the sandbox, with quotes read as a shell reads them and nothing expanded. `p` pulls and `P` pushes the current branch through the daemon, with your SSH key on this machine. The key never enters the sandbox. If uncommitted changes stop a pull, the box offers to stash them, pull and put them back: `y` agrees, and anything else leaves them alone. A long answer scrolls with up and down, and any other key closes the box.
 
-![The Review panel, before the redesign](../images/cli/tui-review.png)
+![The Changes tab, before comparing](../images/cli/tui-review.png)
 
 ## Network
 
-![The Traffic panel, before the redesign](../images/cli/tui-traffic.png)
+![The Network tab, with no engine to ask, so it shows an error](../images/cli/tui-traffic.png)
 
 Pressing `a` on a blocked hostname asks for Touch ID on a Mac before anything is saved or restarted.
 
 ## Secrets
 
-![The Secrets panel, before the redesign](../images/cli/tui-secrets.png)
+![The Secrets tab, with no secrets recorded](../images/cli/tui-secrets.png)
 
 Up and down choose a secret. Enter sets a value for an empty name or replaces a stored one, and `a` adds a new name. You type the value twice and see only dots, then tick the services that may read it with Space. Nothing here can show a stored value. The value goes through the daemon into your keychain, and a running sandbox gets it on its next start. The list itself reads the same metadata as `secbox secrets list` and never opens the keychain. Names added from a template such as `.env.example` that have no value yet show in amber as `empty / not set yet`.
 
