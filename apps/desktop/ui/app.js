@@ -1388,7 +1388,7 @@
     $('brand').textContent = info.product;
     document.title = info.product;
     $('choose-cli').textContent = `${info.cli_bin} up git@…`;
-    $('secrets-cmd').textContent = `cd /path/to/project\n${info.cli_bin} secrets list\n${info.cli_bin} secrets set NAME`;
+    $('secrets-cmd').textContent = `cd /path/to/project\n${info.cli_bin} secrets import .env.example   # add the names, empty\n${info.cli_bin} secrets fill                  # type a value for each\n${info.cli_bin} secrets list\n${info.cli_bin} secrets set NAME --service SERVICE`;
     const box = $('cli-install');
     clear(box);
     if (info.bundled_cli) {
