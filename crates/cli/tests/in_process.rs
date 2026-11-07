@@ -173,7 +173,9 @@ fn import_stores_values_as_data_and_prints_names_only() {
     assert_eq!(done.code, exit::OK, "{}", done.all());
     assert!(done.out.contains("FAKE_API_KEY"));
     assert!(done.out.contains("3 stored"));
-    assert!(done.out.contains("Skipped    FAKE_EMPTY"));
+    assert!(done.out.contains("Empty      FAKE_EMPTY"), "{}", done.out);
+    assert!(done.out.contains("secrets fill"));
+    assert_eq!(t.vault.value("FAKE_EMPTY"), None);
     for value in ["aaaa1111", "bbbb2222", "cccc3333"] {
         assert!(!done.all().contains(value), "{value}");
     }
@@ -191,6 +193,141 @@ fn import_stores_values_as_data_and_prints_names_only() {
     assert!(on_disk.contains("imported"), "audit log: {on_disk}");
     let again = t.run(&["secrets", "import", &fixture_arg("fake.env")], "");
     assert!(again.out.contains("Replaced"));
+}
+
+#[test]
+fn a_template_adds_empty_names_and_drops_its_values() {
+    let t = Harness::new();
+    let example = t.project.path().join(".env.example");
+    fs::write(
+        &example,
+        "API_KEY=sk-placeholder-zzzz9999\nDB_URL=postgres://localhost/app\nEMPTY=\n",
+    )
+    .unwrap();
+    let done = t.run(&["secrets", "import", example.to_str().unwrap()], "");
+    assert_eq!(done.code, exit::OK, "{}", done.all());
+    assert!(done.out.contains("Names only"), "{}", done.out);
+    assert!(done.out.contains("3 empty"), "{}", done.out);
+    assert!(!done.all().contains("zzzz9999"));
+    assert!(!done.all().contains("postgres://"));
+    for name in ["API_KEY", "DB_URL", "EMPTY"] {
+        assert_eq!(t.vault.value(name), None, "{name}");
+    }
+    let on_disk = read_all(&t.state());
+    assert!(!on_disk.contains("zzzz9999"));
+    assert!(!on_disk.contains("postgres://"));
+
+    let listed = t.run(&["secrets", "list"], "");
+    assert_eq!(listed.code, exit::OK);
+    assert!(listed.out.contains("API_KEY"));
+    assert!(listed.out.contains("empty"));
+    assert!(listed.out.contains("not set yet"));
+}
+
+#[test]
+fn a_template_never_hides_a_stored_value() {
+    let t = Harness::new();
+    t.answer(&[VALUE, VALUE]);
+    assert_eq!(t.run(&["secrets", "set", "API_KEY"], "").code, exit::OK);
+    let example = t.project.path().join("example.env");
+    fs::write(&example, "API_KEY=\nOTHER=\n").unwrap();
+    let done = t.run(&["secrets", "import", example.to_str().unwrap()], "");
+    assert_eq!(done.code, exit::OK, "{}", done.all());
+    assert!(done.out.contains("already stored"), "{}", done.out);
+    assert_eq!(t.vault.value("API_KEY").as_deref(), Some(VALUE));
+    let listed = t.run(&["secrets", "list"], "").out;
+    let api = listed.lines().find(|l| l.starts_with("API_KEY")).unwrap();
+    assert!(api.contains("prompt"), "{listed}");
+}
+
+#[test]
+fn names_only_works_on_any_file_and_dry_run_records_nothing() {
+    let t = Harness::new();
+    let dry = t.run(
+        &[
+            "secrets",
+            "import",
+            "--names-only",
+            "--dry-run",
+            &fixture_arg("fake.env"),
+        ],
+        "",
+    );
+    assert_eq!(dry.code, exit::OK, "{}", dry.all());
+    assert!(dry.out.contains("would be added"));
+    assert!(!t.state().exists());
+    let done = t.run(
+        &[
+            "secrets",
+            "import",
+            "--names-only",
+            &fixture_arg("fake.env"),
+        ],
+        "",
+    );
+    assert_eq!(done.code, exit::OK, "{}", done.all());
+    assert_eq!(t.vault.value("FAKE_API_KEY"), None);
+    assert!(!done.all().contains("aaaa1111"));
+    assert!(!read_all(&t.state()).contains("aaaa1111"));
+}
+
+#[test]
+fn fill_stores_typed_values_and_skips_on_enter() {
+    let t = Harness::new();
+    let example = t.project.path().join(".env.sample");
+    fs::write(&example, "A_KEY=x\nB_KEY=y\nC_KEY=z\n").unwrap();
+    assert_eq!(
+        t.run(&["secrets", "import", example.to_str().unwrap()], "")
+            .code,
+        exit::OK
+    );
+    // A_KEY gets a value, B_KEY is skipped, C_KEY is mistyped.
+    t.answer(&[VALUE, VALUE, "", "one", "two"]);
+    let done = t.run(&["secrets", "fill"], "");
+    assert_eq!(done.code, exit::OK, "{}", done.all());
+    assert!(!done.all().contains(VALUE));
+    assert_eq!(t.vault.value("A_KEY").as_deref(), Some(VALUE));
+    assert_eq!(t.vault.value("B_KEY"), None);
+    assert_eq!(t.vault.value("C_KEY"), None);
+    assert!(done.out.contains("1 stored, 2 still empty"), "{}", done.out);
+    assert!(!read_all(&t.state()).contains(VALUE));
+
+    let listed = t.run(&["secrets", "list"], "").out;
+    let line = |n: &str| {
+        listed
+            .lines()
+            .find(|l| l.starts_with(n))
+            .unwrap()
+            .to_string()
+    };
+    assert!(line("A_KEY").contains("prompt"), "{listed}");
+    assert!(line("B_KEY").contains("empty"), "{listed}");
+
+    // `set` fills one in too, and `rm` drops an empty one.
+    t.answer(&[VALUE, VALUE]);
+    assert_eq!(t.run(&["secrets", "set", "B_KEY"], "").code, exit::OK);
+    assert!(t
+        .run(&["secrets", "rm", "C_KEY"], "")
+        .out
+        .contains("empty name"));
+    let nothing = t.run(&["secrets", "fill"], "");
+    assert!(
+        nothing.out.contains("Nothing to fill in"),
+        "{}",
+        nothing.out
+    );
+}
+
+#[test]
+fn fill_without_a_terminal_stores_nothing() {
+    let t = Harness::new();
+    let example = t.project.path().join(".env.example");
+    fs::write(&example, "A_KEY=\n").unwrap();
+    t.run(&["secrets", "import", example.to_str().unwrap()], "");
+    let done = t.run(&["secrets", "fill"], "");
+    assert_eq!(done.code, exit::FAILED);
+    assert!(done.err.contains("terminal"), "{}", done.err);
+    assert_eq!(t.vault.value("A_KEY"), None);
 }
 
 #[test]

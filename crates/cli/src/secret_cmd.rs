@@ -28,8 +28,11 @@ pub struct SecretsArgs {
 
 #[derive(Subcommand)]
 enum SecretsCommand {
-    /// Import a .env file as data into the keychain. Prints names only
+    /// Import a .env file as data into the keychain. Prints names only.
+    /// A template such as .env.example adds its names empty, to fill in later
     Import(ImportArgs),
+    /// Type a value for each name that is still empty, at a hidden prompt
+    Fill(FillArgs),
     /// Store one secret, typed at a hidden prompt
     Set(SetArgs),
     /// List secret names and where they go. Never reads the keychain
@@ -52,8 +55,20 @@ struct ImportArgs {
     /// Show the names it would import, without touching the keychain
     #[arg(long)]
     dry_run: bool,
+    /// Add only the names, empty, and drop every value in the file. This is
+    /// the default for templates such as .env.example
+    #[arg(long)]
+    names_only: bool,
     #[command(flatten)]
     project: ProjectArg,
+}
+
+#[derive(Args)]
+struct FillArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(hide = true, trailing_var_arg = true, allow_hyphen_values = true)]
+    extra: Vec<OsString>,
 }
 
 #[derive(Args)]
@@ -100,6 +115,7 @@ struct RmArgs {
 pub fn run(args: SecretsArgs, deps: &mut Deps) -> i32 {
     let result = match args.command {
         SecretsCommand::Import(args) => import(&args, deps),
+        SecretsCommand::Fill(args) => fill(&args, deps),
         SecretsCommand::Set(args) => set(&args, deps),
         SecretsCommand::List(args) => list(&args, deps),
         SecretsCommand::Rm(args) => rm(&args, deps),
@@ -247,6 +263,10 @@ fn import(args: &ImportArgs, deps: &mut Deps) -> Result<i32, String> {
         .map_err(|e| format!("cannot import {}: {e}", esc_path(&args.file)))?;
     let project = open_project(&args.project, deps)?;
 
+    if args.names_only || is_template(&file) {
+        return import_names(args, &entries, &project, deps);
+    }
+
     if args.dry_run {
         say!(deps, "Dry run. The keychain was not touched.");
         say!(deps, "File       {}", esc_path(&args.file));
@@ -254,7 +274,7 @@ fn import(args: &ImportArgs, deps: &mut Deps) -> Result<i32, String> {
         say!(deps, "Would import {} names:", entries.len());
         for entry in &entries {
             let note = if entry.value.is_empty() {
-                "  (empty, would be skipped)"
+                "  (empty, would be added to fill in later)"
             } else {
                 ""
             };
@@ -267,15 +287,26 @@ fn import(args: &ImportArgs, deps: &mut Deps) -> Result<i32, String> {
     let mut meta = load_meta(&dir, &project.path)?;
     let store = (deps.store)(&project.id);
     let mut stored = Vec::new();
+    let mut empty = 0;
     let mut outcome = Ok(());
     for entry in &entries {
         if entry.value.is_empty() {
-            say!(
-                deps,
-                "Skipped    {} (empty value, line {})",
-                entry.name,
-                entry.line
-            );
+            if meta.add_pending(&entry.name) {
+                empty += 1;
+                say!(
+                    deps,
+                    "Empty      {} (line {}), to fill in",
+                    entry.name,
+                    entry.line
+                );
+            } else {
+                say!(
+                    deps,
+                    "Kept       {} (empty in the file, line {})",
+                    entry.name,
+                    entry.line
+                );
+            }
             continue;
         }
         if let Err(error) = store.put(&entry.name, &entry.value) {
@@ -313,7 +344,148 @@ fn import(args: &ImportArgs, deps: &mut Deps) -> Result<i32, String> {
         deps,
         "None are assigned to a service, so none would be delivered."
     );
+    if empty > 0 {
+        say!(
+            deps,
+            "{empty} empty. Run `{} secrets fill` to type their values.",
+            brand::CLI_BIN
+        );
+    }
     say!(deps, "{}", not_protecting());
+    Ok(exit::OK)
+}
+
+/// The words that mark a file as a template rather than real values, as in
+/// `.env.example`, `example.env` or `.env.local.sample`.
+const TEMPLATE_WORDS: &[&str] = &["example", "sample", "template", "dist", "defaults"];
+
+fn is_template(file: &Path) -> bool {
+    let Some(name) = file.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    name.to_ascii_lowercase()
+        .split('.')
+        .any(|part| TEMPLATE_WORDS.contains(&part))
+}
+
+/// Records the file's names as empty. The values are placeholders, or a real
+/// key someone pasted by mistake, so they are dropped unread and the keychain
+/// is never opened.
+fn import_names(
+    args: &ImportArgs,
+    entries: &[secrets::EnvEntry],
+    project: &Project,
+    deps: &mut Deps,
+) -> Result<i32, String> {
+    let existing = read_meta(&project.paths.project(&project.id))?;
+    let has = |name: &SecretName| existing.as_ref().is_some_and(|m| m.has(name));
+    let waiting = |name: &SecretName| existing.as_ref().is_some_and(|m| m.is_pending(name));
+
+    if args.dry_run {
+        say!(
+            deps,
+            "Dry run. Nothing was recorded and the keychain was not touched."
+        );
+    }
+    say!(deps, "File       {}", esc_path(&args.file));
+    say!(deps, "Project    {}", esc_path(&project.path));
+    say!(deps, "Names only. The values in this file were not kept.");
+    say!(deps);
+
+    let mut meta = match &existing {
+        Some(meta) => meta.clone(),
+        None => ProjectMeta::new(&project.path),
+    };
+    let mut added = 0;
+    for entry in entries {
+        let note = if has(&entry.name) {
+            "already stored, left as it is"
+        } else if waiting(&entry.name) {
+            "already empty, to fill in"
+        } else {
+            added += 1;
+            meta.add_pending(&entry.name);
+            if args.dry_run {
+                "would be added, empty"
+            } else {
+                "added, empty"
+            }
+        };
+        say!(deps, "  {:<24} {note}", entry.name.as_str());
+    }
+    if !args.dry_run && added > 0 {
+        let dir = prepare_project(&project.paths, &project.id)?;
+        write_meta(&dir, &meta)?;
+    }
+    say!(deps);
+    let empty = meta.pending.len();
+    if empty > 0 && !args.dry_run {
+        say!(
+            deps,
+            "{empty} empty. Run `{} secrets fill` to type their values, or",
+            brand::CLI_BIN
+        );
+        say!(deps, "`{} secrets set NAME` for one.", brand::CLI_BIN);
+    } else if empty == 0 {
+        say!(deps, "Every name already has a value.");
+    }
+    Ok(exit::OK)
+}
+
+fn fill(args: &FillArgs, deps: &mut Deps) -> Result<i32, String> {
+    if let Some(code) = refuse_extra(&args.extra, deps) {
+        return Ok(code);
+    }
+    let project = open_project(&args.project, deps)?;
+    let dir = prepare_project(&project.paths, &project.id)?;
+    let mut meta = load_meta(&dir, &project.path)?;
+    if meta.pending.is_empty() {
+        say!(deps, "No empty names for this project. Nothing to fill in.");
+        return Ok(exit::OK);
+    }
+    say!(deps, "Project    {}", esc_path(&project.path));
+    say!(
+        deps,
+        "{} empty. Press Enter on its own to skip one.",
+        meta.pending.len()
+    );
+    let store = (deps.store)(&project.id);
+    let no_terminal = |_| "the hidden prompt needs a terminal".to_string();
+    let (mut stored, mut left) = (0, 0);
+    for name in meta.pending.clone() {
+        let first = (deps.prompt)(&format!("Value for {name} (hidden): ")).map_err(no_terminal)?;
+        if first.is_empty() {
+            say!(deps, "Skipped    {name}, still empty");
+            left += 1;
+            continue;
+        }
+        let second = (deps.prompt)("Type it again to confirm (hidden): ").map_err(no_terminal)?;
+        if first.expose() != second.expose() {
+            say!(
+                deps,
+                "Skipped    {name}: the two values differ, still empty"
+            );
+            left += 1;
+            continue;
+        }
+        store.put(&name, &first).map_err(store_failure)?;
+        meta.record(&name, SecretSource::Prompt);
+        // Written after each one: a value in the keychain must never go unrecorded.
+        write_meta(&dir, &meta)?;
+        audit(&dir, AuditAction::Stored, &name)?;
+        stored += 1;
+        say!(deps, "Stored     {name} in the OS keychain");
+    }
+    say!(deps);
+    say!(deps, "{stored} stored, {left} still empty.");
+    if stored > 0 {
+        say!(
+            deps,
+            "None are assigned to a service yet. Use `{} secrets set NAME --service S`.",
+            brand::CLI_BIN
+        );
+        say!(deps, "{}", not_protecting());
+    }
     Ok(exit::OK)
 }
 
@@ -348,18 +520,22 @@ pub(crate) fn listing(paths: &StatePaths, id: &ProjectId) -> Result<Vec<Listed>,
     let Some(meta) = read_meta(&paths.project(id))? else {
         return Ok(Vec::new());
     };
-    Ok(meta
-        .secrets
-        .iter()
-        .map(|record| Listed {
-            name: record.name.as_str().to_owned(),
-            source: match record.source {
-                SecretSource::Prompt => "prompt",
-                SecretSource::Import => "import",
-            },
-            goes_to: route(&meta, &record.name),
-        })
-        .collect())
+    let stored = meta.secrets.iter().map(|record| Listed {
+        name: record.name.as_str().to_owned(),
+        source: match record.source {
+            SecretSource::Prompt => "prompt",
+            SecretSource::Import => "import",
+        },
+        goes_to: route(&meta, &record.name),
+    });
+    let empty = meta.pending.iter().map(|name| Listed {
+        name: name.as_str().to_owned(),
+        source: "empty",
+        goes_to: "not set yet".to_string(),
+    });
+    let mut all: Vec<Listed> = stored.chain(empty).collect();
+    all.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(all)
 }
 
 fn list(args: &ListArgs, deps: &mut Deps) -> Result<i32, String> {
@@ -394,6 +570,13 @@ fn list(args: &ListArgs, deps: &mut Deps) -> Result<i32, String> {
         deps,
         "From the metadata. Values are never shown, and the keychain was not read."
     );
+    if secrets.iter().any(|s| s.source == "empty") {
+        say!(
+            deps,
+            "Empty names have no value. Run `{} secrets fill` to type them.",
+            brand::CLI_BIN
+        );
+    }
     Ok(exit::OK)
 }
 
@@ -409,6 +592,14 @@ fn rm(args: &RmArgs, deps: &mut Deps) -> Result<i32, String> {
     let store = (deps.store)(&project.id);
     let in_keychain = delete_value(store.as_ref(), &name)?;
     let in_meta = meta.has(&name);
+    let was_empty = meta.is_pending(&name);
+    if was_empty && !in_keychain && !in_meta {
+        meta.pending.retain(|n| n != &name);
+        write_meta(&dir, &meta)?;
+        say!(deps, "Removed    {name}, an empty name with no value");
+        return Ok(exit::OK);
+    }
+    meta.pending.retain(|n| n != &name);
     if !in_keychain && !in_meta {
         tell!(deps, "secrets: {name} was not found for this project.");
         return Ok(exit::FAILED);

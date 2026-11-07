@@ -6,6 +6,8 @@ secbox keeps secret values in your operating system's keychain and gives each on
 secbox secrets set API_KEY --service api      # type the value at a hidden prompt
 secbox secrets import .env --dry-run          # see which names a .env holds
 secbox secrets import .env                    # store them
+secbox secrets import .env.example            # add its names, empty, to fill in
+secbox secrets fill                           # type a value for each empty name
 secbox secrets list                           # names and where they go, never values
 secbox secrets rm API_KEY
 ```
@@ -43,7 +45,7 @@ secbox secrets import path/to/.env --dry-run
 secbox secrets import path/to/.env
 ```
 
-The file is parsed as data. It is never run through a shell, so a line like `X='$(touch /tmp/pwned)'` stores that text literally and runs nothing. `export NAME=value` and quoted values are understood. Empty values are skipped. Output lists names only:
+The file is parsed as data. It is never run through a shell, so a line like `X='$(touch /tmp/pwned)'` stores that text literally and runs nothing. `export NAME=value` and quoted values are understood. A name with an empty value is added as an empty name to [fill in](#filling-in-empty-names). Output lists names only:
 
 ```text
 Dry run. The keychain was not touched.
@@ -53,12 +55,45 @@ Would import 4 names:
   FAKE_API_KEY
   FAKE_DB_PASSWORD
   FAKE_EXPANSION
-  FAKE_EMPTY  (empty, would be skipped)
+  FAKE_EMPTY  (empty, would be added to fill in later)
 ```
 
 ![secbox secrets import --dry-run listing names only](../images/cli/secrets-import-dry-run.png)
 
 Imported secrets go to no service until you assign them. Run `secbox secrets set NAME --service S` for each, typing the value again.
+
+## Importing a template
+
+```sh
+secbox secrets import .env.example
+```
+
+A template lists the names a project needs, with placeholder values. When the file name has `example`, `sample`, `template`, `dist` or `defaults` as one of its dot-separated parts (`.env.example`, `example.env`, `.env.local.sample`), secbox adds **only the names**, as empty names. The values in the file are dropped without being stored, shown or written anywhere, since a template sometimes holds a real key by mistake. The keychain is not opened.
+
+```text
+File       .env.example
+Project    /home/you/code/myapp
+Names only. The values in this file were not kept.
+
+  STRIPE_KEY               added, empty
+  DATABASE_URL             added, empty
+  API_KEY                  already stored, left as it is
+
+2 empty. Run `secbox secrets fill` to type their values, or
+`secbox secrets set NAME` for one.
+```
+
+A name that already has a value is left as it is. Use `--names-only` to treat any file this way, and `--dry-run` to see the names without recording them.
+
+## Filling in empty names
+
+```sh
+secbox secrets fill
+```
+
+Asks for each empty name in turn, at a hidden prompt, twice. Press Enter on its own to skip a name, which stays empty. If the two values differ, that name is skipped and nothing is stored for it. Each value goes to the keychain as soon as it is confirmed, so stopping part way keeps the ones already typed. `secbox secrets set NAME` fills in a single name.
+
+Empty names have no value, so nothing is delivered for them. Like imported secrets, filled-in ones go to no service until you assign them with `secbox secrets set NAME --service S`.
 
 ## Listing
 
@@ -66,7 +101,7 @@ Imported secrets go to no service until you assign them. Run `secbox secrets set
 secbox secrets list
 ```
 
-Shows the project's id, then each name, how it was stored (`prompt` or `import`) and where it goes (a service, or `no service`). It reads secbox's metadata only and never opens the keychain, so it never shows a value and macOS never asks for permission.
+Shows the project's id, then each name, how it was stored (`prompt` or `import`, or `empty` for a name with no value yet) and where it goes (a service, `no service`, or `not set yet`). The Secrets panel in the [terminal UI](terminal-ui.md) shows the same list. It reads secbox's metadata only and never opens the keychain, so it never shows a value and macOS never asks for permission.
 
 ## How a secret reaches a service
 
@@ -96,4 +131,4 @@ After a suspected compromise, run `secbox down --destroy` and rotate every secre
 secbox secrets rm NAME
 ```
 
-Deletes it from the keychain and the metadata. `secbox uninstall --purge` does **not** remove keychain entries, so remove secrets with `rm` first.
+Deletes it from the keychain and the metadata. An empty name is just dropped from the list. `secbox uninstall --purge` does **not** remove keychain entries, so remove secrets with `rm` first.
