@@ -127,7 +127,7 @@ button.link {
 }
 button.link:hover:not(:disabled) { background: none; text-decoration: underline; }
 
-input[type=text], textarea {
+input[type=text], input[type=password], textarea {
   font: inherit;
   width: 100%;
   color: var(--ink);
@@ -655,3 +655,17 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
   .span3 { grid-column: span 2; }
   .changes { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ---------- secrets ---------- */
+
+.secret-rows li { flex-wrap: wrap; }
+.secret-rows .secret-name { font-family: var(--mono); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.secret-rows .secret-goes { flex: 1; min-width: 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.secret-rows li.empty-secret .secret-goes { color: var(--warn); }
+.tag.warn { background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn-line); }
+.tag.good { background: var(--good-soft); color: var(--good); }
+.secret-rows li.secret-edit { display: block; border-bottom: 1px solid var(--line); padding: 4px 0 16px; }
+.secret-form { display: flex; flex-direction: column; gap: 14px; padding: 16px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--soft); }
+.secret-form .checks { flex-direction: row; flex-wrap: wrap; gap: 6px 18px; }
+.secret-form-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.warn-line { color: var(--warn); font-size: 13.5px; font-weight: 500; }

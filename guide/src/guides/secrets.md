@@ -95,6 +95,12 @@ Asks for each empty name in turn, at a hidden prompt, twice. Press Enter on its 
 
 Empty names have no value, so nothing is delivered for them. Like imported secrets, filled-in ones go to no service until you assign them with `secbox secrets set NAME --service S`.
 
+## From the desktop app
+
+The desktop app's **Secrets** tab lists the same names as `secrets list`, stored and empty. *Set value* (for an empty name) or *Replace* opens a masked field under the row, with a checkbox for each service in the project's Compose file; *+ Add a secret* does the same for a new name. *Save to keychain* sends the value to the daemon, which checks the name and services, stores it in the keychain and records the assignment. Leave every service unticked to store it without giving it to any.
+
+The window is write-only: it can replace a value, but nothing in it can show one. The value you type passes through the app's web page on its way to the daemon. The page cannot wipe it from memory as the terminal does, so on a shared or untrusted machine prefer `secbox secrets fill`. A secret that was set to be delivered as a file (`--as-file`) keeps that when it is replaced from the window. A new value reaches a running sandbox on its next start.
+
 ## Listing
 
 ```sh

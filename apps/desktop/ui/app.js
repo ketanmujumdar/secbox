@@ -60,6 +60,10 @@
     diffs: new Map(),
     // The newest blocked hostnames, for the overview card.
     blocked: null,
+    // The Secrets tab's names, for the selected project. Never a value.
+    secrets: null,
+    // The secret being edited: its name, or '' for a new one.
+    editing: null,
   };
 
   // ---------- messages ----------
@@ -377,6 +381,7 @@
     renderLogServices();
     renderSecrets();
     renderSettings();
+    if (state.tab === 'secrets') loadSecrets();
   }
 
   function resourcePairs(r) {
@@ -496,6 +501,135 @@
       list.appendChild(el('li', s ? 'No secret is assigned to this project.' : 'Not known: the daemon did not report on it.', 'empty-line'));
     }
   }
+
+  async function loadSecrets() {
+    const path = state.selected;
+    if (!path) return;
+    let view = null;
+    try {
+      view = await invoke('secrets', { project: path });
+    } catch (error) {
+      if (state.selected === path) banner('Could not list the secrets: ' + errorText(error));
+    }
+    if (state.selected !== path) return;
+    state.secrets = view;
+    renderSecretRows();
+  }
+
+  function renderSecretRows() {
+    const view = state.secrets;
+    const list = $('secret-rows');
+    closeSecretForm();
+    clear(list);
+    if (!view) {
+      emptyRow(list, 'Not known: the daemon did not list them.');
+      show($('secret-empty-note'), false);
+      return;
+    }
+    if (!view.rows.length) {
+      emptyRow(list, 'No secrets yet. Add one, or run `' + cliBin() + ' secrets import .env.example` to list the names this project needs.');
+    }
+    for (const secret of view.rows) {
+      const item = el('li', null, secret.stored ? '' : 'empty-secret');
+      item.dataset.name = secret.name;
+      item.appendChild(el('span', secret.name, 'secret-name'));
+      item.appendChild(el('span', secret.stored ? 'Stored' : 'Empty', 'tag ' + (secret.stored ? 'good' : 'warn')));
+      item.appendChild(el('span', secret.goes_to, 'secret-goes'));
+      const button = el('button', secret.stored ? 'Replace' : 'Set value', secret.stored ? '' : 'primary');
+      button.addEventListener('click', () => openSecretForm(secret, item));
+      item.appendChild(button);
+      list.appendChild(item);
+    }
+    const empty = view.rows.filter((r) => !r.stored).length;
+    $('secret-empty-note').textContent = empty
+      ? plural(empty, 'name has', 'names have') + ' no value yet. Nothing is delivered for ' + (empty === 1 ? 'it' : 'them') + ' until you set one.'
+      : '';
+    show($('secret-empty-note'), empty > 0);
+  }
+
+  function cliBin() {
+    return state.info ? state.info.cli_bin : 'secbox';
+  }
+
+  // One form, moved under the row being edited, or to the end for a new one.
+  function openSecretForm(secret, item) {
+    closeSecretForm();
+    const view = state.secrets;
+    if (!view) return;
+    const form = $('secret-form');
+    state.editing = secret ? secret.name : '';
+    show($('secret-name-field'), !secret);
+    $('secret-name').value = '';
+    $('secret-value').value = '';
+    $('secret-value-label').textContent = secret
+      ? (secret.stored ? 'New value for ' : 'Value for ') + secret.name
+      : 'Value';
+    const boxes = $('secret-services');
+    clear(boxes);
+    const ticked = new Set(secret ? secret.services : []);
+    for (const name of view.services) {
+      const li = el('li');
+      const label = el('label');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.value = name;
+      box.checked = ticked.has(name);
+      label.appendChild(box);
+      label.appendChild(el('span', name, 'mono'));
+      li.appendChild(label);
+      boxes.appendChild(li);
+    }
+    $('secret-services-note').textContent = view.services.length
+      ? 'Only the services ticked get it. Leave all unticked to store it without giving it to any.'
+      : (view.note || 'This project has no services to give it to.') + ' It can still be stored.';
+    const holder = el('li', null, 'secret-edit');
+    holder.appendChild(form);
+    if (item) item.after(holder);
+    else $('secret-rows').appendChild(holder);
+    show(form, true);
+    (secret ? $('secret-value') : $('secret-name')).focus();
+  }
+
+  function closeSecretForm() {
+    const form = $('secret-form');
+    $('secret-value').value = '';
+    show(form, false);
+    const holder = form.parentElement;
+    if (holder && holder.classList.contains('secret-edit')) {
+      $('secret-card').appendChild(form);
+      holder.remove();
+    }
+    state.editing = null;
+  }
+
+  $('secret-add').addEventListener('click', () => openSecretForm(null, null));
+  $('secret-cancel').addEventListener('click', () => closeSecretForm());
+  $('secret-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const path = state.selected;
+    if (!path || state.editing === null) return;
+    const name = state.editing || $('secret-name').value.trim();
+    if (!name) { banner('Give the secret a name first.'); return; }
+    // Taken out of the field at once, so it is not left on the page while the
+    // daemon answers. The browser cannot wipe a string, but it can drop it.
+    let value = $('secret-value').value;
+    $('secret-value').value = '';
+    if (!value) { banner('Type a value first. An empty value is not stored.'); return; }
+    const services = [...$('secret-services').querySelectorAll('input:checked')].map((box) => box.value);
+    $('secret-save').disabled = true;
+    try {
+      banner(await invoke('set_secret', { project: path, name, value, services }), 'ok');
+      value = null;
+      closeSecretForm();
+      await loadSecrets();
+      loadStatus();
+    } catch (error) {
+      value = null;
+      banner('Not stored: ' + errorText(error));
+    } finally {
+      $('secret-save').disabled = false;
+    }
+  });
 
   function renderSettings() {
     const row = selectedRow();
@@ -1284,7 +1418,11 @@
     for (const panel of document.querySelectorAll('.panel')) {
       show(panel, panel.dataset.panel === tab);
     }
+    // Each tab starts at its top, not where the last one was scrolled to.
+    for (const scroller of document.querySelectorAll('.content')) scroller.scrollTop = 0;
     if (tab !== 'logs') stopLogs();
+    if (tab !== 'secrets') closeSecretForm();
+    if (tab === 'secrets') await loadSecrets();
     if (tab === 'network') await readTraffic();
     if (tab === 'changes') {
       renderGitAvailability();
@@ -1388,7 +1526,7 @@
     $('brand').textContent = info.product;
     document.title = info.product;
     $('choose-cli').textContent = `${info.cli_bin} up git@…`;
-    $('secrets-cmd').textContent = `cd /path/to/project\n${info.cli_bin} secrets import .env.example   # add the names, empty\n${info.cli_bin} secrets fill                  # type a value for each\n${info.cli_bin} secrets list\n${info.cli_bin} secrets set NAME --service SERVICE`;
+    $('secrets-cmd').textContent = `cd /path/to/project\n${info.cli_bin} secrets import .env.example   # add the names, empty\n${info.cli_bin} secrets fill                  # type a value for each\n${info.cli_bin} secrets set NAME --service SERVICE`;
     const box = $('cli-install');
     clear(box);
     if (info.bundled_cli) {

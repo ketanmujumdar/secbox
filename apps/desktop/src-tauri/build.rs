@@ -21,6 +21,8 @@ const COMMANDS: &[&str] = &[
     "import_remote",
     "git",
     "diff",
+    "secrets",
+    "set_secret",
 ];
 
 fn main() {

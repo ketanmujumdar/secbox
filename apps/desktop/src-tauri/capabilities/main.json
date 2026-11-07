@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "The main window may call the app's own daemon commands and nothing else. No file system, shell, HTTP or opener plugin is installed or granted, and no core permission is granted.",
+  "description": "The main window may call the app's own daemon commands and nothing else. set-secret is write-only: the daemon stores the value, and no command reads one back. No file system, shell, HTTP or opener plugin is installed or granted, and no core permission is granted.",
   "windows": ["main"],
   "permissions": [
     "allow-app-info",
@@ -21,6 +21,8 @@
     "allow-git",
     "allow-diff",
     "allow-remove-project",
-    "allow-approve-host"
+    "allow-approve-host",
+    "allow-secrets",
+    "allow-set-secret"
   ]
 }

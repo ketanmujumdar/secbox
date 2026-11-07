@@ -93,6 +93,16 @@
     blockers: [],
   };
 
+  // Names only, as the daemon sends them. The stub keeps no value: it records
+  // that one arrived, so shoot.js can check it left the page.
+  const secretRows = [
+    { name: 'DATABASE_URL', stored: true, services: ['api', 'worker'], goes_to: 'api, worker: injected into the environment' },
+    { name: 'SENDGRID_API_KEY', stored: false, services: [], goes_to: 'not set yet' },
+    { name: 'SENTRY_DSN', stored: false, services: [], goes_to: 'not set yet' },
+    { name: 'STRIPE_KEY', stored: true, services: ['api'], goes_to: 'api: injected into the environment' },
+  ];
+  const secretServices = ['web', 'api', 'worker', 'postgres'];
+
   const blocked = {
     recording: true,
     total: 41,
@@ -217,6 +227,20 @@
         return null;
       case 'blocked':
         return blocked;
+      case 'secrets':
+        return { rows: JSON.parse(JSON.stringify(secretRows)), services: secretServices.slice(), note: null };
+      case 'set_secret': {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(args.name)) throw 'that is not a valid secret name. Use letters, digits and underscores, starting with a letter or underscore';
+        if (!args.value) throw 'an empty value was not stored';
+        for (const s of args.services) if (!secretServices.includes(s)) throw 'this project has no service named ' + s;
+        window.__secretsReceived = (window.__secretsReceived || 0) + 1;
+        const services = args.services.slice().sort();
+        let row = secretRows.find((r) => r.name === args.name);
+        const replaced = !!(row && row.stored);
+        if (!row) { row = { name: args.name }; secretRows.push(row); secretRows.sort((a, b) => a.name.localeCompare(b.name)); }
+        Object.assign(row, { stored: true, services, goes_to: services.length ? services.join(', ') + ': injected into the environment' : 'no service' });
+        return (replaced ? 'Replaced ' : 'Stored ') + args.name + ' in your keychain. ' + (services.length ? 'It goes to ' + services.join(', ') + '.' : 'It goes to no service yet.') + ' The running sandbox gets it on its next start.';
+      }
       case 'diff':
         await later(100);
         return diff;

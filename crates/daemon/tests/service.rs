@@ -2273,3 +2273,186 @@ fn a_damaged_record_is_not_a_failure_and_says_something_may_be_missing() {
     assert!(report.cut_off);
     assert_eq!(report.events.len(), 2, "it reads the log again from what is left");
 }
+
+// Secrets from a client such as the desktop window: listed by name, and
+// stored write-only.
+
+impl SecretFixture {
+    fn meta_dir(&self) -> std::path::PathBuf {
+        let paths = StatePaths {
+            state: self._state.path().join(brand::STATE_DIR),
+            overridden: true,
+        };
+        let canonical = std::fs::canonicalize(self.project.path()).unwrap();
+        paths.project(&hoststate::project_id(&canonical).unwrap())
+    }
+
+    fn secrets(&self) -> proto::SecretsReport {
+        match self
+            .service
+            .handle(&Request::Secrets(ProjectArgs { project: self.path() }), &mut Quiet)
+            .unwrap()
+        {
+            Reply::Secrets(report) => report,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    fn set_secret(
+        &self,
+        name: &str,
+        value: &str,
+        services: &[&str],
+    ) -> Result<proto::SetSecretReport, proto::ApiError> {
+        match self.service.handle(
+            &Request::SetSecret(proto::SetSecretArgs {
+                project: self.path(),
+                name: name.to_owned(),
+                value: proto::SecretText::new(value.to_owned()),
+                services: services.iter().map(|s| (*s).to_owned()).collect(),
+            }),
+            &mut Quiet,
+        )? {
+            Reply::SetSecret(report) => Ok(report),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    fn stored(&self, name: &str) -> Option<String> {
+        self.deps
+            .store
+            .get(&secrets::SecretName::new(name).unwrap())
+            .unwrap()
+            .map(|v| v.expose().to_owned())
+    }
+}
+
+const TYPED: &str = "typed-in-the-window-7d41";
+
+#[test]
+fn secrets_lists_stored_and_empty_names_and_the_projects_services() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    let dir = f.meta_dir();
+    let mut meta = hoststate::read_meta(&dir).unwrap().unwrap();
+    meta.record(
+        &secrets::SecretName::new("ENCRYPTION_KEY").unwrap(),
+        hoststate::SecretSource::Prompt,
+    );
+    meta.add_pending(&secrets::SecretName::new("STRIPE_KEY").unwrap());
+    hoststate::write_meta(&dir, &meta).unwrap();
+
+    let report = f.secrets();
+    assert_eq!(report.services, vec!["web", "api"]);
+    assert_eq!(report.services_note, None);
+    let names: Vec<(&str, bool)> = report
+        .secrets
+        .iter()
+        .map(|s| (s.name.as_str(), s.stored))
+        .collect();
+    assert_eq!(names, vec![("ENCRYPTION_KEY", true), ("STRIPE_KEY", false)]);
+    assert_eq!(report.secrets[0].services, vec!["api"]);
+    assert_eq!(
+        report.secrets[0].route.as_deref(),
+        Some("injected into the environment")
+    );
+    assert!(!format!("{report:?}").contains(FAKE_VALUE));
+}
+
+#[test]
+fn set_secret_stores_the_value_assigns_it_and_fills_an_empty_name() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    let dir = f.meta_dir();
+    let mut meta = hoststate::read_meta(&dir).unwrap().unwrap();
+    meta.add_pending(&secrets::SecretName::new("STRIPE_KEY").unwrap());
+    hoststate::write_meta(&dir, &meta).unwrap();
+
+    let report = f.set_secret("STRIPE_KEY", TYPED, &["web", "api", "web"]).unwrap();
+    assert_eq!(report.name, "STRIPE_KEY");
+    assert!(!report.replaced);
+    assert_eq!(report.services, vec!["api", "web"]);
+    assert!(!report.applies_on_next_start);
+    assert!(!format!("{report:?}").contains(TYPED));
+    assert_eq!(f.stored("STRIPE_KEY").as_deref(), Some(TYPED));
+
+    let listed = f.secrets();
+    let stripe = listed.secrets.iter().find(|s| s.name == "STRIPE_KEY").unwrap();
+    assert!(stripe.stored, "no longer empty");
+    assert_eq!(stripe.services, vec!["api", "web"]);
+
+    // The plan now shows it going to both services.
+    let plan = f.plan();
+    let planned = plan.secrets.iter().find(|s| s.name == "STRIPE_KEY").unwrap();
+    assert_eq!(planned.services, vec!["api", "web"]);
+
+    // Nothing written to disk by the daemon holds the value.
+    for entry in walk(f._state.path()) {
+        let body = std::fs::read(&entry).unwrap_or_default();
+        assert!(
+            !String::from_utf8_lossy(&body).contains(TYPED),
+            "{}",
+            entry.display()
+        );
+    }
+}
+
+#[test]
+fn set_secret_keeps_the_delivery_chosen_before_and_can_unassign() {
+    let f = with_secret(secrets::Delivery::InjectedFile, &["api"]);
+    // The fixture assigns it without a record, so it counts as new.
+    f.set_secret("ENCRYPTION_KEY", TYPED, &["web"]).unwrap();
+    let again = f.set_secret("ENCRYPTION_KEY", TYPED, &["web"]).unwrap();
+    assert!(again.replaced);
+    let listed = f.secrets();
+    assert_eq!(
+        listed.secrets[0].route.as_deref(),
+        Some("injected as a file")
+    );
+    assert_eq!(listed.secrets[0].services, vec!["web"]);
+
+    f.set_secret("ENCRYPTION_KEY", TYPED, &[]).unwrap();
+    let listed = f.secrets();
+    assert!(listed.secrets[0].services.is_empty());
+    assert_eq!(listed.secrets[0].route, None);
+    assert_eq!(f.stored("ENCRYPTION_KEY").as_deref(), Some(TYPED));
+}
+
+#[test]
+fn set_secret_refuses_without_storing_and_never_repeats_a_bad_name() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+
+    let unknown = f.set_secret("NEW_KEY", TYPED, &["db"]).unwrap_err();
+    assert_eq!(unknown.code, ErrorCode::BadRequest);
+    assert!(unknown.message.contains("no service named db"), "{}", unknown.message);
+
+    let pasted = "sk-live-4f9a2b-pasted-into-the-name";
+    let bad_name = f.set_secret(pasted, TYPED, &[]).unwrap_err();
+    assert!(!bad_name.message.contains("4f9a2b"), "{}", bad_name.message);
+    assert!(!bad_name.message.contains(TYPED));
+
+    let empty = f.set_secret("NEW_KEY", "", &[]).unwrap_err();
+    assert!(empty.message.contains("empty"), "{}", empty.message);
+
+    let huge = "x".repeat(proto::MAX_SECRET_BYTES + 1);
+    assert!(f.set_secret("NEW_KEY", &huge, &[]).is_err());
+
+    assert_eq!(f.stored("NEW_KEY"), None);
+    assert_eq!(f.stored("ENCRYPTION_KEY").as_deref(), Some(FAKE_VALUE));
+    let listed = f.secrets();
+    assert!(listed.secrets.iter().all(|s| s.name != "NEW_KEY"));
+}
+
+fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
