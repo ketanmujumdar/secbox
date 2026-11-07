@@ -8,6 +8,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
+use proto::{Reply, Request, SecretFileArgs, SecretFileEffect, SecretFileSource, UseSecretFileArgs};
 use secrets::{
     parse_env_file, Assignment, AssignmentSet, AuditAction, BoundHost, Delivery, ProjectId,
     SecretName, SecretStore, ServiceName, StoreError,
@@ -31,6 +32,9 @@ enum SecretsCommand {
     /// Import a .env file as data into the keychain. Prints names only.
     /// A template such as .env.example adds its names empty, to fill in later
     Import(ImportArgs),
+    /// Use an env file for this project: its values go to the keychain and on
+    /// to its services. Shows the names first, and needs --yes to store them
+    Use(UseArgs),
     /// Type a value for each name that is still empty, at a hidden prompt
     Fill(FillArgs),
     /// Store one secret, typed at a hidden prompt
@@ -59,6 +63,23 @@ struct ImportArgs {
     /// the default for templates such as .env.example
     #[arg(long)]
     names_only: bool,
+    #[command(flatten)]
+    project: ProjectArg,
+}
+
+#[derive(Args)]
+struct UseArgs {
+    /// The file. With --sandbox, a path inside the sandbox's project folder
+    file: PathBuf,
+    /// Read the file from the running sandbox rather than this machine
+    #[arg(long)]
+    sandbox: bool,
+    /// Service that gets them. Repeat for more than one [default: every service]
+    #[arg(long = "service", value_name = "NAME")]
+    services: Vec<String>,
+    /// Store them, after showing the names
+    #[arg(long)]
+    yes: bool,
     #[command(flatten)]
     project: ProjectArg,
 }
@@ -115,6 +136,7 @@ struct RmArgs {
 pub fn run(args: SecretsArgs, deps: &mut Deps) -> i32 {
     let result = match args.command {
         SecretsCommand::Import(args) => import(&args, deps),
+        SecretsCommand::Use(args) => use_file(&args, deps),
         SecretsCommand::Fill(args) => fill(&args, deps),
         SecretsCommand::Set(args) => set(&args, deps),
         SecretsCommand::List(args) => list(&args, deps),
@@ -355,17 +377,91 @@ fn import(args: &ImportArgs, deps: &mut Deps) -> Result<i32, String> {
     Ok(exit::OK)
 }
 
-/// The words that mark a file as a template rather than real values, as in
-/// `.env.example`, `example.env` or `.env.local.sample`.
-const TEMPLATE_WORDS: &[&str] = &["example", "sample", "template", "dist", "defaults"];
-
 fn is_template(file: &Path) -> bool {
-    let Some(name) = file.file_name().and_then(|n| n.to_str()) else {
-        return false;
+    file.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(secrets::is_template_file)
+}
+
+/// How `secrets use` and the full-screen interface describe one name.
+pub(crate) fn effect_words(effect: SecretFileEffect) -> &'static str {
+    match effect {
+        SecretFileEffect::Store => "stored",
+        SecretFileEffect::Replace => "replaces the value stored now",
+        SecretFileEffect::Empty => "no value here, added to fill in",
+        SecretFileEffect::Keep => "no value here, the stored one stays",
+        SecretFileEffect::Skip => "left out: its value has a line break",
+    }
+}
+
+fn use_file(args: &UseArgs, deps: &mut Deps) -> Result<i32, String> {
+    let project = project_dir(args.project.project.as_deref(), deps)?;
+    let project = project.to_string_lossy().into_owned();
+    let source = if args.sandbox {
+        SecretFileSource::Sandbox(args.file.to_string_lossy().into_owned())
+    } else if args.file.is_absolute() {
+        SecretFileSource::Host(args.file.to_string_lossy().into_owned())
+    } else {
+        SecretFileSource::Host(deps.cwd.join(&args.file).to_string_lossy().into_owned())
     };
-    name.to_ascii_lowercase()
-        .split('.')
-        .any(|part| TEMPLATE_WORDS.contains(&part))
+    let failed = |e: crate::client::CallError| esc(&e.message());
+    let reply = deps
+        .daemon
+        .call(
+            Request::ReadSecretFile(SecretFileArgs {
+                project: project.clone(),
+                source: source.clone(),
+            }),
+            &mut |_, _| {},
+        )
+        .map_err(failed)?;
+    let Reply::ReadSecretFile(preview) = reply else {
+        return Err("the daemon answered something else".to_owned());
+    };
+
+    let label = if args.sandbox { " (from the sandbox)" } else { "" };
+    say!(deps, "File       {}{label}", esc_path(&args.file));
+    if preview.names_only {
+        say!(deps, "A template, so its values are dropped and only its names are used.");
+    }
+    for name in &preview.names {
+        say!(deps, "  {:<28} {}", name.name, effect_words(name.effect));
+    }
+    let services = if args.services.is_empty() {
+        preview.services.clone()
+    } else {
+        args.services.clone()
+    };
+    say!(
+        deps,
+        "Goes to    {}",
+        if services.is_empty() { "no service".to_owned() } else { services.join(", ") }
+    );
+    if !args.yes {
+        say!(deps);
+        say!(deps, "Nothing was stored. Add --yes to store these.");
+        return Ok(exit::OK);
+    }
+
+    let reply = deps
+        .daemon
+        .call(
+            Request::UseSecretFile(UseSecretFileArgs {
+                project,
+                source,
+                names: preview.names.iter().map(|n| n.name.clone()).collect(),
+                services,
+            }),
+            &mut |_, _| {},
+        )
+        .map_err(failed)?;
+    let Reply::UseSecretFile(report) = reply else {
+        return Err("the daemon answered something else".to_owned());
+    };
+    say!(deps);
+    say!(deps, "{}", report.summary());
+    say!(deps, "{}", not_protecting());
+    Ok(exit::OK)
 }
 
 /// Records the file's names as empty. The values are placeholders, or a real

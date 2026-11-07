@@ -3,7 +3,7 @@
 //! The layout follows the design: a bar along the top with the program's
 //! name and the early-build tag, the projects down a rail on the left, and on
 //! the right the selected project's name, state and folder over a row of
-//! tabs (Overview, Logs, Network, Changes, Secrets). With no project yet, the
+//! tabs (Overview, Logs, Network, Changes, Secrets, Settings). With no project yet, the
 //! whole page offers the two ways to bring one in. The bar along the bottom
 //! lists only the keys that work where you are, then whether the daemon
 //! answered.
@@ -26,15 +26,17 @@ pub enum Tab {
     Network,
     Changes,
     Secrets,
+    Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [
+    pub const ALL: [Tab; 6] = [
         Tab::Overview,
         Tab::Logs,
         Tab::Network,
         Tab::Changes,
         Tab::Secrets,
+        Tab::Settings,
     ];
 
     pub fn label(self) -> &'static str {
@@ -44,6 +46,7 @@ impl Tab {
             Tab::Network => "Network",
             Tab::Changes => "Changes",
             Tab::Secrets => "Secrets",
+            Tab::Settings => "Settings",
         }
     }
 
@@ -55,6 +58,7 @@ impl Tab {
             Tab::Network => 'n',
             Tab::Changes => 'c',
             Tab::Secrets => 's',
+            Tab::Settings => 't',
         }
     }
 
@@ -455,6 +459,22 @@ pub struct SecretsPanel {
     pub note: Option<Line>,
     /// Where the secrets could be sent, from the daemon. Already escaped.
     pub reach: Vec<String>,
+    /// Which row the keys act on.
+    pub chosen: usize,
+    /// The daemon's answer for the same names, with who gets each. Empty when
+    /// it did not answer.
+    pub known: Vec<proto::SecretEntry>,
+    /// The services a secret can be given to.
+    pub services: Vec<String>,
+    /// Why there are none, when there are none.
+    pub services_note: Option<String>,
+}
+
+impl SecretsPanel {
+    pub fn choose(&mut self, delta: isize) {
+        let last = self.rows.len().saturating_sub(1);
+        self.chosen = self.chosen.saturating_add_signed(delta).min(last);
+    }
 }
 
 /// What the Network tab shows for the selected project.
@@ -492,8 +512,31 @@ impl TrafficPanel {
     }
 }
 
-/// What the Changes tab shows for the selected project: the lines of a
-/// comparison with its snapshot, flags first.
+/// One line on the right of the Changes tab. A row with no sign is the
+/// interface's own words, such as a flag or why a file is not shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchRow {
+    pub old: Option<u64>,
+    pub new: Option<u64>,
+    pub sign: Option<char>,
+    /// Escaped, with its tabs turned to spaces.
+    pub text: String,
+    pub style: Style,
+}
+
+/// One changed file, as listed and as read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangedFile {
+    pub letter: char,
+    pub path: String,
+    pub flagged: bool,
+    /// Lines added and removed, or that it is not shown.
+    pub stat: String,
+    pub rows: Vec<PatchRow>,
+}
+
+/// What the Changes tab shows for the selected project: a comparison with its
+/// snapshot, flags first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReviewPanel {
     /// The project all of this belongs to.
@@ -506,6 +549,23 @@ pub struct ReviewPanel {
     pub files: Option<usize>,
     /// How many of the findings need a person's attention.
     pub flags: usize,
+    /// Each changed file, flagged ones first.
+    pub changed: Vec<ChangedFile>,
+    /// What stays in view whichever file is open.
+    pub top: Vec<Line>,
+    /// What is open: 0 is the Summary, which is `lines`, then each file.
+    pub chosen: usize,
+    /// Whether up and down move through what is open, not along the list.
+    pub reading: bool,
+    /// How many rows down from the top of what is open the view has moved.
+    pub patch_scroll: usize,
+    /// A comparison is running now.
+    pub comparing: bool,
+    /// When the last comparison that worked came back.
+    pub compared_at: Option<std::time::Instant>,
+    /// A comparison is asked for. True when it must not be skipped, as after a
+    /// Git command, and false when it can be, as when the tab was just reopened.
+    pub wanted: Option<bool>,
 }
 
 impl ReviewPanel {
@@ -525,6 +585,46 @@ impl ReviewPanel {
         let furthest = self.lines.len().saturating_sub(1);
         self.scroll = self.scroll.saturating_add_signed(delta).min(furthest);
     }
+
+    /// Moves along the Summary and the files, stopping at each end.
+    pub fn move_file(&mut self, delta: isize) {
+        self.chosen = self.chosen.saturating_add_signed(delta).min(self.changed.len());
+        self.patch_scroll = 0;
+    }
+
+    /// Moves through what is open, stopping at each end.
+    pub fn scroll_open(&mut self, delta: isize) {
+        let rows = match self.chosen.checked_sub(1) {
+            None => self.lines.len(),
+            Some(at) => self.changed.get(at).map_or(0, |file| file.rows.len()),
+        };
+        self.patch_scroll = self.patch_scroll.saturating_add_signed(delta).min(rows.saturating_sub(1));
+    }
+
+    /// The path of the file open, if one is.
+    pub fn open_path(&self) -> Option<String> {
+        self.chosen.checked_sub(1).and_then(|at| self.changed.get(at)).map(|file| file.path.clone())
+    }
+}
+
+/// A line being typed, in a box over the page. `shown` is what to draw: for a
+/// secret, only dots, so that the value itself is never in the model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prompt {
+    pub title: String,
+    pub lines: Vec<Line>,
+    pub shown: String,
+    /// What Enter does, for the bar.
+    pub submit: &'static str,
+}
+
+/// A list of things to tick, in a box over the page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Picker {
+    pub title: String,
+    pub lines: Vec<Line>,
+    pub rows: Vec<(String, bool)>,
+    pub cursor: usize,
 }
 
 /// Whether the daemon answered the last time it was asked.
@@ -581,6 +681,10 @@ pub struct Model {
     /// Showing the ways to bring a project in. Always set while there is
     /// no project.
     pub new_project: Option<NewProject>,
+    /// A line being typed in a box over the page.
+    pub prompt: Option<Prompt>,
+    /// A list being ticked in a box over the page.
+    pub picker: Option<Picker>,
 }
 
 impl Model {
@@ -628,8 +732,14 @@ pub fn keys_for(model: &Model) -> Vec<KeyLabel> {
         return if dialog.asks() {
             vec![("y", "Yes"), ("n", "No"), ("↑↓", "Scroll")]
         } else {
-            vec![("any key", "Close")]
+            vec![("↑↓", "Scroll"), ("any key", "Close")]
         };
+    }
+    if let Some(prompt) = &model.prompt {
+        return vec![("↵", prompt.submit), ("Esc", "Cancel")];
+    }
+    if model.picker.is_some() {
+        return vec![("↑↓", "Choose"), ("Space", "Tick"), ("↵", "Store"), ("Esc", "Cancel")];
     }
     if model.projects.is_empty() || model.new_project.is_some() {
         let typing = model.new_project.as_ref().filter(|n| n.typing);
@@ -668,6 +778,7 @@ pub fn keys_for(model: &Model) -> Vec<KeyLabel> {
             }
             if offers.shell {
                 keys.push(("e", "Shell"));
+                keys.push(("v", "VS Code"));
             }
             keys.push(("r", "Refresh"));
         }
@@ -675,6 +786,7 @@ pub fn keys_for(model: &Model) -> Vec<KeyLabel> {
             keys.extend([("↑↓", "Scroll"), ("←→", "Service"), ("f", "Follow")]);
             if offers.shell {
                 keys.push(("e", "Shell"));
+                keys.push(("v", "VS Code"));
             }
             keys.push(("r", "Refresh"));
         }
@@ -685,13 +797,42 @@ pub fn keys_for(model: &Model) -> Vec<KeyLabel> {
             }
             keys.push(("r", "Refresh"));
         }
-        Tab::Changes => keys.extend([
-            ("↑↓", "Scroll"),
-            ("r", "Compare"),
-            ("p", "Pull"),
-            ("P", "Push"),
-        ]),
-        Tab::Secrets => keys.extend([("↑↓", "Project"), ("r", "Refresh")]),
+        Tab::Changes => {
+            if model.review.changed.is_empty() {
+                keys.push(("↑↓", "Scroll"));
+            } else if model.review.reading {
+                keys.extend([("↑↓", "Scroll"), ("Esc", "Files")]);
+            } else {
+                keys.extend([("↑↓", "File"), ("↵", "Read")]);
+            }
+            keys.extend([
+                ("r", "Compare"),
+                ("m", "Commit"),
+                ("g", "Git"),
+                ("p", "Pull"),
+                ("P", "Push"),
+            ]);
+        }
+        Tab::Secrets => {
+            if model.secrets.rows.is_empty() {
+                keys.push(("↑↓", "Project"));
+            } else {
+                let empty = model
+                    .secrets
+                    .rows
+                    .get(model.secrets.chosen)
+                    .is_some_and(|row| row.source == EMPTY_SOURCE);
+                keys.extend([("↑↓", "Secret"), ("↵", if empty { "Set" } else { "Replace" })]);
+            }
+            keys.extend([("a", "Add"), ("f", "Use a file"), ("r", "Refresh")]);
+        }
+        Tab::Settings => {
+            keys.push(("↑↓", "Project"));
+            if offers.destroy {
+                keys.push(("x", "Destroy"));
+            }
+            keys.extend([("D", "Remove"), ("r", "Refresh")]);
+        }
     }
     keys.extend([("?", "Help"), ("q", "Quit")]);
     keys
@@ -706,8 +847,9 @@ pub fn help_for(model: &Model) -> &'static str {
         Tab::Overview => "Up and down choose a project. u starts it after showing the plan, S stops and x destroys after asking, e opens a shell, r reads again. Letters on the tabs open them, Tab moves on, + or N adds a project, q quits.",
         Tab::Logs => "New lines follow by themselves. Left and right choose a service or All. Up and PgUp scroll back and pause; f or End follows again. e opens a shell in the chosen service. r reads again.",
         Tab::Network => "Hostnames this sandbox was refused. Up, down, PgUp and PgDn scroll. a approves the bottom row's hostname, keeping the sandbox's data. r reads the newest.",
-        Tab::Changes => "r compares the sandbox's files with the snapshot it started from, inside the running sandbox. Flags come first, in red. Up, down, PgUp and PgDn scroll. p pulls and P pushes the current branch, with your SSH key on this machine. Nothing is copied out.",
-        Tab::Secrets => "Names and where they go, never values. Up and down choose the project, r reads again. Change them with the secrets command.",
+        Tab::Changes => "It compares by itself when opened with the sandbox running, and after a Git command; r does it now. Up and down choose a file, Enter reads it with up and down, Esc goes back, PgUp and PgDn scroll it. m commits, g runs any Git command, p pulls and P pushes. Nothing is copied out.",
+        Tab::Secrets => "Names and where they go, never values. Up and down choose a secret, Enter sets or replaces its value and who gets it, a adds one, f uses an env file. With no secrets, up and down choose the project. r reads again.",
+        Tab::Settings => "This project and its limits. Up and down choose the project. x destroys its sandbox and D removes it from the list, each after asking. r reads again.",
     }
 }
 
@@ -773,6 +915,12 @@ pub fn compose(model: &Model, width: usize, height: usize) -> Screen {
 
     if let Some(progress) = &model.progress {
         draw_progress(&mut screen, progress);
+    }
+    if let Some(prompt) = &model.prompt {
+        draw_prompt(&mut screen, prompt);
+    }
+    if let Some(picker) = &model.picker {
+        draw_picker(&mut screen, picker);
     }
     if let Some(dialog) = &model.dialog {
         draw_dialog(&mut screen, dialog);
@@ -943,6 +1091,7 @@ fn project(model: &Model, screen: &mut Screen, at: Rect) {
         Tab::Network => traffic_body(model, screen, body),
         Tab::Changes => review_body(model, row, screen, body),
         Tab::Secrets => secrets_body(model, screen, body),
+        Tab::Settings => settings_body(model, row, screen, body),
     }
 }
 
@@ -1628,8 +1777,12 @@ fn secrets_body(model: &Model, screen: &mut Screen, at: Rect) {
     } else {
         fits
     };
-    for secret in panel.rows.iter().take(shown) {
-        let style = if secret.source == EMPTY_SOURCE {
+    let first_row = panel.chosen.saturating_sub(shown.saturating_sub(1));
+    for (index, secret) in panel.rows.iter().enumerate().skip(first_row).take(shown) {
+        let style = if index == panel.chosen {
+            screen.fill(x, row, width, 1, ' ', Style::Selected);
+            Style::Selected
+        } else if secret.source == EMPTY_SOURCE {
             Style::WindowWarn
         } else if secret.goes_to == "no service" {
             Style::WindowDim
@@ -1680,9 +1833,13 @@ fn review_body(model: &Model, row: &Row, screen: &mut Screen, at: Rect) {
     let (x, y, width) = (at.x, at.y, at.w);
     let bottom = y + at.h;
     let mut line_y = y;
+    if panel.comparing && (panel.lines.is_empty() || panel.project != row.path) {
+        screen.text_cut(x, line_y, COMPARING, width, Style::WindowWarn);
+        line_y += 2;
+    }
     if panel.lines.is_empty() || panel.project != row.path {
         for (text, style) in [
-            ("Press r to compare this sandbox's files with the snapshot it started from.", Style::Window),
+            ("Press r to compare now. It also compares by itself when this tab opens and the sandbox is running.", Style::Window),
             ("The comparison runs inside the sandbox, so it must be running. The host reviews the result and runs nothing from it. Nothing is copied out.", Style::WindowDim),
             ("p pulls and P pushes the current branch, with your SSH key on this machine. The key never enters the sandbox.", Style::WindowDim),
         ] {
@@ -1695,6 +1852,13 @@ fn review_body(model: &Model, row: &Row, screen: &mut Screen, at: Rect) {
             line_y += 1;
         }
         return;
+    }
+    if !panel.changed.is_empty() {
+        review_files(panel, screen, at);
+        return;
+    }
+    if panel.comparing {
+        screen.text_cut(x, line_y, COMPARING, width, Style::WindowWarn);
     }
     let overflow = panel.lines.len() > at.h;
     let text_w = if overflow {
@@ -1718,6 +1882,208 @@ fn review_body(model: &Model, row: &Row, screen: &mut Screen, at: Rect) {
             at.h,
             panel.lines.len(),
         );
+    }
+}
+
+/// Said on the Changes tab while a comparison runs. The rest of the interface
+/// keeps working meanwhile.
+const COMPARING: &str = "Comparing inside the sandbox…";
+/// The narrowest the tab can be and still have the list beside the lines.
+const TWO_PANES_FROM: usize = 70;
+/// Two columns of line numbers, a sign, and the spaces between them.
+const NUMBERS_W: usize = 14;
+
+/// What stays in view, then the list beside what is open when there is room.
+/// Otherwise the list, until Enter opens the file in its place.
+fn review_files(panel: &ReviewPanel, screen: &mut Screen, at: Rect) {
+    let mut y = at.y;
+    let bottom = at.y + at.h;
+    if panel.comparing {
+        screen.text_cut(at.x, y, COMPARING, at.w, Style::WindowWarn);
+        y += 1;
+    }
+    // Never more than a third of the page, and wrapped so that none is cut.
+    let room = (at.h / 3).max(1);
+    let top: Vec<(String, Style)> = panel
+        .top
+        .iter()
+        .flat_map(|line| wrap(&line.text, at.w).into_iter().map(|piece| (piece, line.style)))
+        .collect();
+    for (text, style) in top.iter().take(room) {
+        screen.text_cut(at.x, y, text, at.w, *style);
+        y += 1;
+    }
+    let area = Rect::new(at.x, y, at.w, bottom.saturating_sub(y));
+    if area.h == 0 {
+        return;
+    }
+    if at.w >= TWO_PANES_FROM {
+        let list_w = (at.w / 3).clamp(24, 40);
+        file_list(panel, screen, Rect::new(area.x, area.y, list_w, area.h));
+        screen.column_rule(area.x + list_w, area.y, area.h, Style::Frame);
+        open_pane(
+            panel,
+            screen,
+            Rect::new(area.x + list_w + 2, area.y, area.w - list_w - 2, area.h),
+        );
+    } else if panel.reading {
+        open_pane(panel, screen, area);
+    } else {
+        file_list(panel, screen, area);
+    }
+}
+
+/// The Summary, then each file: its letter, a mark when flagged, its path, and
+/// its lines changed or that it is not shown.
+fn file_list(panel: &ReviewPanel, screen: &mut Screen, at: Rect) {
+    let total = panel.changed.len() + 1;
+    let first = panel.chosen.saturating_sub(at.h.saturating_sub(1));
+    let overflow = total > at.h;
+    let row_w = if overflow { at.w - 1 } else { at.w };
+    for offset in 0..at.h {
+        let index = first + offset;
+        if index >= total {
+            break;
+        }
+        let y = at.y + offset;
+        let selected = index == panel.chosen;
+        if selected {
+            screen.fill(at.x, y, row_w, 1, ' ', Style::Selected);
+        }
+        let chosen = |style: Style| if selected { Style::Selected } else { style };
+        let Some(file) = index.checked_sub(1).and_then(|at| panel.changed.get(at)) else {
+            screen.text_cut(at.x + 1, y, "Summary", row_w.saturating_sub(2), chosen(Style::Window));
+            continue;
+        };
+        screen.put(at.x, y, file.letter, chosen(Style::Accent));
+        if file.flagged {
+            screen.put(at.x + 1, y, '!', chosen(Style::WindowAlert));
+        }
+        let stat_w = file.stat.chars().count();
+        let path_w = row_w.saturating_sub(stat_w + 4);
+        screen.text_cut(at.x + 3, y, &file.path, path_w, chosen(Style::Window));
+        if row_w > stat_w + 4 {
+            let style = if file.stat == "not shown" { Style::WindowWarn } else { Style::WindowDim };
+            screen.text(at.x + row_w - stat_w, y, &file.stat, chosen(style));
+        }
+    }
+    if overflow {
+        screen.scrollbar(at.x + at.w - 1, at.y, at.h, first, at.h, total);
+    }
+}
+
+/// Breaks a line at the width, so nothing of a long one hides past the edge.
+/// Nothing is left out of a line someone is reviewing.
+fn chunks(text: &str, room: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    chars.chunks(room.max(1)).map(|piece| piece.iter().collect()).collect()
+}
+
+/// The name of what is open over its rows, from the scroll point on.
+fn open_pane(panel: &ReviewPanel, screen: &mut Screen, at: Rect) {
+    let file = panel.chosen.checked_sub(1).and_then(|index| panel.changed.get(index));
+    let (title, stat) = file.map_or(("Summary", ""), |file| (file.path.as_str(), file.stat.as_str()));
+    let stat_w = stat.chars().count();
+    let title_w = at.w.saturating_sub(stat_w + 1);
+    screen.text_cut(at.x, at.y, title, title_w, Style::Title);
+    if at.w > stat_w + 1 {
+        screen.text(at.x + at.w - stat_w, at.y, stat, Style::WindowDim);
+    }
+    let body = Rect::new(at.x, at.y + 1, at.w, at.h.saturating_sub(1));
+    let total = file.map_or(panel.lines.len(), |file| file.rows.len());
+    let overflow = total > body.h;
+    let w = if overflow { body.w.saturating_sub(1) } else { body.w };
+    let bottom = body.y + body.h;
+    let mut y = body.y;
+    let mut put = |screen: &mut Screen, text: &str, style: Style| {
+        if y < bottom {
+            screen.text_cut(body.x, y, text, w, style);
+            y += 1;
+        }
+    };
+    match file {
+        None => {
+            for line in panel.lines.iter().skip(panel.patch_scroll) {
+                for piece in chunks(&line.text, w) {
+                    put(screen, &piece, line.style);
+                }
+            }
+        }
+        Some(file) => {
+            for row in file.rows.iter().skip(panel.patch_scroll) {
+                let Some(sign) = row.sign else {
+                    for piece in chunks(&row.text, w) {
+                        put(screen, &piece, row.style);
+                    }
+                    continue;
+                };
+                let number = |n: Option<u64>| n.map_or_else(String::new, |n| n.to_string());
+                let lead = format!("{:>5} {:>5} {sign} ", number(row.old), number(row.new));
+                for (index, piece) in chunks(&row.text, w.saturating_sub(NUMBERS_W)).iter().enumerate() {
+                    let start = if index == 0 { lead.clone() } else { " ".repeat(NUMBERS_W) };
+                    put(screen, &format!("{start}{piece}"), row.style);
+                }
+            }
+        }
+    }
+    if overflow {
+        screen.scrollbar(body.x + body.w - 1, body.y, body.h, panel.patch_scroll, body.h, total);
+    }
+}
+
+/// This project, its limits, and what removes it. A project under the state
+/// folder's `remote` folder is the daemon's own copy of a clone.
+fn settings_body(model: &Model, row: &Row, screen: &mut Screen, at: Rect) {
+    let bottom = at.y + at.h;
+    let mut y = at.y;
+    let mut say = |screen: &mut Screen, text: &str, style: Style| {
+        for piece in chunks(text, at.w) {
+            if y < bottom {
+                screen.text_cut(at.x, y, &piece, at.w, style);
+                y += 1;
+            }
+        }
+    };
+    say(screen, "THIS PROJECT", Style::WindowDim);
+    say(screen, &format!("Name        {}", row.name), Style::Window);
+    say(screen, &format!("Path        {}", row.path), Style::Window);
+    let remote = format!("/{}/remote/", brand::STATE_DIR);
+    let from = if row.path.contains(&remote) {
+        "Cloned from Git; this is the copy the daemon keeps"
+    } else {
+        "A folder of your own"
+    };
+    say(screen, &format!("Comes from  {from}"), Style::Window);
+    say(screen, &format!("Sandbox     {}", row.state.word()), row.state.style());
+    say(screen, "", Style::Window);
+    say(screen, "LIMITS", Style::WindowDim);
+    let resources = model.overview.as_ref().map_or(&[][..], |o| o.resources.as_slice());
+    if resources.is_empty() {
+        say(screen, "Not known until it has a sandbox.", Style::WindowDim);
+    }
+    for entry in resources {
+        say(screen, &format!("{:<11} {}", entry.left, entry.right), entry.style);
+    }
+    say(screen, "Changes apply on the next start.", Style::WindowDim);
+    say(screen, "", Style::Window);
+    say(screen, "REMOVE", Style::WindowDim);
+    for line in wrap("x destroys the sandbox and everything in it. The project stays in the list.", at.w) {
+        say(screen, &line, Style::Window);
+    }
+    for line in wrap("D destroys its sandbox and forgets the project. A folder of your own is not touched.", at.w) {
+        say(screen, &line, Style::Window);
+    }
+    say(screen, "", Style::Window);
+    say(screen, "AI AGENT", Style::WindowDim);
+    let agent = format!(
+        "Connect one with: {} mcp setup claude --project PATH FOLDER",
+        brand::CLI_BIN
+    );
+    for line in wrap(&agent, at.w) {
+        say(screen, &line, Style::Window);
     }
 }
 
@@ -1987,6 +2353,86 @@ fn draw_dialog(screen: &mut Screen, dialog: &Dialog) {
     screen.text(start + yes.len() + 6, buttons_y, "N", Style::ButtonHot);
 }
 
+/// A box of the dialog's width, sitting where the dialog's would. Returns where
+/// its lines start and how wide they are.
+fn form_box(screen: &mut Screen, title: &str, inner: usize) -> (usize, usize, usize) {
+    let (width, height) = (screen.width(), screen.height());
+    let box_w = (width * 9 / 10).clamp(44, 80).min(width - 2);
+    let box_h = (inner + 2).min(height.saturating_sub(4)).max(3);
+    let x = (width - box_w) / 2;
+    let y = 1 + height.saturating_sub(3 + box_h) / 2;
+    let at = Rect::new(x, y, box_w, box_h);
+    screen.fill(x, y, box_w, box_h, ' ', Style::Dialog);
+    screen.frame(at, Style::DialogFrame, title, Style::Dialog);
+    (x + 2, y + 1, box_w - 4)
+}
+
+fn form_lines(lines: &[Line], width: usize) -> Vec<(String, Style)> {
+    lines
+        .iter()
+        .flat_map(|line| {
+            let style = if matches!(line.style, Style::WindowAlert | Style::WindowWarn) {
+                Style::DialogAlert
+            } else if line.style == Style::WindowDim {
+                Style::DialogDim
+            } else {
+                Style::Dialog
+            };
+            wrap_indented(&line.text, width).into_iter().map(move |piece| (piece, style))
+        })
+        .collect()
+}
+
+/// A line being typed. Its end stays in view, with the cursor after it.
+fn draw_prompt(screen: &mut Screen, prompt: &Prompt) {
+    let box_w = (screen.width() * 9 / 10).clamp(44, 80).min(screen.width() - 2);
+    let lines = form_lines(&prompt.lines, box_w - 4);
+    let (x, y, w) = form_box(screen, &prompt.title, lines.len() + 2);
+    for (offset, (text, style)) in lines.iter().enumerate() {
+        screen.text_cut(x, y + offset, text, w, *style);
+    }
+    let line_y = y + lines.len() + 1;
+    if line_y + 1 >= screen.height() {
+        return;
+    }
+    screen.fill(x, line_y, w, 1, ' ', Style::Field);
+    let chars: Vec<char> = prompt.shown.chars().collect();
+    let fits = w.saturating_sub(1);
+    let tail: String = chars[chars.len().saturating_sub(fits)..].iter().collect();
+    let used = screen.text(x, line_y, &tail, Style::Field);
+    screen.put(x + used, line_y, '▏', Style::Field);
+}
+
+/// A list to tick, with the cursor's row kept in view.
+fn draw_picker(screen: &mut Screen, picker: &Picker) {
+    let box_w = (screen.width() * 9 / 10).clamp(44, 80).min(screen.width() - 2);
+    let lines = form_lines(&picker.lines, box_w - 4);
+    let wanted = lines.len() + 1 + picker.rows.len().max(1);
+    let (x, y, w) = form_box(screen, &picker.title, wanted);
+    for (offset, (text, style)) in lines.iter().enumerate() {
+        screen.text_cut(x, y + offset, text, w, *style);
+    }
+    let list_y = y + lines.len() + 1;
+    if picker.rows.is_empty() {
+        screen.text_cut(x, list_y, "No services to choose from.", w, Style::DialogDim);
+        return;
+    }
+    let inner = screen.height().saturating_sub(4 + 2);
+    let fits = inner.saturating_sub(lines.len() + 1).max(1);
+    let first = picker.cursor.saturating_sub(fits - 1);
+    for (offset, (name, on)) in picker.rows.iter().skip(first).take(fits).enumerate() {
+        let row_y = list_y + offset;
+        let style = if first + offset == picker.cursor {
+            screen.fill(x, row_y, w, 1, ' ', Style::Selected);
+            Style::Selected
+        } else {
+            Style::Dialog
+        };
+        let mark = if *on { "[x]" } else { "[ ]" };
+        screen.text_cut(x, row_y, &format!("{mark} {name}"), w, style);
+    }
+}
+
 /// A key on a project's tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
@@ -2010,12 +2456,24 @@ pub enum Key {
     Follow,
     /// A shell in the selected project's sandbox.
     Shell,
+    /// VS Code on the selected project's sandbox.
+    VsCode,
     /// Git pull in the selected project's sandbox, through the relay.
     Pull,
     /// Git push of its current branch, through the relay.
     Push,
     /// The ways to bring in another project.
     NewProject,
+    /// Commit what changed, with a typed message.
+    Commit,
+    /// Any Git command, typed.
+    GitCommand,
+    /// Remove the project from the list, after asking.
+    Remove,
+    Enter,
+    /// Esc, on its own.
+    Back,
+    Space,
     Other,
 }
 
@@ -2038,6 +2496,7 @@ pub fn key(bytes: &[u8]) -> Key {
         b"n" => Key::Open(Tab::Network),
         b"c" | b"C" => Key::Open(Tab::Changes),
         b"s" => Key::Open(Tab::Secrets),
+        b"t" | b"T" => Key::Open(Tab::Settings),
         b"+" | b"N" => Key::NewProject,
         // The function keys still work, for hands that know them.
         b"r" | b"R" | b"\x1b[15~" => Key::Refresh,
@@ -2046,8 +2505,15 @@ pub fn key(bytes: &[u8]) -> Key {
         b"x" | b"X" => Key::Destroy,
         b"a" => Key::Approve,
         b"e" | b"E" => Key::Shell,
+        b"v" => Key::VsCode,
         b"p" => Key::Pull,
         b"P" => Key::Push,
+        b"m" => Key::Commit,
+        b"g" => Key::GitCommand,
+        b"D" => Key::Remove,
+        b"\r" | b"\n" => Key::Enter,
+        b"\x1b" => Key::Back,
+        b" " => Key::Space,
         b"[" | b"\x1b[D" | b"\x1bOD" => Key::PreviousService,
         b"]" | b"\x1b[C" | b"\x1bOC" => Key::NextService,
         b"?" | b"\x1bOP" => Key::Help,
@@ -3463,8 +3929,8 @@ mod tests {
             tab = tab.next();
         }
         assert_eq!(tab, Tab::Overview);
-        assert_eq!(Tab::Overview.previous(), Tab::Secrets);
-        assert_eq!(Tab::Secrets.next(), Tab::Overview);
+        assert_eq!(Tab::Overview.previous(), Tab::Settings);
+        assert_eq!(Tab::Settings.next(), Tab::Overview);
     }
 
     /// Each tab opens with the letter drawn on it, and that letter does
@@ -3499,7 +3965,13 @@ mod tests {
         for old in [&b"1"[..], b"2", b"3", b"5", b"6", b"0"] {
             assert_eq!(key(old), Key::Other, "{old:?}");
         }
-        assert_eq!(key(b"\r"), Key::Other);
+        assert_eq!(key(b"\r"), Key::Enter);
+        assert_eq!(key(b"\x1b"), Key::Back);
+        assert_eq!(key(b" "), Key::Space);
+        assert_eq!(key(b"m"), Key::Commit);
+        assert_eq!(key(b"g"), Key::GitCommand);
+        assert_eq!(key(b"D"), Key::Remove);
+        assert_eq!(key(b"v"), Key::VsCode);
     }
 
     #[test]

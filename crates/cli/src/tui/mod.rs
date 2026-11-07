@@ -9,11 +9,14 @@
 //! clones an SSH remote and `f` adds a folder, offering the one it was started
 //! in when that looks like a project. With projects, they are listed down a
 //! rail on the left, `+` (or `N`) offers the same two ways again, and the
-//! selected project has five tabs, each opened by the letter drawn on it:
-//! `o` Overview, `l` Logs, `n` Network, `c` Changes and `s` Secrets. Keys that
-//! act on a sandbox work only on Overview, and only where its state allows:
-//! `u` starts, `S` stops and `x` destroys. Pull (`p`) and push (`P`) work only
-//! on Changes. The bar along the bottom lists only the keys that work.
+//! selected project has six tabs, each opened by the letter drawn on it:
+//! `o` Overview, `l` Logs, `n` Network, `c` Changes, `s` Secrets and `t`
+//! Settings. Keys that act on a sandbox work only on Overview, and only where
+//! its state allows: `u` starts, `S` stops and `x` destroys, which also works
+//! on Settings beside `D`, which removes the project. Commit (`m`), any Git
+//! command (`g`), pull (`p`) and push (`P`) work only on Changes, and `a` and
+//! Enter set a secret only on Secrets. The bar along the bottom lists only the
+//! keys that work.
 //!
 //! Starting a project still needs a person to agree, so the start key opens a
 //! box showing the plan, grouped as the review groups it, and waits. Only `y`
@@ -21,6 +24,9 @@
 //! Nothing is forwarded by a keystroke that did not see what it was agreeing
 //! to.
 
+mod filepick;
+mod form;
+mod gitbox;
 mod logs;
 mod overview;
 mod plan;
@@ -54,6 +60,24 @@ struct Pending {
     ports: Vec<u16>,
 }
 
+/// A line, or a few, being typed in a box over the page.
+enum Typing {
+    Commit(String),
+    Command(String),
+    Secret(Box<form::SecretForm>),
+    SecretFile(Box<filepick::FileForm>),
+}
+
+/// How a Git command ended, for what comes next.
+enum GitDone {
+    /// Nothing is showing.
+    Nothing,
+    /// A box is showing what Git said.
+    Report,
+    /// A box is offering the stash, because uncommitted work stopped a pull.
+    Stuck,
+}
+
 /// How many lines the page keys move through the logs.
 const LOG_PAGE: isize = 20;
 
@@ -80,6 +104,14 @@ pub fn run(deps: &mut Deps) -> i32 {
     let mut confirming: Option<bool> = None;
     // A blocked hostname waiting to be approved.
     let mut approving: Option<String> = None;
+    // Offering to stash and pull, after uncommitted work stopped a pull.
+    let mut autostashing = false;
+    // Asking whether to remove the project from the list.
+    let mut removing = false;
+    // A commit message, a Git command or a secret being typed.
+    let mut typing: Option<Typing> = None;
+    // A comparison running on its own thread.
+    let mut comparing: Option<review::Comparing> = None;
     // A box that only reports, closed by any key.
     let mut notice = false;
     // The log being followed, if the Logs tab is showing one.
@@ -98,6 +130,19 @@ pub fn run(deps: &mut Deps) -> i32 {
                 follow = None;
             }
         }
+        if let Some(live) = &mut comparing {
+            if let Some(answer) = live.poll() {
+                let path = live.path.clone();
+                comparing = None;
+                model.review.comparing = false;
+                // Another project's answer says nothing about what is showing.
+                if model.review.project == path {
+                    review::fill(&mut model.review, &path, answer);
+                }
+                dirty = true;
+            }
+        }
+        dirty |= start_compare_if_wanted(deps, &mut model, &mut comparing);
         // Drawing asks the terminal its size, so it is done only when
         // something changed, not on every tick.
         if dirty {
@@ -109,7 +154,13 @@ pub fn run(deps: &mut Deps) -> i32 {
         }
         // A question is answered by a key pressed after it was seen, never by
         // one already on its way, such as from a paste.
-        if confirming.is_some() || approving.is_some() || pending.is_some() || notice {
+        if confirming.is_some()
+            || approving.is_some()
+            || pending.is_some()
+            || notice
+            || autostashing
+            || removing
+        {
             queued.clear();
         }
         if queued.is_empty() {
@@ -120,6 +171,83 @@ pub fn run(deps: &mut Deps) -> i32 {
             }
         }
         dirty = true;
+
+        if let Some(active) = typing.as_mut() {
+            let ended = feed_typing(active, &mut queued);
+            match ended {
+                Fed::Stay => show_typing(&mut model, typing.as_ref()),
+                Fed::Stop(said) => {
+                    typing = None;
+                    show_typing(&mut model, None);
+                    model.message = Some(said);
+                }
+                Fed::Submit => {
+                    let done = typing.take();
+                    show_typing(&mut model, None);
+                    queued.clear();
+                    match done {
+                        Some(Typing::Commit(message)) => {
+                            let op = proto::GitOp::Commit { message, paths: Vec::new() };
+                            match run_git(deps, &mut model, op, "Commit", "Committing.".to_owned(), "commit") {
+                                GitDone::Report => notice = true,
+                                GitDone::Stuck | GitDone::Nothing => {}
+                            }
+                        }
+                        Some(Typing::Command(line)) => match gitbox::split_args(&line) {
+                            None => model.message = Some("A quote is not closed.".to_owned()),
+                            Some(args) if args.is_empty() => {
+                                model.message = Some("Type a Git command first, such as status or log --oneline.".to_owned());
+                            }
+                            Some(args) => {
+                                let command = args[0].clone();
+                                let waiting = matches!(command.as_str(), "pull" | "push" | "fetch" | "ls-remote");
+                                let said = if waiting {
+                                    "Asking the remote. Your SSH agent may ask you to approve.".to_owned()
+                                } else {
+                                    "Asking Git.".to_owned()
+                                };
+                                let word = format!("git {}", screen::cut(&crate::ui::esc(&command), 20));
+                                match run_git(deps, &mut model, proto::GitOp::Run { args }, &word, said, &command) {
+                                    GitDone::Report => notice = true,
+                                    GitDone::Stuck => autostashing = true,
+                                    GitDone::Nothing => {}
+                                }
+                            }
+                        },
+                        Some(Typing::SecretFile(mut form)) => {
+                            if let Some(row) = model.selected_row().cloned() {
+                                model.busy = Some("Asking the daemon.".to_owned());
+                                draw(deps, &model);
+                                let next = form.proceed(deps.daemon, &row.path);
+                                model.busy = None;
+                                match next {
+                                    filepick::Next::Again => {
+                                        typing = Some(Typing::SecretFile(form));
+                                        show_typing(&mut model, typing.as_ref());
+                                    }
+                                    filepick::Next::Done(said) => {
+                                        refresh_secrets(deps, &mut model);
+                                        model.message = Some(said);
+                                    }
+                                }
+                            }
+                        }
+                        Some(Typing::Secret(form)) => {
+                            if let Some(row) = model.selected_row().cloned() {
+                                model.busy = Some("Storing it in your keychain.".to_owned());
+                                draw(deps, &model);
+                                let said = form.send(deps.daemon, &row.path);
+                                model.busy = None;
+                                refresh_secrets(deps, &mut model);
+                                model.message = Some(said);
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+            continue;
+        }
 
         // Typing a remote or a folder takes the bytes themselves, pastes
         // included. Whatever follows Enter in the same read is dropped, so it
@@ -152,12 +280,29 @@ pub fn run(deps: &mut Deps) -> i32 {
         let bytes: Vec<u8> = queued.drain(..taken).collect();
 
         if notice {
-            notice = false;
-            model.dialog = None;
+            // A long answer scrolls. Anything else closes it.
+            let moved = match view::answer(&bytes) {
+                Answer::Up => Some(-1),
+                Answer::Down => Some(1),
+                Answer::PageUp => Some(-LOG_PAGE),
+                Answer::PageDown => Some(LOG_PAGE),
+                _ => None,
+            };
+            let more = model
+                .dialog
+                .as_ref()
+                .is_some_and(|dialog| !dialog.seen_all || dialog.scroll > 0);
+            match (moved, model.dialog.as_mut()) {
+                (Some(delta), Some(dialog)) if more => dialog.scroll_by(delta, size.0, size.1),
+                _ => {
+                    notice = false;
+                    model.dialog = None;
+                }
+            }
             continue;
         }
 
-        if confirming.is_some() || approving.is_some() || pending.is_some() {
+        if confirming.is_some() || approving.is_some() || pending.is_some() || autostashing || removing {
             match view::answer(&bytes) {
                 Answer::Yes if model.dialog.as_ref().is_some_and(|d| !d.seen_all) => {
                     model.message = Some("Read all of it first: down shows the rest.".to_owned());
@@ -170,6 +315,18 @@ pub fn run(deps: &mut Deps) -> i32 {
                         approve(deps, &mut model, &host);
                     } else if let Some(waiting) = pending.take() {
                         start(deps, &mut model, waiting);
+                    } else if autostashing {
+                        autostashing = false;
+                        let op = proto::GitOp::Run { args: gitbox::autostash_args() };
+                        let said = "Setting your changes aside, pulling and putting them back. Your SSH agent may ask you to approve.".to_owned();
+                        match run_git(deps, &mut model, op, "Stash, pull, reapply", said, "autostash") {
+                            GitDone::Report | GitDone::Stuck => notice = true,
+                            GitDone::Nothing => {}
+                        }
+                    } else if removing {
+                        removing = false;
+                        comparing = None;
+                        remove_selected(deps, &mut model);
                     }
                     refresh_tab_if_showing(deps, &mut model, &mut follow);
                 }
@@ -185,6 +342,8 @@ pub fn run(deps: &mut Deps) -> i32 {
                     );
                     confirming = None;
                     approving = None;
+                    autostashing = false;
+                    removing = false;
                 }
                 moved @ (Answer::Up | Answer::Down | Answer::PageUp | Answer::PageDown) => {
                     let delta = match moved {
@@ -216,6 +375,71 @@ pub fn run(deps: &mut Deps) -> i32 {
         let tab = model.tab;
         match key {
             Key::Quit => break,
+            // The list moves until a file is opened; the page keys always move
+            // what is open, since it can be on show beside the list.
+            Key::Up | Key::Down
+                if tab == Tab::Changes && !model.review.changed.is_empty() && !model.review.reading =>
+            {
+                model.review.move_file(if key == Key::Up { -1 } else { 1 });
+            }
+            Key::Up | Key::Down | Key::PageUp | Key::PageDown
+                if tab == Tab::Changes && !model.review.changed.is_empty() =>
+            {
+                model.review.scroll_open(match key {
+                    Key::Up => -1,
+                    Key::Down => 1,
+                    Key::PageUp => -LOG_PAGE,
+                    _ => LOG_PAGE,
+                });
+            }
+            Key::Enter if tab == Tab::Changes && !model.review.changed.is_empty() => {
+                model.review.reading = true;
+            }
+            Key::Back if tab == Tab::Changes => model.review.reading = false,
+            Key::Up | Key::Down if tab == Tab::Secrets && !model.secrets.rows.is_empty() => {
+                model.secrets.choose(if key == Key::Up { -1 } else { 1 });
+            }
+            Key::Enter if tab == Tab::Secrets => {
+                if let Some(entry) = chosen_secret(&model) {
+                    let form = form::SecretForm::set(
+                        &entry,
+                        &model.secrets.services,
+                        model.secrets.services_note.clone(),
+                    );
+                    typing = Some(Typing::Secret(Box::new(form)));
+                    show_typing(&mut model, typing.as_ref());
+                } else if !model.secrets.rows.is_empty() {
+                    model.message = Some(
+                        "The daemon did not say who gets this one, so it cannot be changed here. Press r to read again.".to_owned(),
+                    );
+                }
+                queued.clear();
+            }
+            Key::Approve if tab == Tab::Secrets => {
+                let form = form::SecretForm::add(&model.secrets.services, model.secrets.services_note.clone());
+                typing = Some(Typing::Secret(Box::new(form)));
+                show_typing(&mut model, typing.as_ref());
+                queued.clear();
+            }
+            // On this tab there is no log to follow.
+            Key::Follow if tab == Tab::Secrets => {
+                if let Some(row) = model.selected_row().cloned() {
+                    let form = filepick::FileForm::find(deps.daemon, &row.path);
+                    typing = Some(Typing::SecretFile(Box::new(form)));
+                    show_typing(&mut model, typing.as_ref());
+                }
+                queued.clear();
+            }
+            Key::Commit if tab == Tab::Changes => {
+                typing = Some(Typing::Commit(String::new()));
+                show_typing(&mut model, typing.as_ref());
+                queued.clear();
+            }
+            Key::GitCommand if tab == Tab::Changes => {
+                typing = Some(Typing::Command(String::new()));
+                show_typing(&mut model, typing.as_ref());
+                queued.clear();
+            }
             Key::Up | Key::Down | Key::PageUp | Key::PageDown
                 if matches!(tab, Tab::Logs | Tab::Network | Tab::Changes) =>
             {
@@ -248,10 +472,10 @@ pub fn run(deps: &mut Deps) -> i32 {
             Key::Open(next) => open_tab(deps, &mut model, &mut follow, next),
             Key::NextTab => open_tab(deps, &mut model, &mut follow, tab.next()),
             Key::PreviousTab => open_tab(deps, &mut model, &mut follow, tab.previous()),
-            // Comparing runs inside the sandbox, so it happens only when asked.
+            // Asked for by name, so a recent answer does not stand in for it.
             Key::Refresh if tab == Tab::Changes => {
                 load_projects(deps, &mut model);
-                compare(deps, &mut model);
+                model.review.wanted = Some(true);
             }
             Key::Refresh => {
                 load_projects(deps, &mut model);
@@ -274,7 +498,7 @@ pub fn run(deps: &mut Deps) -> i32 {
                     confirming = Some(false);
                 }
             }
-            Key::Destroy if tab == Tab::Overview && offers.destroy => {
+            Key::Destroy if matches!(tab, Tab::Overview | Tab::Settings) && offers.destroy => {
                 if let Some(row) = model.selected_row().cloned() {
                     model.dialog = Some(Dialog::question(
                         format!("Destroy {}", screen::cut(&row.name, 30)),
@@ -293,9 +517,32 @@ pub fn run(deps: &mut Deps) -> i32 {
                 // Whatever was typed for the shell was the shell's.
                 queued.clear();
             }
+            Key::VsCode if matches!(tab, Tab::Overview | Tab::Logs) && offers.shell => {
+                open_vscode(&mut model);
+            }
+            Key::Remove if tab == Tab::Settings => {
+                if let Some(row) = model.selected_row().cloned() {
+                    model.dialog = Some(Dialog::question(
+                        format!("Remove {}", screen::cut(&row.name, 30)),
+                        vec![
+                            Line::styled(
+                                "This destroys its sandbox and everything in it, and removes the project from this list, with its approved ports and hosts.",
+                                Style::WindowAlert,
+                            ),
+                            Line::plain(""),
+                            Line::plain("A project imported from a remote also loses the copy on this machine. The remote is not touched."),
+                            Line::plain(format!("A folder of your own is not touched: {}", crate::ui::esc(&row.path))),
+                            Line::styled("Any secrets you stored for it stay in your keychain.", Style::WindowDim),
+                        ],
+                    ));
+                    removing = true;
+                }
+            }
             Key::Pull | Key::Push if tab == Tab::Changes => {
-                if git_on_selected(deps, &mut model, key == Key::Push) {
-                    notice = true;
+                match git_on_selected(deps, &mut model, key == Key::Push) {
+                    GitDone::Report => notice = true,
+                    GitDone::Stuck => autostashing = true,
+                    GitDone::Nothing => {}
                 }
                 queued.clear();
                 refresh_tab_if_showing(deps, &mut model, &mut follow);
@@ -336,8 +583,15 @@ pub fn run(deps: &mut Deps) -> i32 {
             | Key::Stop
             | Key::Destroy
             | Key::Shell
+            | Key::VsCode
             | Key::Pull
             | Key::Push
+            | Key::Commit
+            | Key::GitCommand
+            | Key::Remove
+            | Key::Enter
+            | Key::Back
+            | Key::Space
             | Key::Other => {}
         }
     }
@@ -542,24 +796,200 @@ fn refresh_tab_if_showing(deps: &mut Deps, model: &mut Model, follow: &mut Optio
             Some(row) => {
                 let path = row.path.clone();
                 model.review.belong_to(&path);
+                // Worth doing, unless something stronger is already asked for.
+                model.review.wanted = model.review.wanted.or(Some(false));
             }
             None => model.review = view::ReviewPanel::default(),
         },
-        Tab::Overview => {}
+        Tab::Overview | Tab::Settings => {}
     }
 }
 
-/// Compares the selected project's sandbox with its snapshot, into the
-/// Changes tab.
-fn compare(deps: &mut Deps, model: &mut Model) {
+/// Starts the comparison asked for, if it is worth running, and says whether
+/// anything changed. It runs on its own thread, so the page stays usable. A
+/// client that cannot do that gets a call with a limit.
+fn start_compare_if_wanted(
+    deps: &mut Deps,
+    model: &mut Model,
+    comparing: &mut Option<review::Comparing>,
+) -> bool {
+    let Some(force) = model.review.wanted else {
+        return false;
+    };
+    let row = model
+        .selected_row()
+        .cloned()
+        .filter(|_| model.tab == Tab::Changes && model.new_project.is_none());
+    let Some(row) = row else {
+        model.review.wanted = None;
+        return false;
+    };
+    let running = comparing.as_ref().map(|live| live.path.as_str());
+    match review::due(&model.review, &row, running, force) {
+        review::Due::Wait => false,
+        review::Due::Forget => {
+            model.review.wanted = None;
+            false
+        }
+        review::Due::Start => {
+            model.review.wanted = None;
+            model.review.belong_to(&row.path);
+            *comparing = review::begin(deps.daemon, &row.path);
+            if comparing.is_some() {
+                model.review.comparing = true;
+            } else {
+                model.busy = Some("Comparing inside the sandbox. A large project can take a while.".to_owned());
+                draw(deps, model);
+                review::refresh(deps.daemon, &mut model.review, &row.path);
+                model.busy = None;
+            }
+            true
+        }
+    }
+}
+
+/// What typed bytes did to the line or form being typed.
+enum Fed {
+    Stay,
+    Submit,
+    Stop(String),
+}
+
+/// Applies what was typed. A form's value is wiped from the read's buffer once
+/// it has been taken. A list takes one key at a time; a line takes the whole
+/// read, and drops whatever follows Enter, so that a paste cannot answer what
+/// comes next.
+fn feed_typing(active: &mut Typing, queued: &mut Vec<u8>) -> Fed {
+    let line_step = |edit: LineEdit| match edit {
+        LineEdit::Typing => Fed::Stay,
+        LineEdit::Submit => Fed::Submit,
+        LineEdit::Cancel => Fed::Stop("Nothing was changed.".to_owned()),
+    };
+    match active {
+        Typing::Commit(text) | Typing::Command(text) => {
+            let bytes = std::mem::take(queued);
+            line_step(edit_line(text, &bytes, LineKind::Text))
+        }
+        Typing::SecretFile(form) => {
+            let step = if form.picking() {
+                let taken = view::first_key_len(queued);
+                let bytes: Vec<u8> = queued.drain(..taken).collect();
+                form.pick(view::key(&bytes))
+            } else {
+                let bytes = std::mem::take(queued);
+                form.type_bytes(&bytes)
+            };
+            match step {
+                form::Step::Stay => Fed::Stay,
+                form::Step::Send => Fed::Submit,
+                form::Step::Cancelled => Fed::Stop("Nothing was changed.".to_owned()),
+                form::Step::Stopped(said) => Fed::Stop(said),
+            }
+        }
+        Typing::Secret(form) => {
+            let step = if form.picking() {
+                let taken = view::first_key_len(queued);
+                let bytes: Vec<u8> = queued.drain(..taken).collect();
+                form.pick(view::key(&bytes))
+            } else {
+                let mut bytes = std::mem::take(queued);
+                let step = form.type_bytes(&bytes);
+                form::wipe(&mut bytes);
+                step
+            };
+            match step {
+                form::Step::Stay => Fed::Stay,
+                form::Step::Send => Fed::Submit,
+                form::Step::Cancelled => Fed::Stop("Nothing was changed.".to_owned()),
+                form::Step::Stopped(said) => Fed::Stop(said),
+            }
+        }
+    }
+}
+
+/// Puts what is being typed in the model, for drawing. For a secret this is
+/// only ever dots: the value stays out of the model altogether.
+fn show_typing(model: &mut Model, typing: Option<&Typing>) {
+    model.prompt = None;
+    model.picker = None;
+    match typing {
+        None => {}
+        Some(Typing::Commit(text)) => {
+            model.prompt = Some(view::Prompt {
+                title: "Commit all changes".to_owned(),
+                lines: vec![
+                    Line::plain("Commits every change in the sandbox's clone, under your own Git name."),
+                    Line::styled("To commit on a branch of your own, make one first with g: switch -c my-branch", Style::WindowDim),
+                ],
+                shown: crate::ui::esc(text),
+                submit: "Commit",
+            });
+        }
+        Some(Typing::Command(text)) => {
+            model.prompt = Some(view::Prompt {
+                title: "Git command".to_owned(),
+                lines: vec![
+                    Line::plain("Any Git command, without the leading git, such as stash, switch -c fix or log --oneline -10."),
+                    Line::styled("It runs inside the sandbox. Only fetch, pull and push reach the remote, and the daemon checks every push.", Style::WindowDim),
+                ],
+                shown: crate::ui::esc(text),
+                submit: "Run",
+            });
+        }
+        Some(Typing::Secret(form)) => {
+            model.prompt = form.prompt();
+            model.picker = form.picker();
+        }
+        Some(Typing::SecretFile(form)) => {
+            model.prompt = form.prompt();
+            model.picker = form.picker();
+        }
+    }
+}
+
+/// The daemon's record of the row the keys act on, which says who gets it.
+fn chosen_secret(model: &Model) -> Option<proto::SecretEntry> {
+    let row = model.secrets.rows.get(model.secrets.chosen)?;
+    model
+        .secrets
+        .known
+        .iter()
+        .find(|entry| crate::ui::esc(&entry.name) == row.name)
+        .cloned()
+}
+
+/// Removes the selected project from the list, in the desktop app's words.
+fn remove_selected(deps: &mut Deps, model: &mut Model) {
     let Some(row) = model.selected_row().cloned() else {
-        model.review = view::ReviewPanel::default();
         return;
     };
-    model.busy = Some("Comparing inside the sandbox. A large project can take a while.".to_owned());
+    model.busy = Some("Removing.".to_owned());
     draw(deps, model);
-    review::refresh(deps.daemon, &mut model.review, &row.path);
+    let answer = deps.daemon.call(
+        Request::Remove(proto::ProjectArgs { project: row.path }),
+        &mut |_, _| {},
+    );
     model.busy = None;
+    let said = match answer {
+        Ok(Reply::Remove(report)) => removed_message(&report),
+        Ok(_) => "The daemon answered something else.".to_owned(),
+        Err(error) => format!("Could not remove it: {}", logs::failure(&error).text),
+    };
+    load_projects(deps, model);
+    model.message = Some(said);
+}
+
+fn removed_message(report: &proto::RemoveReport) -> String {
+    let mut text = if report.removed_copy {
+        "Removed, with its imported copy. The remote itself was not touched.".to_owned()
+    } else {
+        "Removed from this list. Its folder was not touched.".to_owned()
+    };
+    if report.sandbox_destroyed {
+        text.push_str(" Its sandbox was destroyed: rotate every secret it was given.");
+    }
+    text.push_str(" Any secrets you stored for it stay in your keychain.");
+    text
 }
 
 /// Reads the selected project's secret names. This reads a small file in the
@@ -568,6 +998,7 @@ fn refresh_secrets(deps: &mut Deps, model: &mut Model) {
     match model.selected_row().cloned() {
         Some(row) => {
             secrets::refresh(deps.env, &mut model.secrets, &row.name);
+            secrets::read_services(deps.daemon, &mut model.secrets, &row.path);
             model.secrets.reach = logs::status(deps.daemon, &row.path)
                 .ok()
                 .and_then(|report| report.exposure)
@@ -632,6 +1063,32 @@ const SHELL_LIMIT: Duration = Duration::from_secs(15);
 /// way `shell` does: into the service chosen on the Logs tab, if there is
 /// one, or the sandbox itself. The interface steps aside while it runs and
 /// comes back when it ends.
+/// VS Code on the selected project's sandbox, through `open --sandbox`, so the
+/// profile and the checks stay in one place. It opens in its own window, and
+/// this screen stays as it is.
+fn open_vscode(model: &mut Model) {
+    let Some(row) = model.selected_row().cloned() else {
+        return;
+    };
+    let done = std::env::current_exe().and_then(|program| {
+        std::process::Command::new(program)
+            .args(["open", "--sandbox"])
+            .arg(&row.path)
+            .stdin(std::process::Stdio::null())
+            .output()
+    });
+    model.message = Some(match done {
+        Ok(done) if done.status.success() => {
+            "VS Code is opening on the sandbox, in a separate profile. Git there goes through the daemon.".to_owned()
+        }
+        Ok(done) => {
+            let said = String::from_utf8_lossy(&done.stderr);
+            format!("VS Code did not open: {}", proto::text::escape_short(said.trim(), 200))
+        }
+        Err(error) => format!("VS Code did not open: {}", error.kind()),
+    });
+}
+
 fn open_shell(deps: &mut Deps, model: &mut Model, raw: &term::RawMode) {
     let Some(row) = model.selected_row().cloned() else {
         return;
@@ -691,10 +1148,17 @@ enum LineKind {
     Remote,
     /// A folder: anything but control characters.
     Path,
+    /// A commit message or a Git command: anything but control characters.
+    Text,
+    /// A secret's name. Its check comes when it is submitted.
+    Name,
+    /// A secret's value: anything but control characters, and never echoed.
+    Secret,
 }
 
 const MAX_URL: usize = 300;
 const MAX_PATH: usize = 4096;
+const MAX_NAME: usize = 256;
 
 /// Applies typed or pasted bytes to a line. A remote keeps only printable
 /// ASCII, which is all one can hold; a folder keeps any character but a
@@ -709,7 +1173,9 @@ fn edit_line(text: &mut String, bytes: &[u8], kind: LineKind) -> LineEdit {
     }
     let most = match kind {
         LineKind::Remote => MAX_URL,
-        LineKind::Path => MAX_PATH,
+        LineKind::Path | LineKind::Text => MAX_PATH,
+        LineKind::Name => MAX_NAME,
+        LineKind::Secret => proto::MAX_SECRET_BYTES,
     };
     for ch in String::from_utf8_lossy(bytes).chars() {
         match ch {
@@ -721,7 +1187,7 @@ fn edit_line(text: &mut String, bytes: &[u8], kind: LineKind) -> LineEdit {
             '\u{15}' => text.clear(),
             c if text.len() + c.len_utf8() > most => {}
             c if kind == LineKind::Remote && c.is_ascii_graphic() => text.push(c),
-            c if kind == LineKind::Path && !c.is_control() && c != char::REPLACEMENT_CHARACTER => {
+            c if kind != LineKind::Remote && !c.is_control() && c != char::REPLACEMENT_CHARACTER => {
                 text.push(c);
             }
             _ => {}
@@ -808,23 +1274,40 @@ fn import(deps: &mut Deps, model: &mut Model, url: &str) -> Option<Pending> {
     propose_start_for(deps, model, &report.project_path, false)
 }
 
-/// Pulls or pushes in the selected project and shows what Git said. Returns
-/// whether a box is now showing.
-fn git_on_selected(deps: &mut Deps, model: &mut Model, push: bool) -> bool {
+/// Pulls or pushes in the selected project and shows what Git said.
+fn git_on_selected(deps: &mut Deps, model: &mut Model, push: bool) -> GitDone {
     let Some(row) = model.selected_row().cloned() else {
-        return false;
+        return GitDone::Nothing;
     };
     let verb = if push { "Pushing" } else { "Pulling" };
-    model.busy = Some(format!(
+    let said = format!(
         "{verb} {}. Your SSH agent may ask you to approve.",
         screen::cut(&row.name, 30)
-    ));
-    draw(deps, model);
-    let op = if push {
-        proto::GitOp::Push
+    );
+    let (op, word, command) = if push {
+        (proto::GitOp::Push, "Push", "push")
     } else {
-        proto::GitOp::Pull
+        (proto::GitOp::Pull, "Pull", "pull")
     };
+    run_git(deps, model, op, word, said, command)
+}
+
+/// Runs one Git request on the selected project and shows what came back. When
+/// uncommitted work stopped a pull or a merge, the box offers to stash instead.
+/// Whatever might have moved the files asks for a new comparison.
+fn run_git(
+    deps: &mut Deps,
+    model: &mut Model,
+    op: proto::GitOp,
+    word: &str,
+    said: String,
+    command: &str,
+) -> GitDone {
+    let Some(row) = model.selected_row().cloned() else {
+        return GitDone::Nothing;
+    };
+    model.busy = Some(said);
+    draw(deps, model);
     let request = crate::git_cmd::request_for(std::path::Path::new(&row.path), op, deps);
     let client = deps.daemon;
     let mut unchecked = false;
@@ -839,41 +1322,27 @@ fn git_on_selected(deps: &mut Deps, model: &mut Model, push: bool) -> bool {
         Ok(report) => report,
         Err(message) => {
             model.message = Some(message);
-            return false;
+            return GitDone::Nothing;
         }
     };
-    let mut lines: Vec<String> = report.output.lines().map(str::to_owned).collect();
-    if lines.len() > 10 {
-        lines.drain(..lines.len() - 10);
+    if command != "status" {
+        model.review.wanted = Some(true);
     }
-    for update in &report.updates {
-        lines.push(format!(
-            "pushed {} {:.10} -> {:.10}",
-            update.name, update.old, update.new
-        ));
+    let title = gitbox::report_title(&report, word);
+    let mut lines = gitbox::report_lines(&report, unchecked.then_some(NOT_CHECKED));
+    if matches!(command, "pull" | "merge") && gitbox::blocked_by_local_changes(&report) {
+        lines.extend([
+            Line::plain(""),
+            Line::styled(
+                "Your uncommitted changes are in the way. Pull can set them aside, pull, then put them back: pull --autostash. Do that now?",
+                Style::Window,
+            ),
+        ]);
+        model.dialog = Some(Dialog::question(title, lines));
+        return GitDone::Stuck;
     }
-    if let Some(branch) = &report.branch {
-        lines.push(format!("on branch {branch}"));
-    }
-    let title = match (&report.refused, report.ok) {
-        (Some(_), _) => format!("{} refused", if push { "Push" } else { "Pull" }),
-        (None, true) => format!("{} done", if push { "Push" } else { "Pull" }),
-        (None, false) => format!("{} failed", if push { "Push" } else { "Pull" }),
-    };
-    if let Some(reason) = &report.refused {
-        lines.push(String::new());
-        lines.push(reason.clone());
-    }
-    if unchecked {
-        lines.push(String::new());
-        lines.push(NOT_CHECKED.to_owned());
-    }
-    model.dialog = Some(Dialog::notice(
-        title,
-        lines.into_iter().map(Line::plain).collect(),
-        "Press any key",
-    ));
-    true
+    model.dialog = Some(Dialog::notice(title, lines, "Press any key"));
+    GitDone::Report
 }
 
 /// Proposes starting the selected project.
@@ -1169,5 +1638,53 @@ mod import_tests {
         assert_eq!(expand_home("~", &env), PathBuf::from("/home/ada"));
         assert_eq!(expand_home("/srv/~x", &env), PathBuf::from("/srv/~x"));
         assert_eq!(expand_home("~bob/x", &env), PathBuf::from("~bob/x"));
+    }
+
+    #[test]
+    fn a_message_or_command_keeps_every_character_but_control_codes() {
+        let mut text = String::new();
+        assert_eq!(edit_line(&mut text, b"fix \xc3\xa9 \"a b\"\x07\x1b[31m", LineKind::Text), LineEdit::Typing);
+        assert_eq!(text, "fix \u{e9} \"a b\"[31m");
+        assert_eq!(edit_line(&mut text, b"\r", LineKind::Text), LineEdit::Submit);
+        assert_eq!(edit_line(&mut text, b"\x1b", LineKind::Text), LineEdit::Cancel);
+    }
+
+    #[test]
+    fn a_removal_says_what_went_and_what_stayed() {
+        let said = removed_message(&proto::RemoveReport {
+            project_id: "p".to_owned(),
+            sandbox_destroyed: true,
+            removed_copy: true,
+        });
+        assert!(said.starts_with("Removed, with its imported copy."), "{said}");
+        assert!(said.contains("rotate every secret") && said.contains("stay in your keychain"), "{said}");
+        let said = removed_message(&proto::RemoveReport {
+            project_id: "p".to_owned(),
+            sandbox_destroyed: false,
+            removed_copy: false,
+        });
+        assert!(said.starts_with("Removed from this list. Its folder was not touched."), "{said}");
+        assert!(!said.contains("rotate"), "{said}");
+    }
+
+    #[test]
+    fn a_secret_being_typed_reaches_the_model_only_as_dots() {
+        let mut model = Model::default();
+        let entry = proto::SecretEntry {
+            name: "API_KEY".to_owned(),
+            stored: false,
+            services: Vec::new(),
+            route: None,
+        };
+        let mut typing = Typing::Secret(Box::new(form::SecretForm::set(&entry, &[], None)));
+        let value = "do-not-show-this";
+        if let Typing::Secret(form) = &mut typing {
+            form.type_bytes(value.as_bytes());
+        }
+        show_typing(&mut model, Some(&typing));
+        assert!(!format!("{model:?}").contains(value));
+        assert_eq!(model.prompt.as_ref().unwrap().shown.chars().count(), value.len());
+        show_typing(&mut model, None);
+        assert!(model.prompt.is_none() && model.picker.is_none());
     }
 }

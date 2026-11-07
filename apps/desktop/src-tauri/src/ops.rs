@@ -26,6 +26,8 @@ const STATUS_LIMIT: Duration = Duration::from_secs(15);
 const PLAN_LIMIT: Duration = Duration::from_secs(60);
 const BLOCKED_LIMIT: Duration = Duration::from_secs(15);
 const SECRETS_LIMIT: Duration = Duration::from_secs(15);
+/// Longer, because these ask a sandbox and may store many values.
+const SECRET_FILE_LIMIT: Duration = Duration::from_secs(60);
 const LOGS_LIMIT: Duration = Duration::from_secs(20);
 /// A comparison bundles the project inside the sandbox, then reviews it.
 const DIFF_LIMIT: Duration = Duration::from_secs(180);
@@ -611,6 +613,68 @@ pub fn set_secret_message(report: &proto::SetSecretReport) -> String {
         ""
     };
     format!("{verb} {name} in your keychain. {goes}{when}")
+}
+
+/// The env files that could be used for this project's secrets.
+pub fn secret_files(client: &Client, path: &str) -> Result<proto::SecretFilesReport, CallError> {
+    let reply = client.call(
+        Request::SecretFiles(ProjectArgs { project: path.to_owned() }),
+        Some(SECRET_FILE_LIMIT),
+    )?;
+    let Reply::SecretFiles(report) = reply else {
+        return Err(wrong_reply());
+    };
+    Ok(report)
+}
+
+/// A typed path, with a leading `~/` meaning the home folder as it does in a
+/// shell. The daemon refuses anything that is not then absolute.
+pub fn host_path(typed: &str, home: Option<&str>) -> String {
+    let typed = typed.trim();
+    match (typed.strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => format!("{home}/{rest}"),
+        _ => typed.to_owned(),
+    }
+}
+
+/// One env file's names, and what using it would do. Never a value: the daemon
+/// reads the file, and only names cross into this window.
+pub fn read_secret_file(
+    client: &Client,
+    path: &str,
+    source: proto::SecretFileSource,
+) -> Result<proto::SecretFilePreview, CallError> {
+    let reply = client.call(
+        Request::ReadSecretFile(proto::SecretFileArgs { project: path.to_owned(), source }),
+        Some(SECRET_FILE_LIMIT),
+    )?;
+    let Reply::ReadSecretFile(preview) = reply else {
+        return Err(wrong_reply());
+    };
+    Ok(preview)
+}
+
+/// Stores the agreed names from one env file, and says what happened.
+pub fn use_secret_file(
+    client: &Client,
+    path: &str,
+    source: proto::SecretFileSource,
+    names: Vec<String>,
+    services: Vec<String>,
+) -> Result<String, CallError> {
+    let reply = client.call(
+        Request::UseSecretFile(proto::UseSecretFileArgs {
+            project: path.to_owned(),
+            source,
+            names,
+            services,
+        }),
+        Some(SECRET_FILE_LIMIT),
+    )?;
+    let Reply::UseSecretFile(report) = reply else {
+        return Err(wrong_reply());
+    };
+    Ok(report.summary())
 }
 
 pub fn remove(client: &Client, path: &str) -> Result<String, CallError> {

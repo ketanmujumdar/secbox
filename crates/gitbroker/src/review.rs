@@ -17,7 +17,7 @@ use crate::error::{Error, Result};
 use crate::quarantine::Quarantine;
 
 /// The id of the empty tree in sha1. Git knows this object without storing it.
-const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+pub(crate) const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const NULL_OID: &str = "0000000000000000000000000000000000000000";
 const MODE_SYMLINK: &str = "120000";
 const MODE_GITLINK: &str = "160000";

@@ -58,6 +58,11 @@
     review: null,
     // Comparisons made in this window, by project path. Never guessed.
     diffs: new Map(),
+    // Which file each project's comparison has on show.
+    openFile: new Map(),
+    diffMode: 'split',
+    comparing: false,
+    compareAgain: false,
     // The newest blocked hostnames, for the overview card.
     blocked: null,
     // The Secrets tab's names, for the selected project. Never a value.
@@ -339,10 +344,12 @@
     $('settings-destroy').disabled = !canEnd;
     // The agent's tools never start a sandbox, so there is nothing to connect to.
     $('agent-connect').disabled = !free || !running;
+    $('btn-vscode').disabled = !free || !running;
     $('settings-remove').disabled = !free;
     $('btn-more').disabled = !ready;
     for (const id of ['git-go', 'folder-go', 'review-start']) $(id).disabled = state.busy;
     for (const id of ['git-status', 'git-pull', 'git-push', 'git-autostash', 'git-run-go', 'review-read', 'log-read', 'traffic-read']) $(id).disabled = !free;
+    if (state.comparing) $('review-read').disabled = true;
     if ($('daemon-action')) $('daemon-action').disabled = state.busy;
   }
 
@@ -549,7 +556,7 @@
       return;
     }
     if (!view.rows.length) {
-      emptyRow(list, 'No secrets yet. Add one, or run `' + cliBin() + ' secrets import .env.example` to list the names this project needs.');
+      emptyRow(list, 'No secrets yet. Press Use a file if the project has an env file, or add one by hand.');
     }
     for (const secret of view.rows) {
       const item = el('li', null, secret.stored ? '' : 'empty-secret');
@@ -624,7 +631,147 @@
     state.editing = null;
   }
 
-  $('secret-add').addEventListener('click', () => openSecretForm(null, null));
+  // Using an env file. Only names reach this window: the daemon reads the file
+  // and writes the keychain, each time it is asked.
+  const FILE_EFFECTS = {
+    store: ['Will be stored', 'good'],
+    replace: ['Replaces the stored value', 'warn'],
+    empty: ['No value, add to fill in', 'warn'],
+    keep: ['No value, stored one stays', ''],
+    skip: ['Left out: value has a line break', 'warn'],
+  };
+  let filePreview = null;
+
+  function closeFilePanel() {
+    filePreview = null;
+    show($('file-panel'), false);
+  }
+
+  async function openFilePanel() {
+    const path = state.selected;
+    if (!path) return;
+    closeSecretForm();
+    filePreview = null;
+    show($('file-panel'), true);
+    show($('file-choose'), true);
+    show($('file-review'), false);
+    show($('file-apply'), false);
+    $('file-path').value = '';
+    const rows = $('file-rows');
+    clear(rows);
+    emptyRow(rows, 'Looking for env files.');
+    show($('file-note'), false);
+    let found;
+    try {
+      found = await invoke('secret_files', { project: path });
+    } catch (error) {
+      if (state.selected !== path) return;
+      clear(rows);
+      emptyRow(rows, 'Could not look: ' + errorText(error));
+      return;
+    }
+    if (state.selected !== path) return;
+    clear(rows);
+    const add = (where, source, at) => {
+      const item = el('li');
+      item.appendChild(el('span', where, 'file-where'));
+      item.appendChild(el('span', at, 'file-at'));
+      const button = el('button', 'Choose');
+      button.addEventListener('click', () => readFile(source));
+      item.appendChild(button);
+      rows.appendChild(item);
+    };
+    for (const at of found.sandbox) add('In the sandbox', { where: 'sandbox', path: at }, at);
+    for (const at of found.host) add('On this Mac', { where: 'host', path: at }, at);
+    if (!found.sandbox.length && !found.host.length) emptyRow(rows, 'No env files found. Type a path below.');
+    $('file-note').textContent = found.note || '';
+    show($('file-note'), !!found.note);
+  }
+
+  async function readFile(source) {
+    const path = state.selected;
+    let preview;
+    try {
+      preview = await invoke('read_secret_file', { project: path, source });
+    } catch (error) {
+      banner('That file can\'t be used: ' + errorText(error));
+      return;
+    }
+    if (state.selected !== path || $('file-panel').classList.contains('hidden')) return;
+    if (!preview.names.length) {
+      banner('That file has no names in it.');
+      return;
+    }
+    filePreview = preview;
+    show($('file-choose'), false);
+    show($('file-review'), true);
+    show($('file-apply'), true);
+    $('file-title').textContent = preview.source.path + ': ' + plural(preview.names.length, 'name', 'names');
+    const names = $('file-names');
+    clear(names);
+    for (const entry of preview.names) {
+      const item = el('li');
+      item.appendChild(el('span', entry.name, 'secret-name'));
+      const [words, tone] = FILE_EFFECTS[entry.effect] || ['', ''];
+      item.appendChild(el('span', words, 'tag ' + tone));
+      names.appendChild(item);
+    }
+    const warnings = [];
+    if (preview.source.where === 'sandbox') warnings.push('This file came from the sandbox, so anything running there could have written these values.');
+    if (preview.names_only) warnings.push('This is a template, so only its names are used.');
+    $('file-warning').textContent = warnings.join(' ');
+    show($('file-warning'), warnings.length > 0);
+    const boxes = $('file-services');
+    clear(boxes);
+    for (const name of preview.services) {
+      const li = el('li');
+      const label = el('label');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.value = name;
+      box.checked = true;
+      label.appendChild(box);
+      label.appendChild(el('span', name, 'mono'));
+      li.appendChild(label);
+      boxes.appendChild(li);
+    }
+    $('file-services-note').textContent = preview.services.length
+      ? 'A service can read every secret it is given. Each gets them in its environment.'
+      : (preview.services_note || 'This project has no services to give them to.') + ' They can still be stored.';
+  }
+
+  $('file-use').addEventListener('click', () => openFilePanel());
+  $('file-cancel').addEventListener('click', () => closeFilePanel());
+  $('file-path-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const typed = $('file-path').value.trim();
+    if (!typed) { banner('Type the file\'s path first.'); return; }
+    readFile({ where: 'host', path: typed });
+  });
+  $('file-apply').addEventListener('click', async () => {
+    const path = state.selected;
+    const preview = filePreview;
+    if (!path || !preview) return;
+    const services = [...$('file-services').querySelectorAll('input:checked')].map((box) => box.value);
+    $('file-apply').disabled = true;
+    try {
+      banner(await invoke('use_secret_file', {
+        project: path,
+        source: preview.source,
+        names: preview.names.map((n) => n.name),
+        services,
+      }), 'ok');
+      closeFilePanel();
+      await loadSecrets();
+      loadStatus();
+    } catch (error) {
+      banner('Not used: ' + errorText(error));
+    } finally {
+      $('file-apply').disabled = false;
+    }
+  });
+
+  $('secret-add').addEventListener('click', () => { closeFilePanel(); openSecretForm(null, null); });
   $('secret-cancel').addEventListener('click', () => closeSecretForm());
   $('secret-form').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -1094,6 +1241,19 @@
   $('menu-remove').addEventListener('click', () => { closeMenu(); removeProject(); });
   $('settings-destroy').addEventListener('click', () => stopProject(true));
 
+  $('btn-vscode').addEventListener('click', async () => {
+    const row = selectedRow();
+    if (!row) return;
+    busy('Opening VS Code.');
+    try {
+      await invoke('open_in_vscode', { project: row.path });
+      banner('VS Code is opening on the sandbox, in a separate profile. Git there goes through the daemon.', 'ok');
+    } catch (error) {
+      banner('Could not open VS Code: ' + errorText(error));
+    }
+    busy('');
+  });
+
   $('agent-connect').addEventListener('click', async () => {
     const row = selectedRow();
     if (!row) return;
@@ -1286,6 +1446,8 @@
     clear($('review-notes'));
     clear($('review-flags'));
     clear($('review-files'));
+    clear($('review-diff'));
+    show($('review-split'), false);
     show($('review-flags-head'), false);
     show($('review-files-head'), false);
     $('review-heading').textContent = 'Changed since it started';
@@ -1297,16 +1459,68 @@
   const CHANGE_LETTER = { added: 'A', modified: 'M', deleted: 'D', 'type changed': 'T' };
 
   const LINE_SIGN = { context: ' ', added: '+', removed: '-' };
+  // A comparison this recent is not run again just because the tab was reopened.
+  const COMPARE_FRESH_MS = 15000;
 
-  // One line of a file. Everything from the sandbox goes in as text, never as
-  // markup: el() only sets textContent.
-  function patchLine(line, oldNumber, newNumber) {
+  // Everything from the sandbox goes in as text, never as markup: el() only
+  // sets textContent. Lines wrap, so nothing hides past the edge of the pane.
+  function inlineLine(line, oldNumber, newNumber) {
     const row = el('div', null, 'patch-line ' + line.kind);
     row.appendChild(el('span', line.kind === 'added' ? '' : oldNumber, 'patch-number'));
     row.appendChild(el('span', line.kind === 'removed' ? '' : newNumber, 'patch-number'));
     row.appendChild(el('span', LINE_SIGN[line.kind] || '?', 'patch-sign'));
     row.appendChild(el('span', line.text, 'patch-text'));
     return row;
+  }
+
+  function splitCell(row, line, number) {
+    const kind = line ? line.kind : 'blank';
+    row.appendChild(el('span', line ? number : '', 'patch-number ' + kind));
+    row.appendChild(el('span', line ? LINE_SIGN[line.kind] : '', 'patch-sign ' + kind));
+    row.appendChild(el('span', line ? line.text : '', 'patch-text ' + kind));
+  }
+
+  // One hunk as two columns. A run of removed lines faces the added ones that
+  // replace it, as in an editor's side-by-side view.
+  function splitHunk(code, hunk) {
+    let oldNumber = hunk.old_start;
+    let newNumber = hunk.new_start;
+    let removed = [];
+    let added = [];
+    const flush = () => {
+      for (let at = 0; at < Math.max(removed.length, added.length); at += 1) {
+        const row = el('div', null, 'patch-row');
+        splitCell(row, removed[at] || null, oldNumber + at);
+        splitCell(row, added[at] || null, newNumber + at);
+        code.appendChild(row);
+      }
+      oldNumber += removed.length;
+      newNumber += added.length;
+      removed = [];
+      added = [];
+    };
+    for (const line of hunk.lines) {
+      if (line.kind === 'removed') { removed.push(line); continue; }
+      if (line.kind === 'added') { added.push(line); continue; }
+      flush();
+      const row = el('div', null, 'patch-row');
+      splitCell(row, line, oldNumber);
+      splitCell(row, line, newNumber);
+      code.appendChild(row);
+      oldNumber += 1;
+      newNumber += 1;
+    }
+    flush();
+  }
+
+  function inlineHunk(code, hunk) {
+    let oldNumber = hunk.old_start;
+    let newNumber = hunk.new_start;
+    for (const line of hunk.lines) {
+      code.appendChild(inlineLine(line, oldNumber, newNumber));
+      if (line.kind !== 'added') oldNumber += 1;
+      if (line.kind !== 'removed') newNumber += 1;
+    }
   }
 
   function patchBody(patch) {
@@ -1321,51 +1535,68 @@
     }
     const code = el('div', null, 'patch-code');
     for (const hunk of patch.hunks) {
-      let oldNumber = hunk.old_start;
-      let newNumber = hunk.new_start;
-      code.appendChild(el('div', 'From line ' + (newNumber || oldNumber), 'patch-hunk'));
-      for (const line of hunk.lines) {
-        code.appendChild(patchLine(line, oldNumber, newNumber));
-        if (line.kind !== 'added') oldNumber += 1;
-        if (line.kind !== 'removed') newNumber += 1;
-      }
+      code.appendChild(el('div', 'From line ' + (hunk.new_start || hunk.old_start), 'patch-hunk'));
+      if (state.diffMode === 'inline') inlineHunk(code, hunk);
+      else splitHunk(code, hunk);
     }
     body.appendChild(code);
     if (patch.truncated) body.appendChild(el('p', 'Cut short at a limit. Treat the rest of this file as unread.', 'patch-note warn'));
     return body;
   }
 
-  // A changed file. Its lines are built the first time it is opened, because a
-  // comparison can hold thousands of them.
+  function modeButton(file, mode, label) {
+    const button = el('button', label, 'small' + (state.diffMode === mode ? ' active' : ''));
+    button.type = 'button';
+    button.setAttribute('aria-pressed', String(state.diffMode === mode));
+    button.addEventListener('click', () => {
+      state.diffMode = mode;
+      renderFileDiff(file);
+    });
+    return button;
+  }
+
+  // Lines are built only for the file on show, because a comparison can hold
+  // thousands of them.
+  function renderFileDiff(file) {
+    const pane = $('review-diff');
+    clear(pane);
+    const head = el('div', null, 'diff-head');
+    head.appendChild(el('span', file.path, 'mono diff-path'));
+    if (!file.patch.unread) {
+      head.appendChild(el('span', '+' + file.patch.added, 'file-stat good'));
+      head.appendChild(el('span', '-' + file.patch.removed, 'file-stat bad'));
+      const modes = el('span', null, 'diff-modes');
+      modes.appendChild(modeButton(file, 'split', 'Side by side'));
+      modes.appendChild(modeButton(file, 'inline', 'Inline'));
+      head.appendChild(modes);
+    }
+    pane.appendChild(head);
+    pane.appendChild(patchBody(file.patch));
+  }
+
+  function selectFile(file, row) {
+    state.openFile.set(state.selected, file.path);
+    for (const other of $('review-files').querySelectorAll('.file-row')) other.removeAttribute('aria-current');
+    row.setAttribute('aria-current', 'true');
+    renderFileDiff(file);
+  }
+
   function fileRow(file) {
     const item = el('li');
     const row = el('button', null, 'file-row');
     row.type = 'button';
     row.title = file.change;
-    row.setAttribute('aria-expanded', 'false');
     row.appendChild(el('span', CHANGE_LETTER[file.change] || '?', 'change ' + file.change.replace(' ', '-')));
     row.appendChild(el('span', file.path, 'mono file-path'));
-    const patch = file.patch;
-    if (patch.unread) {
+    if (file.patch.unread) {
       row.appendChild(el('span', 'Not shown', 'file-stat warn'));
     } else {
-      row.appendChild(el('span', '+' + patch.added, 'file-stat good'));
-      row.appendChild(el('span', '-' + patch.removed, 'file-stat bad'));
+      row.appendChild(el('span', '+' + file.patch.added, 'file-stat good'));
+      row.appendChild(el('span', '-' + file.patch.removed, 'file-stat bad'));
     }
+    row.addEventListener('click', () => selectFile(file, row));
     item.appendChild(row);
-    let body = null;
-    row.addEventListener('click', () => {
-      if (!body) {
-        body = patchBody(patch);
-        item.appendChild(body);
-        row.setAttribute('aria-expanded', 'true');
-        return;
-      }
-      const open = body.classList.contains('hidden');
-      show(body, open);
-      row.setAttribute('aria-expanded', String(open));
-    });
-    return item;
+    return { item, row };
   }
 
   function renderDiff(diff) {
@@ -1385,39 +1616,76 @@
       item.appendChild(el('div', flag.message));
       flags.appendChild(item);
     }
+    if (!view.files.length) return;
     const head = $('review-files-head');
     head.textContent = (view.flags.length ? 'Every changed file · ' : 'Changed files · ') + view.files.length;
     show(head, true);
+    show($('review-split'), true);
     const files = $('review-files');
-    for (const file of view.files) files.appendChild(fileRow(file));
-    if (!view.files.length) files.appendChild(el('li', 'No files changed.', 'empty-line'));
+    const rows = view.files.map((file) => {
+      const made = fileRow(file);
+      files.appendChild(made.item);
+      return { file, row: made.row };
+    });
+    // The file already on show stays on show. Otherwise a flagged one comes first.
+    const flagged = new Set(view.flags.map((flag) => flag.path.replace(/:\d+$/, '')));
+    const open = state.openFile.get(state.selected);
+    const first = rows.find((r) => r.file.path === open) || rows.find((r) => flagged.has(r.file.path)) || rows[0];
+    selectFile(first.file, first.row);
   }
 
-  // Runs only when asked: the comparison runs inside the sandbox.
+  // The comparison runs Git inside the sandbox, so it happens only for a running
+  // one, one at a time, and the page stays usable meanwhile. What is on screen
+  // stays until the new answer replaces it.
   async function readReview() {
     const row = selectedRow();
     if (!row) return;
-    clearReview();
-    busy('Comparing inside the sandbox. A large project can take a while.');
-    let view;
+    if (state.comparing) {
+      state.compareAgain = true;
+      return;
+    }
+    state.comparing = true;
+    updateButtons();
+    $('review-when').textContent = 'Comparing inside the sandbox…';
     try {
-      view = await invoke('diff', { project: row.path });
+      const view = await invoke('diff', { project: row.path });
+      const now = new Date();
+      const diff = { view, at: now.getTime(), when: String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') };
+      state.diffs.set(row.path, diff);
+      if (state.selected === row.path) {
+        renderDiff(diff);
+        renderBadges();
+        renderChangesCard();
+      }
     } catch (error) {
       if (state.selected === row.path) {
-        show($('review-intro'), true);
+        clearReview();
         $('review-notes').appendChild(el('li', errorText(error), 'alert'));
       }
-      return;
     } finally {
-      busy('');
+      state.comparing = false;
+      updateButtons();
     }
-    const now = new Date();
-    const diff = { view, when: String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') };
-    state.diffs.set(row.path, diff);
-    if (state.selected !== row.path) return;
-    renderDiff(diff);
-    renderBadges();
-    renderChangesCard();
+    if (state.compareAgain) {
+      state.compareAgain = false;
+      if (state.tab === 'changes') await readReview();
+    }
+  }
+
+  // Compares by itself when the Changes tab is on show. `force` is for when the
+  // files are known to have moved, as after a Git command.
+  async function compareIfWanted(force) {
+    if (state.tab !== 'changes' || !state.selected) return;
+    if (!state.status) await loadStatus();
+    if (!state.status || state.status.state !== 'running') return;
+    if (state.comparing) {
+      if (force) state.compareAgain = true;
+      else if (!state.diffs.has(state.selected)) state.compareAgain = true;
+      return;
+    }
+    const known = state.diffs.get(state.selected);
+    if (!force && known && Date.now() - known.at < COMPARE_FRESH_MS) return;
+    await readReview();
   }
 
   $('review-read').addEventListener('click', readReview);
@@ -1507,6 +1775,7 @@
     show($('git-output'), view.output.length > 0);
     if (view.branch) $('git-branch').textContent = 'On branch ' + view.branch;
     show($('git-stuck'), (command === 'pull' || command === 'merge') && blockedByLocalChanges(view));
+    if (op !== 'status') compareIfWanted(true);
     return view;
   }
 
@@ -1551,6 +1820,7 @@
       renderGitAvailability();
       const diff = state.diffs.get(state.selected);
       if (diff) renderDiff(diff);
+      await compareIfWanted(false);
     }
     if (tab === 'logs' && state.selected) {
       await loadStatus();
@@ -1649,7 +1919,7 @@
     $('brand').textContent = info.product;
     document.title = info.product;
     $('choose-cli').textContent = `${info.cli_bin} up git@…`;
-    $('secrets-cmd').textContent = `cd /path/to/project\n${info.cli_bin} secrets import .env.example   # add the names, empty\n${info.cli_bin} secrets fill                  # type a value for each\n${info.cli_bin} secrets set NAME --service SERVICE`;
+    $('secrets-cmd').textContent = `cd /path/to/project\n${info.cli_bin} secrets use .env --yes        # store a file's values, for every service\n${info.cli_bin} secrets import .env.example   # add the names, empty\n${info.cli_bin} secrets fill                  # type a value for each\n${info.cli_bin} secrets set NAME --service SERVICE`;
     const box = $('cli-install');
     clear(box);
     if (info.bundled_cli) {

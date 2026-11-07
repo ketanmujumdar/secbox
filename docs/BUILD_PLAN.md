@@ -104,7 +104,7 @@ Done when: a change made in the VM reaches a `secbox/<task>` branch on a real re
 - `secbox check --fix`: changes user settings with consent and a backup, never project files.
 - `secbox checks list`, `on` and `off`, stored at user level so a repo can't change them.
 
-Do not build an editor, an editor plug-in, or VS Code Remote-SSH support.
+Do not build an editor or VS Code Remote-SSH support. The one plug-in is the VS Code extension behind `secbox open --sandbox`; see `docs/ARCHITECTURE.md`.
 
 Done when: `secbox open` refuses a repo with a planted folder-open task, and a hostile `secbox.yaml` can't disable a check.
 

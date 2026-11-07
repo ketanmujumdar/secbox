@@ -19,7 +19,7 @@ Where a command takes `[PATH]` or `--project PATH`, the default is the current f
 | [`open`](#open) | No | Run the editor safety checks, then open the project in an editor |
 | [`checks`](#checks) | No | Turn the editor safety checks on and off |
 | [`resources`](#resources) | No | Show requested and resolved RAM, CPU and disk limits |
-| [`secrets`](#secrets) | No | Manage per-project secrets in the OS keychain |
+| [`secrets`](#secrets) | `use` only | Manage per-project secrets in the OS keychain |
 | [`net`](#net) | `blocked` only | Explain network policy decisions, and show blocked hostnames |
 | [`uninstall`](#uninstall) | No | Remove the state folder |
 | [`new`](#new) | Yes | Bring a project in from an SSH remote or a folder: review what it gets, then start it |
@@ -67,6 +67,7 @@ secbox open [OPTIONS] [PATH]
 | Option | |
 | --- | --- |
 | `--editor NAME` | `vscode` (default), `vscode-insiders` or `cursor` |
+| `--sandbox` | Open the running sandbox's files in a separate profile, with nothing copied to this machine. See [Editors](../guides/editors.md#editing-inside-the-sandbox) |
 | `--force` | Start the editor even though a check failed. This is recorded |
 | `--dry-run` | Run the checks and say what would start, without starting it |
 
@@ -99,6 +100,7 @@ See [RAM, CPU and disk](../guides/resources.md).
 
 ```text
 secbox secrets import [--dry-run] [--names-only] [--project PATH] FILE
+secbox secrets use [--sandbox] [--service NAME]... [--yes] [--project PATH] FILE
 secbox secrets fill [--project PATH]
 secbox secrets set [OPTIONS] NAME
 secbox secrets list [--project PATH]
@@ -108,6 +110,7 @@ secbox secrets rm [--project PATH] NAME
 | Subcommand | |
 | --- | --- |
 | `import FILE` | Import a `.env` file as data into the keychain. Prints names only. Empty values become empty names to fill in. A template such as `.env.example` adds only its names, empty, and its values are dropped; `--names-only` does the same for any file. `--dry-run` shows the names without recording anything |
+| `use FILE` | Use an env file for this project: shows its names and, with `--yes`, stores the values and gives them to `--service`, or every service if none is named. `--sandbox` reads the file from the running sandbox, as a path inside its project folder. Needs the daemon |
 | `fill` | Type a value at a hidden prompt for each empty name. Enter on its own skips one |
 | `set NAME` | Store one secret, typed at a hidden prompt |
 | `list` | List secret names and where they go. Never reads the keychain |

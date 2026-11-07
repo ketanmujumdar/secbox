@@ -131,6 +131,46 @@ pub enum Request {
     /// Store one secret's value in the keychain and choose the services that
     /// get it. Write-only: no request reads a value back.
     SetSecret(SetSecretArgs),
+    /// The env files that could be used for secrets: those in a running
+    /// sandbox, and those at the top of the project's folder on this machine.
+    SecretFiles(ProjectArgs),
+    /// The names in one env file, and what using it would do to each. Never a
+    /// value.
+    ReadSecretFile(SecretFileArgs),
+    /// Stores the values of the names a person agreed to, from one env file,
+    /// and gives them to the chosen services.
+    UseSecretFile(UseSecretFileArgs),
+}
+
+/// Where an env file is. The sandbox's copy is hostile data, like anything
+/// else read from a guest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "where", content = "path")]
+pub enum SecretFileSource {
+    /// Relative to the sandbox's `/work`.
+    Sandbox(String),
+    /// An absolute path on this machine.
+    Host(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretFileArgs {
+    pub project: String,
+    pub source: SecretFileSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UseSecretFileArgs {
+    pub project: String,
+    pub source: SecretFileSource,
+    /// The names the person saw and agreed to. The file is read again to use
+    /// it, and a name added since then is left out rather than stored unseen.
+    pub names: Vec<String>,
+    /// Who gets them. Each must be a service in the project's Compose file.
+    /// Empty stores them and delivers them nowhere.
+    pub services: Vec<String>,
 }
 
 /// One secret to store. The value is a [`SecretText`], so it never shows in
@@ -471,6 +511,9 @@ pub enum Reply {
     Diff(DiffReport),
     Secrets(SecretsReport),
     SetSecret(SetSecretReport),
+    SecretFiles(SecretFilesReport),
+    ReadSecretFile(SecretFilePreview),
+    UseSecretFile(UseSecretFileReport),
 }
 
 /// What changed inside a sandbox since the snapshot it started from.
@@ -994,6 +1037,114 @@ pub struct SetSecretReport {
     pub applies_on_next_start: bool,
 }
 
+/// Env files that could be used for secrets. Every path is escaped for
+/// showing. One that cannot be shown exactly is left out, because what is
+/// shown here is sent back to name the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretFilesReport {
+    /// Relative to the sandbox's `/work`. The sandbox could have made these up.
+    pub sandbox: Vec<String>,
+    /// Absolute paths on this machine.
+    pub host: Vec<String>,
+    /// Why the sandbox was not looked in, or what stopped it.
+    pub note: Option<String>,
+}
+
+/// The names in one env file. Never a value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretFilePreview {
+    pub source: SecretFileSource,
+    pub names: Vec<SecretFileName>,
+    /// The file is a template such as `.env.example`: only its names are used,
+    /// and its values are dropped unread.
+    pub names_only: bool,
+    /// The services a secret can be given to.
+    pub services: Vec<String>,
+    pub services_note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretFileName {
+    pub name: String,
+    /// What using the file would do with this one.
+    pub effect: SecretFileEffect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretFileEffect {
+    /// Stored, with nothing there before.
+    Store,
+    /// Stored over a value already in the keychain, which is then gone.
+    Replace,
+    /// No value here, so the name is added to fill in later.
+    Empty,
+    /// No value here, and one is already stored, which stays.
+    Keep,
+    /// A line break can't go in an environment, so it would stop every start.
+    Skip,
+}
+
+/// What using an env file did. Names only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UseSecretFileReport {
+    pub stored: Vec<String>,
+    pub replaced: Vec<String>,
+    /// Added with no value, to fill in later.
+    pub empty: Vec<String>,
+    /// Left out, each with why.
+    pub skipped: Vec<SkippedSecret>,
+    pub services: Vec<String>,
+    /// The sandbox is running, so the values reach it on its next start.
+    pub applies_on_next_start: bool,
+}
+
+impl UseSecretFileReport {
+    /// The same words for every client. Names only.
+    pub fn summary(&self) -> String {
+        let list = |names: &[String]| {
+            names.iter().map(|n| text::escape(n)).collect::<Vec<_>>().join(", ")
+        };
+        let mut parts = Vec::new();
+        let count = self.stored.len() + self.replaced.len();
+        if count > 0 {
+            let goes = if self.services.is_empty() {
+                "They go to no service yet.".to_owned()
+            } else {
+                format!("They go to {}.", list(&self.services))
+            };
+            parts.push(format!("Stored {count} in your keychain. {goes}"));
+        }
+        if !self.replaced.is_empty() {
+            parts.push(format!("Replaced {}.", list(&self.replaced)));
+        }
+        if !self.empty.is_empty() {
+            parts.push(format!("No value for {}, so these wait to be filled in.", list(&self.empty)));
+        }
+        for skipped in &self.skipped {
+            parts.push(format!("Left out {}: {}.", text::escape(&skipped.name), skipped.reason));
+        }
+        if parts.is_empty() {
+            parts.push("Nothing was changed.".to_owned());
+        }
+        if count > 0 && self.applies_on_next_start {
+            parts.push("The running sandbox gets them on its next start.".to_owned());
+        }
+        parts.join(" ")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkippedSecret {
+    pub name: String,
+    pub reason: String,
+}
+
 /// What removing a project took with it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1255,6 +1406,19 @@ mod tests {
             project: "/p".to_owned(),
             name: "API_KEY".to_owned(),
             value: SecretText::new("v".to_owned()),
+            services: vec!["api".to_owned()],
+        }));
+        round_trip(Request::SecretFiles(ProjectArgs {
+            project: "/p".to_owned(),
+        }));
+        round_trip(Request::ReadSecretFile(SecretFileArgs {
+            project: "/p".to_owned(),
+            source: SecretFileSource::Sandbox(".env".to_owned()),
+        }));
+        round_trip(Request::UseSecretFile(UseSecretFileArgs {
+            project: "/p".to_owned(),
+            source: SecretFileSource::Host("/home/me/.env".to_owned()),
+            names: vec!["API_KEY".to_owned()],
             services: vec!["api".to_owned()],
         }));
         round_trip(Request::Git(GitArgs {

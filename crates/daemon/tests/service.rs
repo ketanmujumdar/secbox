@@ -1398,6 +1398,198 @@ fn with_secret_in(
     }
 }
 
+const ENV_FILE: &[u8] = b"# comment\nNEW_TOKEN=abc-canary-123\nENCRYPTION_KEY=replaced-canary-456\nWAITING=\n";
+
+fn sandbox_file(path: &str) -> proto::SecretFileSource {
+    proto::SecretFileSource::Sandbox(path.to_owned())
+}
+
+impl SecretFixture {
+    fn root(&self) -> String {
+        self.project.path().to_str().unwrap().to_owned()
+    }
+
+    fn call(&self, request: Request) -> Result<Reply, proto::ApiError> {
+        self.service.handle(&request, &mut Quiet)
+    }
+
+    /// Records `ENCRYPTION_KEY` as stored, as setting it from a client would.
+    fn record_key(&self) {
+        self.call(Request::SetSecret(proto::SetSecretArgs {
+            project: self.root(),
+            name: "ENCRYPTION_KEY".to_owned(),
+            value: proto::SecretText::new("old".to_owned()),
+            services: vec!["api".to_owned()],
+        }))
+        .unwrap();
+    }
+
+    fn feed_file(&self, bytes: &[u8]) {
+        self.deps.inner.engine.push_stream_output(engine::OutputStream::Stdout, bytes);
+    }
+
+    fn preview(&self, source: proto::SecretFileSource) -> Result<proto::SecretFilePreview, proto::ApiError> {
+        match self.call(Request::ReadSecretFile(proto::SecretFileArgs { project: self.root(), source }))? {
+            Reply::ReadSecretFile(report) => Ok(report),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    fn apply(
+        &self,
+        source: proto::SecretFileSource,
+        names: &[&str],
+        services: &[&str],
+    ) -> Result<proto::UseSecretFileReport, proto::ApiError> {
+        match self.call(Request::UseSecretFile(proto::UseSecretFileArgs {
+            project: self.root(),
+            source,
+            names: names.iter().map(|n| (*n).to_owned()).collect(),
+            services: services.iter().map(|n| (*n).to_owned()).collect(),
+        }))? {
+            Reply::UseSecretFile(report) => Ok(report),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_sandbox_file_shows_names_only_and_says_what_using_it_would_do() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.up().unwrap();
+    f.record_key();
+    f.feed_file(ENV_FILE);
+    let preview = f.preview(sandbox_file(".env.simulation")).unwrap();
+    let effects: Vec<_> = preview.names.iter().map(|n| (n.name.as_str(), n.effect)).collect();
+    assert_eq!(effects, vec![
+        ("NEW_TOKEN", proto::SecretFileEffect::Store),
+        ("ENCRYPTION_KEY", proto::SecretFileEffect::Replace),
+        ("WAITING", proto::SecretFileEffect::Empty),
+    ]);
+    assert!(!format!("{preview:?}").contains("canary"), "a value came back");
+    assert!(f.stored("NEW_TOKEN").is_none(), "looking stored something");
+}
+
+#[test]
+fn using_a_sandbox_file_stores_its_values_and_gives_them_to_the_services() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.up().unwrap();
+    f.record_key();
+    f.feed_file(ENV_FILE);
+    let report = f.apply(
+        sandbox_file(".env.simulation"),
+        &["NEW_TOKEN", "ENCRYPTION_KEY", "WAITING"],
+        &["api"],
+    ).unwrap();
+    assert_eq!(report.stored, vec!["NEW_TOKEN"]);
+    assert_eq!(report.replaced, vec!["ENCRYPTION_KEY"]);
+    assert_eq!(report.empty, vec!["WAITING"]);
+    assert!(report.applies_on_next_start);
+    assert!(!format!("{report:?}").contains("canary"), "a value came back");
+    assert_eq!(f.stored("NEW_TOKEN").as_deref(), Some("abc-canary-123"));
+
+    let Reply::Secrets(list) = f.call(Request::Secrets(ProjectArgs { project: f.root() })).unwrap() else {
+        panic!("wrong reply");
+    };
+    let entry = |name: &str| list.secrets.iter().find(|s| s.name == name).unwrap();
+    assert_eq!(entry("NEW_TOKEN").services, vec!["api"]);
+    assert!(entry("NEW_TOKEN").stored);
+    assert!(!entry("WAITING").stored);
+}
+
+/// The sandbox can change the file between the person looking and agreeing.
+#[test]
+fn a_name_added_after_the_person_looked_is_not_stored() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.up().unwrap();
+    f.feed_file(b"SEEN=1\nADDED_LATER=2\n");
+    let report = f.apply(sandbox_file(".env"), &["SEEN"], &["api"]).unwrap();
+    assert_eq!(report.stored, vec!["SEEN"]);
+    assert!(f.stored("ADDED_LATER").is_none());
+}
+
+/// A stored value with a line break, given to an environment, stops every
+/// later start, so one file must not be able to break the project that way.
+#[test]
+fn a_value_with_a_line_break_is_left_out_and_the_next_start_still_works() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.up().unwrap();
+    f.feed_file(b"BROKEN=\"a\nb\"\nGOOD=1\n");
+    let report = f.apply(sandbox_file(".env"), &["BROKEN", "GOOD"], &["api"]).unwrap();
+    assert_eq!(report.stored, vec!["GOOD"]);
+    assert_eq!(report.skipped[0].name, "BROKEN");
+    assert!(f.stored("BROKEN").is_none());
+    assert!(f.up().is_ok());
+}
+
+#[test]
+fn a_template_in_the_sandbox_gives_names_and_drops_its_values() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.up().unwrap();
+    f.feed_file(b"API_KEY=placeholder\n");
+    let report = f.apply(sandbox_file(".env.example"), &["API_KEY"], &["api"]).unwrap();
+    assert_eq!(report.empty, vec!["API_KEY"]);
+    assert!(f.stored("API_KEY").is_none());
+}
+
+#[test]
+fn a_sandbox_file_outside_the_project_or_too_big_is_refused() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.up().unwrap();
+    for path in ["/etc/passwd", "../x", "-n"] {
+        assert!(f.preview(sandbox_file(path)).is_err(), "{path}");
+    }
+    let mut big = vec![b'#'; secrets::MAX_ENV_FILE_BYTES + 100];
+    big.push(b'\n');
+    f.feed_file(&big);
+    assert!(f.preview(sandbox_file(".env")).is_err());
+}
+
+#[test]
+fn a_sandbox_file_needs_a_running_sandbox() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    assert!(f.preview(sandbox_file(".env")).is_err());
+    let Reply::SecretFiles(found) = f.call(Request::SecretFiles(ProjectArgs { project: f.root() })).unwrap() else {
+        panic!("wrong reply");
+    };
+    assert!(found.sandbox.is_empty());
+    assert!(found.note.is_some());
+}
+
+#[test]
+fn a_file_on_this_machine_is_found_and_used_but_a_link_is_refused() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    let env = f.project.path().join(".env");
+    std::fs::write(&env, "HOST_TOKEN=host-canary\n").unwrap();
+    let link = f.project.path().join(".env.link");
+    std::os::unix::fs::symlink(&env, &link).unwrap();
+
+    let Reply::SecretFiles(found) = f.call(Request::SecretFiles(ProjectArgs { project: f.root() })).unwrap() else {
+        panic!("wrong reply");
+    };
+    assert_eq!(found.host.len(), 1);
+    assert!(found.host[0].ends_with("/.env"));
+
+    let source = proto::SecretFileSource::Host(found.host[0].clone());
+    let report = f.apply(source, &["HOST_TOKEN"], &["api"]).unwrap();
+    assert_eq!(report.stored, vec!["HOST_TOKEN"]);
+    assert_eq!(f.stored("HOST_TOKEN").as_deref(), Some("host-canary"));
+
+    let link = proto::SecretFileSource::Host(link.to_str().unwrap().to_owned());
+    assert!(f.preview(link).is_err());
+    let relative = proto::SecretFileSource::Host(".env".to_owned());
+    assert!(f.preview(relative).is_err());
+}
+
+#[test]
+fn a_service_the_project_does_not_have_stores_nothing_from_a_file() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.up().unwrap();
+    f.feed_file(b"NEW_TOKEN=1\n");
+    assert!(f.apply(sandbox_file(".env"), &["NEW_TOKEN"], &["nope"]).is_err());
+    assert!(f.stored("NEW_TOKEN").is_none());
+}
+
 /// The one that matters: a value handed to the engine as an argument is
 /// readable by anyone on the host, from the process list.
 #[test]

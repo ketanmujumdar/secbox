@@ -1,0 +1,39 @@
+{
+  "name": "sandbox",
+  "displayName": "secbox sandbox",
+  "description": "Edit the files of a running secbox sandbox. Nothing is copied to this machine.",
+  "publisher": "secbox",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": { "vscode": "^1.90.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onFileSystem:secbox-sandbox"],
+  "capabilities": {
+    "virtualWorkspaces": true,
+    "untrustedWorkspaces": { "supported": true }
+  },
+  "contributes": {
+    "commands": [
+      { "command": "secbox.goToFile", "title": "Go to File", "category": "secbox" },
+      { "command": "secbox.searchText", "title": "Search in Files", "category": "secbox" },
+      { "command": "secbox.refresh", "title": "Refresh", "category": "secbox", "icon": "$(refresh)" },
+      { "command": "secbox.commit", "title": "Commit", "category": "secbox", "icon": "$(check)" },
+      { "command": "secbox.pull", "title": "Pull", "category": "secbox", "icon": "$(arrow-down)" },
+      { "command": "secbox.push", "title": "Push Branch", "category": "secbox", "icon": "$(arrow-up)" },
+      { "command": "secbox.openTerminal", "title": "Open Shell in the Sandbox", "category": "secbox" }
+    ],
+    "menus": {
+      "scm/title": [
+        { "command": "secbox.commit", "group": "navigation@1", "when": "scmProvider == secbox" },
+        { "command": "secbox.pull", "group": "navigation@2", "when": "scmProvider == secbox" },
+        { "command": "secbox.push", "group": "navigation@3", "when": "scmProvider == secbox" },
+        { "command": "secbox.refresh", "group": "navigation@4", "when": "scmProvider == secbox" }
+      ]
+    },
+    "keybindings": [
+      { "command": "secbox.goToFile", "key": "ctrl+p", "mac": "cmd+p", "when": "secbox.active" },
+      { "command": "secbox.searchText", "key": "ctrl+shift+f", "mac": "cmd+shift+f", "when": "secbox.active" }
+    ]
+  }
+}

@@ -8,6 +8,8 @@ secbox open ~/code/myapp --editor cursor
 secbox open --dry-run          # check and say what would start
 ```
 
+`secbox open` on its own opens your checkout, not the sandbox's files. To edit what is in the sandbox, see [below](#editing-inside-the-sandbox).
+
 ## Supported editors
 
 | `--editor` | Program it starts |
@@ -66,8 +68,42 @@ These choices are stored in your state folder and are **never read from a projec
 - run `secbox check --fix`, which offers to change your **user** settings, asks first and keeps a backup. It never changes project files, or
 - open anyway with `secbox open --force`. This is recorded in the audit log.
 
+## Editing inside the sandbox
+
+```sh
+secbox open --sandbox                # the current folder's project
+secbox open --sandbox ~/code/myapp
+```
+
+In the desktop app, press **Open in VS Code** on a running project. VS Code opens in a separate profile holding only the secbox extension, showing the sandbox's `/work`. Your own settings and extensions are not used or changed.
+
+The files are never copied to your machine. Every open and save goes through the daemon to the running sandbox, so what you save is immediately in the sandbox, and a stopped sandbox cannot be opened.
+
+| In this window | How it works |
+| --- | --- |
+| Browse, edit, save | Works, with color coding. Files over 5 MB are not opened, rather than opened cut short |
+| Go to a file, search all files | `Cmd-P` and `Cmd-Shift-F` run secbox's own commands. Search looks for exact text and skips `node_modules` |
+| Terminal | The only one offered is a shell inside the sandbox |
+| Commit, pull, push | The Source Control panel, through the daemon. Pushing to `main` or `master` is still refused. Needs a project cloned from Git |
+| Autocomplete, errors, go to definition in other files | Mostly not available, because those tools would have to read the files on your machine. Run checks in the sandbox with the terminal |
+| Debugger, tasks, VS Code's own Git | Not available |
+
+### What is kept out
+
+A project's `.vscode` folder can make VS Code run commands on your machine, and a test on VS Code 1.142 showed that it does, even in this kind of folder. So `.vscode`, `.git` and `*.code-workspace` do not appear here and cannot be opened or written, in any spelling. Your project's own `.vscode` settings do not apply either. Changes to those files still appear, flagged, in [Changes](reviewing-changes.md). Files with control or invisible characters in their names are left out too.
+
+### What this does not protect
+
+- **What you see is what is in the sandbox.** A file's text may be written to trick you, and the sandbox can change any file at any time. Unlike the [Changes](reviewing-changes.md) tab, this window asks the sandbox for each file, so a compromised sandbox can show you something other than what it would commit. Review with Changes before you trust anything.
+- **Secrets are not withheld here.** The Changes tab hides files that look like they hold a secret, but an editor has to show you the file you open, including `.env` files and values you gave the project.
+- **Commits can still happen inside the sandbox.** Anything in there, including you in the shell, can run `git commit`. What only the daemon can do is reach the remote.
+- **Extensions.** Install nothing else into this profile. An extension that supports virtual folders would read the sandbox's files and run on your machine.
+- **Local previews.** Don't open a sandboxed project's web pages in your everyday browser. Use a separate browser profile: a compromised page can read cookies for `127.0.0.1` and use your logged-in sessions on sites that allow cross-site requests.
+
+The security tests ran on VS Code 1.142 on a Mac. A new VS Code version could change this behaviour, and the checks here cover the ways we know of a project steering the editor, not every possible way.
+
 ## Limits
 
 This makes the safe path easier. It is not a security boundary: opening the folder another way skips the check.
 
-There is no editor connection into the VM, and no SSH. Your editor's terminal runs on your machine, so run project commands with `secbox exec`.
+There is no SSH into the VM. In `secbox open` without `--sandbox`, your editor's terminal runs on your machine, so run project commands with `secbox exec`.

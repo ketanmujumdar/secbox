@@ -109,7 +109,7 @@ How it works:
 
 Limits: files the project's `.gitignore` leaves out are not shown, and would not be in an export either. A sandbox created before this was added has nothing to compare with, and `diff` says to recreate it. The sandbox must be running. `export` is not built, so nothing reviewed here can leave the sandbox yet.
 
-The Changes tab in the full-screen interface (`c`) shows the same lines, flags first in red. Press `r` to compare: it runs inside the sandbox, so it never runs by itself. Up, down, PgUp and PgDn scroll. The desktop app's Changes tab shows the same, with a Compare button.
+The Changes tab in the full-screen interface (`c`) and in the desktop app compares by itself when the sandbox is running, with flagged files first, and shows each file's changed lines. `secbox diff --patch` prints the same lines.
 
 ## Starting from a Git remote
 

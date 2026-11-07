@@ -190,6 +190,7 @@
           </div>
           <div class="actions">
             <button id="btn-start" class="primary">Start</button>
+            <button id="btn-vscode" title="Edit the sandbox's files in VS Code. Nothing is copied to this computer." disabled>Open in VS Code</button>
             <button id="btn-stop">Stop</button>
             <div class="menu-wrap">
               <button id="btn-more" class="more-btn" aria-haspopup="true" aria-expanded="false" title="More">•••</button>
@@ -287,12 +288,15 @@
                   <h2 id="review-heading">Changed since it started</h2>
                   <span class="buttons"><span class="muted small-text" id="review-when"></span><button class="small" id="review-read">Compare with the snapshot</button></span>
                 </div>
-                <p class="hint" id="review-intro">Compares the files in the running sandbox with the snapshot it started from. The comparison runs inside the sandbox; the host reviews the result and runs nothing from it. Nothing is copied out.</p>
+                <p class="hint" id="review-intro">Compares the files in the running sandbox with the snapshot it started from, by itself whenever you open this tab. The comparison runs inside the sandbox; the host reviews the result and runs nothing from it. Nothing is copied out.</p>
                 <ul class="notes" id="review-notes"></ul>
                 <h4 class="bad-text hidden" id="review-flags-head">Look at these first</h4>
                 <ul class="flags" id="review-flags"></ul>
                 <h4 class="hidden" id="review-files-head"></h4>
-                <ul class="files" id="review-files"></ul>
+                <div class="review-split hidden" id="review-split">
+                  <ul class="files" id="review-files"></ul>
+                  <div class="review-diff" id="review-diff"></div>
+                </div>
               </div>
               <div class="side-cards">
                 <div class="card" id="git-card">
@@ -345,10 +349,36 @@
             <div class="card" id="secret-card">
               <div class="card-head">
                 <h2>Your secrets</h2>
-                <div class="buttons"><button id="secret-add">+ Add a secret</button></div>
+                <div class="buttons"><button id="file-use">Use a file</button><button id="secret-add">+ Add a secret</button></div>
               </div>
               <p class="muted">Each value is stored in your keychain by the daemon. You can set or replace one here, but nothing in this window can show a value, even to you.</p>
               <p class="warn-line hidden" id="secret-empty-note"></p>
+              <div class="secret-form hidden" id="file-panel">
+                <div id="file-choose">
+                  <span class="label">Choose the file to use for this project's secrets</span>
+                  <ul class="rows file-rows" id="file-rows"></ul>
+                  <p class="hint hidden" id="file-note"></p>
+                  <form class="file-path" id="file-path-form" autocomplete="off">
+                    <input id="file-path" class="mono" type="text" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="Or a file on this Mac: ~/work/app/.env">
+                    <button type="submit">Read</button>
+                  </form>
+                </div>
+                <div class="hidden" id="file-review">
+                  <span class="label" id="file-title"></span>
+                  <ul class="rows file-names" id="file-names"></ul>
+                  <p class="warn-line hidden" id="file-warning"></p>
+                  <div class="field">
+                    <span class="label">Give them to</span>
+                    <ul class="checks" id="file-services"></ul>
+                    <p class="hint" id="file-services-note"></p>
+                  </div>
+                  <p class="hint">Copied once, into your keychain. Nothing here shows a value, and changing the file later changes nothing until you use it again.</p>
+                </div>
+                <div class="secret-form-actions">
+                  <button type="button" id="file-cancel">Cancel</button>
+                  <button type="button" class="primary hidden" id="file-apply">Use this file</button>
+                </div>
+              </div>
               <ul class="rows secret-rows" id="secret-rows"></ul>
               <form class="secret-form hidden" id="secret-form" autocomplete="off">
                 <label class="field hidden" id="secret-name-field">

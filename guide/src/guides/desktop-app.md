@@ -14,8 +14,9 @@ The desktop app is a menu bar icon and a window for the same daemon the command 
 - *Start*, *Stop* and *Destroy*
 - a **Logs** tab and a **Blocked traffic** tab
 - a **Terminal & about** tab, with commands to put the bundled CLI on your `PATH`
-- a **Git review** page with a **Compare** button, showing the same comparison as [`secbox diff`](reviewing-changes.md)
+- a **Changes** tab that compares by itself and shows each file's changes side by side, the same comparison as [`secbox diff --patch`](reviewing-changes.md)
 
+- an **Open in VS Code** button for a running project, which edits the sandbox's files with nothing copied to your machine. See [Editors](editors.md#editing-inside-the-sandbox).
 - a **Secrets** tab that lists the project's secret names, stored and empty, and lets you set or replace a value and choose which services get it. See [Secrets](secrets.md#from-the-desktop-app).
 
 ## How it starts a project

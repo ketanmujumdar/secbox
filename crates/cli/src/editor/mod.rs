@@ -13,10 +13,13 @@ mod jsonc;
 mod launch;
 mod paths;
 mod prefs;
+mod sandbox;
 
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
+
+pub use sandbox::{bridge, editor_shell, BridgeArgs};
 
 use checks::{Context, Outcome, Verdict};
 use paths::{Editor, Platform, EDITORS};
@@ -140,6 +143,10 @@ pub struct OpenArgs {
     /// Run the checks and say what would start, without starting it
     #[arg(long)]
     dry_run: bool,
+    /// Open the running sandbox's files, not this folder, in a separate profile.
+    /// Nothing is copied to this machine, and Git goes through the daemon
+    #[arg(long)]
+    sandbox: bool,
 }
 
 /// Runs the checks, then starts the editor only if they passed.
@@ -150,6 +157,9 @@ pub fn open(args: &OpenArgs, deps: &mut Deps) -> i32 {
         tell!(deps, "Known editors: {}.", known.join(", "));
         return exit::USAGE;
     };
+    if args.sandbox {
+        return sandbox::open(args.path.as_deref(), editor, args.dry_run, deps);
+    }
     let root = match project_dir(args.path.as_deref(), deps) {
         Ok(root) => root,
         Err(reason) => {

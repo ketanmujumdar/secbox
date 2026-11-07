@@ -6,11 +6,15 @@
 //! screen, and nothing here asks for a password or a fingerprint.
 
 use std::ffi::OsString;
+use std::time::Duration;
 
+use proto::{ProjectArgs, Reply, Request};
 use secrets::ProjectId;
 
+use super::logs::failure;
 use super::style::Style;
 use super::view::{Line, SecretRow, SecretsPanel};
+use crate::client::DaemonClient;
 use crate::state::StatePaths;
 use crate::ui::esc;
 
@@ -43,6 +47,33 @@ pub fn refresh(env: &dyn Fn(&str) -> Option<OsString>, panel: &mut SecretsPanel,
                 Style::WindowAlert,
             ));
         }
+    }
+}
+
+/// How long the daemon may take to say who can be given a secret.
+const SERVICES_LIMIT: Duration = Duration::from_secs(15);
+
+/// Asks the daemon which services a secret can go to, and who gets each now.
+/// This reads names only, as the desktop app does. If it does not answer, the
+/// names still show, and only changing them has to wait.
+pub fn read_services(client: &dyn DaemonClient, panel: &mut SecretsPanel, path: &str) {
+    panel.known.clear();
+    panel.services.clear();
+    panel.services_note = None;
+    panel.chosen = panel.chosen.min(panel.rows.len().saturating_sub(1));
+    let answer = client.stream(
+        Request::Secrets(ProjectArgs { project: path.to_owned() }),
+        &mut |_, _| true,
+        Some(SERVICES_LIMIT),
+    );
+    match answer {
+        Ok(Reply::Secrets(report)) => {
+            panel.known = report.secrets;
+            panel.services = report.services;
+            panel.services_note = report.services_note;
+        }
+        Ok(_) => panel.services_note = Some("the daemon answered something else".to_owned()),
+        Err(error) => panel.services_note = Some(failure(&error).text),
     }
 }
 
@@ -164,5 +195,64 @@ mod tests {
         let panel = filled(home.path(), "../escape");
         assert!(panel.rows.is_empty());
         assert_eq!(panel.note.unwrap().style, Style::WindowAlert);
+    }
+
+    struct FakeDaemon(fn() -> Result<Reply, crate::client::CallError>);
+
+    impl DaemonClient for FakeDaemon {
+        fn call(
+            &self,
+            _request: Request,
+            _progress: &mut dyn FnMut(&str, Option<&str>),
+        ) -> Result<Reply, crate::client::CallError> {
+            panic!("the panel must use a call with a time limit");
+        }
+
+        fn stream(
+            &self,
+            request: Request,
+            _output: &mut dyn FnMut(proto::OutputStream, &str) -> bool,
+            limit: Option<Duration>,
+        ) -> Result<Reply, crate::client::CallError> {
+            assert!(matches!(request, Request::Secrets(_)));
+            assert!(limit.is_some());
+            (self.0)()
+        }
+    }
+
+    #[test]
+    fn the_daemon_says_who_can_be_given_a_secret() {
+        let mut panel = SecretsPanel { chosen: 9, ..SecretsPanel::default() };
+        let daemon = FakeDaemon(|| {
+            Ok(Reply::Secrets(proto::SecretsReport {
+                project_id: "p".to_owned(),
+                secrets: vec![proto::SecretEntry {
+                    name: "A".to_owned(),
+                    stored: true,
+                    services: vec!["api".to_owned()],
+                    route: None,
+                }],
+                services: vec!["api".to_owned()],
+                services_note: None,
+            }))
+        });
+        read_services(&daemon, &mut panel, "/p");
+        assert_eq!(panel.services, ["api"]);
+        assert_eq!(panel.known[0].services, ["api"]);
+        assert_eq!(panel.chosen, 0);
+    }
+
+    #[test]
+    fn with_no_answer_the_names_stay_and_the_reason_is_kept() {
+        let mut panel = SecretsPanel {
+            rows: vec![SecretRow::default()],
+            services: vec!["old".to_owned()],
+            ..SecretsPanel::default()
+        };
+        let daemon = FakeDaemon(|| Err(crate::client::CallError::Transport("gone".to_owned())));
+        read_services(&daemon, &mut panel, "/p");
+        assert_eq!(panel.rows.len(), 1);
+        assert!(panel.services.is_empty() && panel.known.is_empty());
+        assert!(panel.services_note.is_some());
     }
 }

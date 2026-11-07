@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-in-vscode"
+description = "Enables the open_in_vscode command without any pre-configured scope."
+commands.allow = ["open_in_vscode"]
+
+[[permission]]
+identifier = "deny-open-in-vscode"
+description = "Denies the open_in_vscode command without any pre-configured scope."
+commands.deny = ["open_in_vscode"]

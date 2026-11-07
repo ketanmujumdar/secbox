@@ -45,7 +45,7 @@ pub fn resolve(editor: Editor, env: &dyn Fn(&str) -> Option<OsString>) -> Result
     Err(format!("{name} was not found on the PATH"))
 }
 
-fn runnable(path: &Path) -> bool {
+pub(super) fn runnable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 

@@ -48,6 +48,22 @@ pub enum EnvError {
     DuplicateName { line: usize, first_line: usize },
 }
 
+/// The words that mark a file as a template rather than real values, as in
+/// `.env.example`, `example.env` or `.env.local.sample`.
+const TEMPLATE_WORDS: &[&str] = &["example", "sample", "template", "dist", "defaults"];
+
+/// Whether a file name says it holds placeholders, not real values.
+pub fn is_template_file(name: &str) -> bool {
+    name.to_ascii_lowercase()
+        .split('.')
+        .any(|part| TEMPLATE_WORDS.contains(&part))
+}
+
+/// Whether a file name looks like an env file: `.env`, `.env.local`, `prod.env`.
+pub fn is_env_file_name(name: &str) -> bool {
+    name == ".env" || name.starts_with(".env.") || (name.len() > 4 && name.ends_with(".env"))
+}
+
 /// Parses `.env` text strictly as data. Nothing is executed and nothing is
 /// expanded: `$VAR`, `${VAR}`, `$(cmd)` and backticks stay literal.
 ///

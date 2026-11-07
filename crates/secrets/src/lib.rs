@@ -19,6 +19,7 @@ pub use assignment::{
 };
 pub use audit::{AuditAction, AuditEvent};
 pub use dotenv::{
+    is_env_file_name, is_template_file,
     parse_env, parse_env_bytes, parse_env_file, EnvEntry, EnvError, MAX_ENV_FILE_BYTES,
 };
 pub use names::{BoundHost, NameError, ProjectId, SecretName, ServiceName};

@@ -127,6 +127,12 @@ enum Command {
     Diff(review::DiffArgsCli),
     /// Not built yet: export reviewed changes through Git
     Export(NotBuiltArgs),
+    /// What the VS Code extension talks to. Not for typing by hand
+    #[command(hide = true)]
+    EditorBridge(editor::BridgeArgs),
+    /// The shell the sandbox's VS Code profile opens. Not for typing by hand
+    #[command(hide = true)]
+    EditorShell,
 }
 
 /// These commands accept anything, so that a flag from the docs gets the real
@@ -188,6 +194,8 @@ where
         Command::Doctor => doctor::run(deps),
         Command::Check(args) => check::run(&args, deps),
         Command::Open(args) => editor::open(&args, deps),
+        Command::EditorBridge(args) => editor::bridge(&args, deps),
+        Command::EditorShell => editor::editor_shell(deps),
         Command::Checks(args) => editor::checks(&args, deps),
         Command::Resources(args) => resources::run(&args, deps),
         Command::Secrets(args) => secret_cmd::run(args, deps),

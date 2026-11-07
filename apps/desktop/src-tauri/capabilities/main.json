@@ -24,6 +24,10 @@
     "allow-approve-host",
     "allow-secrets",
     "allow-set-secret",
-    "allow-connect-agent"
+    "allow-secret-files",
+    "allow-read-secret-file",
+    "allow-use-secret-file",
+    "allow-connect-agent",
+    "allow-open-in-vscode"
   ]
 }

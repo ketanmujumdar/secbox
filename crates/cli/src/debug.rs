@@ -151,6 +151,16 @@ pub fn logs(args: &LogsArgsCli, deps: &mut Deps) -> i32 {
     }
 }
 
+impl ShellArgsCli {
+    /// A shell in the sandbox itself, for the given project.
+    pub(crate) fn for_project(project: PathBuf) -> Self {
+        Self {
+            service: None,
+            project: Some(project),
+        }
+    }
+}
+
 pub fn shell(args: &ShellArgsCli, deps: &mut Deps) -> i32 {
     let tty = on_a_terminal();
     let command = shell_command(args.service.as_deref(), tty);

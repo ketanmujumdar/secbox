@@ -38,6 +38,25 @@ You type the value twice at a hidden prompt. There is no way to pass a value as 
 | `--build` | Deliver it only to the build, as a build secret. **Recorded, but not delivered yet** |
 | `--proxy-host HOST` | Keep it on the host and have a proxy add it to requests for this one host. **Not built: a project with such a secret will not start** |
 
+## Using an env file
+
+The simple way to give a project the secrets in one file. In the desktop app, open **Secrets** and press **Use a file**. In the terminal UI, press `f` on the Secrets tab. Choose a file found in the sandbox or at the top of the project's folder, or type a path, and you see its names, what happens to each, and who gets them. Agree, and the daemon stores the values in your keychain and gives them to the services you ticked. A running sandbox gets them on its next start.
+
+```bash
+secbox secrets use .env                       # show the names, store nothing
+secbox secrets use .env --yes                 # store them, for every service
+secbox secrets use --sandbox .env.simulation --service api --yes
+```
+
+Things to know:
+
+- **It is one copy, not a link.** Changing the file later changes nothing until you use it again.
+- **The variables arrive in the service's environment.** A program that reads the file itself, rather than its environment, keeps reading the file and sees no difference.
+- **The file stays where it is.** A file in the sandbox stays readable there, with its values, for anything running inside.
+- **A file from the sandbox is not trustworthy.** Anything running there could have written its values, or changed them just before you agreed, so don't use one to fill in a value that matters. Only names you saw are stored, and the list says which ones replace a value you already have.
+- **A value with a line break is left out,** because it can't go in an environment and would stop every later start. Assign it with `secbox secrets set NAME --as-file --service S` instead.
+- **A template,** such as `.env.example`, gives only its names, as `import` does.
+
 ## Importing a .env file
 
 ```sh

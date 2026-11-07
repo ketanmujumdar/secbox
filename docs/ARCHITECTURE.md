@@ -314,11 +314,13 @@ The secrets screen shows where each secret goes, but not its value. The review s
 
 ## Debugging and editors
 
-v1 has no SSH server and no editor connection into the VM. Debugging uses `secbox shell`, `secbox exec`, and `secbox logs` through the daemon, so the VM needs no open port or login keys.
+v1 has no SSH server in the VM. Debugging uses `secbox shell`, `secbox exec`, and `secbox logs` through the daemon, so the VM needs no open port or login keys.
 
 Editors stay on the host and work on the user's normal checkout. Host changes reach the VM one way, through a new snapshot or sync, and VM changes return only through `diff` and `export`. Commands such as `npm install` go through `secbox exec`, because the VS Code terminal runs on the host.
 
-secbox does not build or ship an editor or an editor plug-in. VS Code Remote-SSH is not offered, because a compromised remote has been reported to reach a local terminal on the host.
+VS Code Remote-SSH is not offered, because a compromised remote has been reported to reach a local terminal on the host.
+
+`secbox open --sandbox` is the one editor connection into the VM. It starts VS Code in a separate profile with the extension in `apps/vscode`, on a virtual folder whose every read and write goes through `secbox editor-bridge`, and so through the daemon's `terminal` check. No project file is written to the host and no code from the VM runs there. This reverses an earlier decision not to ship an editor plug-in, because a person needs to read and edit what is in the sandbox. Tested on VS Code 1.142, a project's `.vscode/settings.json` served through a virtual folder is obeyed, including a terminal profile that runs a command on the host, and VS Code calls the folder trusted. So the bridge refuses `.vscode`, `.git` and `*.code-workspace` on the host side, and the profile offers no terminal but the sandbox's. Git in that window goes through the daemon.
 
 `secbox check` verifies editor settings and project files, and `secbox open` runs that check before launching the editor:
 

@@ -40,7 +40,7 @@ Yes, through MCP. The agent runs on your machine and works in the sandbox throug
 
 ### Can I SSH into the sandbox, or use VS Code Remote?
 
-No. There is no SSH server and no open port in the VM. Use `secbox shell` and `secbox exec`. VS Code Remote-SSH is not offered, because a compromised remote has been reported to reach a local terminal.
+There is no SSH server and no open port in the VM, and VS Code Remote-SSH is not offered, because a compromised remote has been reported to reach a local terminal. To edit the sandbox's files in VS Code, use `secbox open --sandbox`, which works differently. See [Editors](guides/editors.md#editing-inside-the-sandbox). For commands, use `secbox shell` and `secbox exec`.
 
 ### Can a secret show up in `secbox logs`?
 

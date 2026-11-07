@@ -85,22 +85,7 @@ pub fn set(
         return Err(bad("the value holds a NUL byte, which cannot be delivered"));
     }
 
-    let known = plan::service_names(project)?;
-    let mut services = Vec::new();
-    for wanted in &args.services {
-        if !known.iter().any(|k| k == wanted) {
-            return Err(bad(format!(
-                "this project has no service named {}",
-                text::escape_short(wanted, 80)
-            )));
-        }
-        let service_name = ServiceName::new(wanted.as_str())
-            .map_err(|e| bad(format!("bad service name: {}", text::escape(&e.to_string()))))?;
-        if !services.contains(&service_name) {
-            services.push(service_name);
-        }
-    }
-    services.sort();
+    let services = checked_services(project, &args.services)?;
 
     let mut meta = hoststate::read_meta(&project.dir)
         .map_err(internal)?
@@ -160,6 +145,30 @@ pub fn set(
         services: services.iter().map(|s| s.as_str().to_owned()).collect(),
         applies_on_next_start: running,
     })
+}
+
+/// The services asked for, each checked against the project's Compose file.
+pub(crate) fn checked_services(
+    project: &Project,
+    wanted: &[String],
+) -> Result<Vec<ServiceName>, ApiError> {
+    let known = plan::service_names(project)?;
+    let mut services = Vec::new();
+    for wanted in wanted {
+        if !known.iter().any(|k| k == wanted) {
+            return Err(bad(format!(
+                "this project has no service named {}",
+                text::escape_short(wanted, 80)
+            )));
+        }
+        let service_name = ServiceName::new(wanted.as_str())
+            .map_err(|e| bad(format!("bad service name: {}", text::escape(&e.to_string()))))?;
+        if !services.contains(&service_name) {
+            services.push(service_name);
+        }
+    }
+    services.sort();
+    Ok(services)
 }
 
 fn route(delivery: &Delivery) -> &'static str {

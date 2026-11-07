@@ -19,9 +19,9 @@
 //! the agent's own shell and file tools on the host. See `docs/MCP.md`.
 
 mod protocol;
-mod run;
+pub(crate) mod run;
 mod setup;
-mod tools;
+pub(crate) mod tools;
 
 use std::path::PathBuf;
 

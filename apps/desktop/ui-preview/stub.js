@@ -268,6 +268,29 @@
         Object.assign(row, { stored: true, services, goes_to: services.length ? services.join(', ') + ': injected into the environment' : 'no service' });
         return (replaced ? 'Replaced ' : 'Stored ') + args.name + ' in your keychain. ' + (services.length ? 'It goes to ' + services.join(', ') + '.' : 'It goes to no service yet.') + ' The running sandbox gets it on its next start.';
       }
+      case 'secret_files':
+        return { sandbox: ['.env.simulation'], host: [], note: null };
+      case 'read_secret_file':
+        return {
+          source: args.source,
+          names: [
+            { name: 'SIMULATED_API_TOKEN', effect: 'store' },
+            { name: 'SIMULATED_SESSION_SECRET', effect: 'store' },
+            { name: 'STRIPE_KEY', effect: 'replace' },
+            { name: 'WAITING_FOR_ONE', effect: 'empty' },
+          ],
+          names_only: false,
+          services: secretServices.slice(),
+          services_note: null,
+        };
+      case 'use_secret_file':
+        for (const name of args.names) {
+          if (!secretRows.find((r) => r.name === name)) secretRows.push({ name, stored: true, services: args.services.slice(), goes_to: args.services.join(', ') + ': injected into the environment' });
+        }
+        secretRows.sort((a, b) => a.name.localeCompare(b.name));
+        return 'Stored ' + args.names.length + ' in your keychain. They go to ' + args.services.join(', ') + '. The running sandbox gets them on its next start.';
+      case 'open_in_vscode':
+        return null;
       case 'connect_agent':
         return { folder: '~/secbox-agents/shop', command: 'cd ~/secbox-agents/shop && claude', opened: true };
       case 'approve_host':

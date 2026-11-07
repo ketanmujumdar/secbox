@@ -16,6 +16,7 @@ const COMMANDS: &[&str] = &[
     "remove_project",
     "approve_host",
     "connect_agent",
+    "open_in_vscode",
     "logs",
     "logs_stop",
     "blocked",
@@ -24,6 +25,9 @@ const COMMANDS: &[&str] = &[
     "diff",
     "secrets",
     "set_secret",
+    "secret_files",
+    "read_secret_file",
+    "use_secret_file",
 ];
 
 fn main() {

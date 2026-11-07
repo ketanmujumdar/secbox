@@ -30,7 +30,7 @@ Flags come first, in red on a terminal. Then every changed file, marked `added`,
 
 ## Reading the changed lines
 
-`secbox diff --patch` prints the lines that changed in each file, and in the desktop app you click a file in the **Changes** tab. The host works out the lines itself from the reviewed copy. Git's own diff is not used, because attributes in the sandbox's files can change what it shows, and nothing from the sandbox is run.
+`secbox diff --patch` prints the lines that changed in each file, and in the desktop app you click a file in the **Changes** tab. Git makes the comparison on the host, with `git diff-tree` in the reviewed copy. That copy has no working folder, so a `.gitattributes` from the sandbox cannot change what is shown, and nothing from the sandbox is run.
 
 Some files are not shown, and each one says why:
 
@@ -90,13 +90,13 @@ If the sandbox rewrites its history so it no longer starts from the snapshot, `d
 
 ## In the full-screen interface
 
-Press `c` for the selected project's Changes tab, then `r` to compare. It shows the same lines as `secbox diff`, flags first in red. It does not show the changed lines of each file yet; use `secbox diff --patch` or the desktop app. Comparing runs inside the sandbox, so it never starts by itself. Up, down, PgUp and PgDn scroll. See [Full-screen terminal interface](terminal-ui.md).
+Press `c` for the selected project's Changes tab. It compares by itself when the sandbox is running, and again after a Git command that can change files. `r` compares whenever you like. Flagged files come first. Pick a file to read its changed lines, beside the list on a wide terminal. See [Full-screen terminal interface](terminal-ui.md).
 
 ![The Changes tab of the full-screen interface, before comparing](../images/cli/tui-review.png)
 
 ## In the desktop app
 
-The **Changes** tab shows the same comparison, with a **Compare** button. Click a file to read its changed lines. See [Desktop app](desktop-app.md).
+The **Changes** tab compares by itself when you open it with the sandbox running, and again after a commit, pull or other Git command. **Compare again** runs it whenever you like. Each comparison runs Git inside the sandbox and is noted in the audit log. Changed files are listed on the left, and the file you pick shows on the right, **Side by side** or **Inline**. See [Desktop app](desktop-app.md).
 
 ## Limits
 

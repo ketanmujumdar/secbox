@@ -28,6 +28,7 @@ pub mod plan;
 pub mod remote;
 pub mod run;
 pub mod secret;
+pub mod secretfile;
 pub mod secretset;
 pub mod server;
 pub mod settings;
@@ -225,6 +226,18 @@ impl Service {
             Request::SetSecret(args) => {
                 let project = self.open(&args.project)?;
                 secretset::set(self, &project, args).map(Reply::SetSecret)
+            }
+            Request::SecretFiles(args) => {
+                let project = self.open(&args.project)?;
+                secretfile::find(self, &project).map(Reply::SecretFiles)
+            }
+            Request::ReadSecretFile(args) => {
+                let project = self.open(&args.project)?;
+                secretfile::preview(self, &project, &args.source).map(Reply::ReadSecretFile)
+            }
+            Request::UseSecretFile(args) => {
+                let project = self.open(&args.project)?;
+                secretfile::apply(self, &project, args).map(Reply::UseSecretFile)
             }
         }
     }

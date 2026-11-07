@@ -81,8 +81,8 @@ fn patch_lines(report: &DiffReport) -> Vec<(Option<Tone>, String)> {
 }
 
 /// A text change with no lines to show.
-const NO_LINES: &str = "No lines changed. The file is empty, or only its type or permissions changed.";
-const CUT_SHORT: &str = "Cut short at a limit. Treat the rest of this file as unread.";
+pub(crate) const NO_LINES: &str = "No lines changed. The file is empty, or only its type or permissions changed.";
+pub(crate) const CUT_SHORT: &str = "Cut short at a limit. Treat the rest of this file as unread.";
 
 /// What is always true of this comparison.
 pub(crate) const HEURISTIC: &str = "Flags are a heuristic aid. Read the changes yourself before anything from this sandbox reaches your machine.";

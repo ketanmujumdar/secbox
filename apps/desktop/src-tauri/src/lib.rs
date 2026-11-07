@@ -375,6 +375,29 @@ async fn destroy(app: AppHandle, project: String, state: State<'_, Arc<AppState>
     result
 }
 
+/// Opens the running sandbox's files in VS Code, through the bundled CLI, which
+/// keeps the profile, the extension and the checks in one place.
+#[tauri::command]
+async fn open_in_vscode(project: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let state = Arc::clone(&state);
+    blocking(move || {
+        let cli = daemon_proc::bundled_cli(state.exe.as_deref())
+            .ok_or_else(|| format!("this app has no copy of {} beside it", brand::CLI_BIN))?;
+        let done = std::process::Command::new(&cli)
+            .args(["open", "--sandbox"])
+            .arg(&project)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| format!("could not run {}: {}", brand::CLI_BIN, e.kind()))?;
+        if done.status.success() {
+            return Ok(());
+        }
+        let said = String::from_utf8_lossy(&done.stderr);
+        Err(proto::text::escape_short(said.trim(), 500))
+    })
+    .await
+}
+
 #[tauri::command]
 async fn connect_agent(project: String, state: State<'_, Arc<AppState>>) -> Result<agent::Connected, String> {
     let state = Arc::clone(&state);
@@ -436,6 +459,52 @@ async fn set_secret(
 ) -> Result<String, String> {
     let state = Arc::clone(&state);
     blocking(move || ops::set_secret(&state.client, &project, &name, value, services).map_err(message)).await
+}
+
+/// The env files that could be used for this project's secrets.
+#[tauri::command]
+async fn secret_files(project: String, state: State<'_, Arc<AppState>>) -> Result<proto::SecretFilesReport, String> {
+    let state = Arc::clone(&state);
+    blocking(move || ops::secret_files(&state.client, &project).map_err(message)).await
+}
+
+/// A file on this machine keeps the path typed, with `~/` expanded here.
+fn secret_source(source: proto::SecretFileSource) -> proto::SecretFileSource {
+    match source {
+        proto::SecretFileSource::Host(path) => {
+            let home = std::env::var("HOME").ok();
+            proto::SecretFileSource::Host(ops::host_path(&path, home.as_deref()))
+        }
+        other => other,
+    }
+}
+
+/// One env file's names. Never a value.
+#[tauri::command]
+async fn read_secret_file(
+    project: String,
+    source: proto::SecretFileSource,
+    state: State<'_, Arc<AppState>>,
+) -> Result<proto::SecretFilePreview, String> {
+    let state = Arc::clone(&state);
+    blocking(move || ops::read_secret_file(&state.client, &project, secret_source(source)).map_err(message)).await
+}
+
+/// Stores the names the person saw, from one env file. The daemon reads the
+/// file, so its values never pass through this window.
+#[tauri::command]
+async fn use_secret_file(
+    project: String,
+    source: proto::SecretFileSource,
+    names: Vec<String>,
+    services: Vec<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let state = Arc::clone(&state);
+    blocking(move || {
+        ops::use_secret_file(&state.client, &project, secret_source(source), names, services).map_err(message)
+    })
+    .await
 }
 
 #[derive(Clone, Serialize)]
@@ -701,6 +770,7 @@ pub fn run() {
             remove_project,
             approve_host,
             connect_agent,
+            open_in_vscode,
             logs,
             logs_stop,
             blocked,
@@ -709,6 +779,9 @@ pub fn run() {
             diff,
             secrets,
             set_secret,
+            secret_files,
+            read_secret_file,
+            use_secret_file,
         ])
         .build(tauri::generate_context!())
         .expect("the app could not start");
