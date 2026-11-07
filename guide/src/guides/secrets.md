@@ -120,6 +120,10 @@ On every `secbox up`:
 
 Because the `tmpfs` disappears when the VM stops, this happens again on each start.
 
+A service that was not given a secret gets nothing of it: no environment variable, no file, and no mention in the Compose override secbox adds. Setting `${STRIPE_KEY}` in another service's own `environment:` does not reach it either, because the value is never in Compose's environment or in a `.env` in the snapshot.
+
+**A project with only a Dockerfile** runs as one service, `app`, so that is the only service a secret can go to. Secrets reach the running container only. The image is built without them, so a `RUN` step cannot read one and none is baked into the image. A build that needs a token, such as for a private package registry, is not supported yet.
+
 `up` prints a **Where secrets could go** section in the plan, and a `Secrets` line per service once started. It lists each secret, which service holds it, every host the sandbox can reach, and which of those hosts accept uploads from anyone. `secbox status` shows the same.
 
 ## What this does not protect

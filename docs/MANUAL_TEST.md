@@ -138,6 +138,17 @@ secbox secrets set FAKE_NAME not-a-real-value; echo "exit $?"
 
 The dry run lists four names and no values. The third command must exit 2 and must not print `not-a-real-value`.
 
+A template adds names only, and never opens the keychain, so this is safe too:
+
+```sh
+printf 'FAKE_TEMPLATE_KEY=sk-placeholder-zzzz\nFAKE_TEMPLATE_URL=\n' > /tmp/sbtest.env.example
+secbox secrets import /tmp/sbtest.env.example --project tests/fixtures/clean
+secbox secrets list --project tests/fixtures/clean        # both as empty, not set yet
+grep -rl 'zzzz' /tmp/sbtest/.secbox ; echo "grep exit $?"  # 1: the placeholder was not kept
+```
+
+macOS must not ask for keychain access. In the full-screen interface, `s` shows both names in amber.
+
 > **WARNING: from here on, this section writes to your real OS keychain.** macOS may ask for permission. Use only the fake names below, and never import a real `.env` for this test. Skip to section 8 if you prefer.
 
 ```sh
@@ -162,7 +173,9 @@ Then import the fake file, look at what was written, and clean up:
 secbox secrets import tests/fixtures/fake.env --project tests/fixtures/clean
 grep -rl 'aaaa1111' /tmp/sbtest/.secbox ; echo "grep exit $?"    # 1: no value on disk
 ls -la /tmp/sbtest/.secbox                                       # drwx------
-for n in FAKE_MANUAL_TEST FAKE_API_KEY FAKE_DB_PASSWORD FAKE_EXPANSION; do
+secbox secrets fill --project tests/fixtures/clean   # type a made-up value for one, Enter to skip the other
+secbox secrets list --project tests/fixtures/clean   # the filled one is now prompt, the other still empty
+for n in FAKE_MANUAL_TEST FAKE_API_KEY FAKE_DB_PASSWORD FAKE_EXPANSION FAKE_TEMPLATE_KEY FAKE_TEMPLATE_URL; do
   secbox secrets rm "$n" --project tests/fixtures/clean
 done
 secbox secrets list --project tests/fixtures/clean               # none recorded
