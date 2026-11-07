@@ -425,7 +425,7 @@ fn show_plan(plan: &PlanReport, deps: &mut Deps) {
     field(
         deps,
         "Kind",
-        &format!("{}, {} services", esc(&plan.kind), plan.services.len()),
+        &format!("{}, {}", esc(&plan.kind), count(plan.services.len(), "service", "services")),
     );
     let snapshot = match (&plan.snapshot.revision, &plan.snapshot.counts) {
         (Some(revision), _) => format!("commit {}", short(revision)),
@@ -442,8 +442,8 @@ fn show_plan(plan: &PlanReport, deps: &mut Deps) {
         deps,
         "Network",
         &format!(
-            "deny by default; {} hosts for the build, {} while it runs; {tls}",
-            plan.network.build_hosts.len(),
+            "deny by default; {} for the build, {} while it runs; {tls}",
+            count(plan.network.build_hosts.len(), "host", "hosts"),
             plan.network.run_hosts.len()
         ),
     );
@@ -761,4 +761,9 @@ fn field(deps: &mut Deps, label: &str, value: &str) {
 
 pub(crate) fn short(revision: &str) -> String {
     esc(revision.get(..12).unwrap_or(revision))
+}
+
+/// "1 service", "2 services".
+fn count(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
 }

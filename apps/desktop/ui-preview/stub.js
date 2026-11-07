@@ -55,7 +55,7 @@
       exposure: row.state === 'none' ? [] : [
         'STRIPE_KEY is given to api',
         'DATABASE_URL is given to api, worker',
-        'Code in those services could send them to any of these 1 hosts, and nowhere else:',
+        'Code in those services could send them to this host, and nowhere else:',
         '  api.stripe.com',
       ],
       notes: running ? ['These came from inside the sandbox, so they can be wrong.'] : [],
