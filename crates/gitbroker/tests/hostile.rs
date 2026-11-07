@@ -220,6 +220,47 @@ fn hostile_repo_config_does_not_run_on_snapshot() {
     assert!(!marker.exists());
 }
 
+/// A project handed over as a folder, `.git` included, controls its own
+/// config. `git archive` runs filter drivers, and no `-c` option can turn every
+/// one of them off, so the snapshot must never read that config at all.
+#[test]
+fn a_filter_driver_in_the_repo_config_does_not_run_on_snapshot() {
+    let lab = Lab::new();
+    fs::write(lab.src.join(".gitattributes"), "* filter=evil\n").unwrap();
+    fs::write(lab.src.join("a.txt"), "one\n").unwrap();
+    let tip = commit_all(&lab.src, "assignment");
+    let marker = lab.root.join("FILTER_FIRED");
+    let script = lab.root.join("evil.sh");
+    fs::write(&script, format!("#!/bin/sh\ntouch {}\necho replaced\n", marker.display())).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    let evil = script.to_str().unwrap();
+    plain_git(&lab.src, &["config", "filter.evil.smudge", evil]);
+    plain_git(&lab.src, &["config", "filter.evil.process", evil]);
+    plain_git(&lab.src, &["config", "filter.evil.required", "true"]);
+    // An include is how such a config would hide the driver from a quick look.
+    let included = lab.root.join("included.cfg");
+    fs::write(&included, format!("[filter \"evil\"]\n\tsmudge = {evil}\n")).unwrap();
+    plain_git(&lab.src, &["config", "include.path", included.to_str().unwrap()]);
+    fs::write(lab.src.join(".git").join("info").join("attributes"), "* filter=evil\n").ok();
+
+    let dest = lab.root.join("snap");
+    snapshot(&lab.src, &tip, &dest).unwrap();
+    assert!(!marker.exists(), "a filter driver from the project's config ran on the host");
+    assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"one\n");
+}
+
+/// A linked worktree keeps its objects in the main repository.
+#[test]
+fn a_linked_worktree_snapshots_through_its_common_objects() {
+    let lab = Lab::new();
+    let tip = commit_file(&lab.src, "a.txt", b"one\n", "first");
+    let tree = lab.root.join("linked");
+    plain_git(&lab.src, &["worktree", "add", "--detach", tree.to_str().unwrap(), &tip]);
+    let dest = lab.root.join("snap");
+    snapshot(&tree, &tip, &dest).unwrap();
+    assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"one\n");
+}
+
 #[test]
 fn bundle_refs_beginning_with_a_dash_fail_safely() {
     let mut lab = Lab::new();

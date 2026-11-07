@@ -110,6 +110,75 @@ pub(crate) fn git_dir_of(repo: &Path) -> Result<PathBuf> {
     }
 }
 
+/// Makes a bare repository of the daemon's own that borrows `git_dir`'s
+/// objects and nothing else, and returns its path.
+///
+/// `git archive` applies filter drivers, and a filter driver is a command named
+/// in the repository's own config: `[filter "x"] smudge = <command>`, picked by
+/// `* filter=x` in the committed `.gitattributes`. No `-c` option can switch off
+/// every filter by name, so archiving the project's own `.git` would run that
+/// command on the host. A project given out as a zip of a folder, `.git`
+/// included, controls that config; this is how a "take-home assignment" turns
+/// into code on the person's machine the moment they try to sandbox it.
+///
+/// Archiving from here instead means git never reads the project's config,
+/// `info/attributes`, grafts or shallow file. The committed `.gitattributes`
+/// can still name a filter, but with no driver defined git passes the bytes
+/// through unchanged.
+fn objects_only_view(git_dir: &Path, commit: &str, work: &Path) -> Result<PathBuf> {
+    let refuse = || Error::NotAQuarantine(escape_for_display(git_dir.as_os_str().as_bytes()));
+    // A linked worktree keeps its objects in the main repository, named by `commondir`.
+    let common = match read_small(&git_dir.join("commondir")) {
+        Some(text) => {
+            let line = text.lines().next().unwrap_or("").trim();
+            if line.is_empty() {
+                return Err(refuse());
+            }
+            let path = Path::new(line);
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                git_dir.join(path)
+            }
+        }
+        None => git_dir.to_path_buf(),
+    };
+    let objects = fs::canonicalize(common.join("objects")).map_err(|_| refuse())?;
+    if !objects.is_dir() {
+        return Err(refuse());
+    }
+    let objects_bytes = objects.as_os_str().as_bytes();
+    // One path per line, and a leading quote would make git unquote it.
+    if objects_bytes.iter().any(|b| matches!(b, b'\n' | b'\r' | b'"')) {
+        return Err(refuse());
+    }
+
+    let view = work.join("view.git");
+    DirBuilder::new().mode(0o700).create(&view)?;
+    DirBuilder::new().recursive(true).mode(0o700).create(view.join("objects").join("info"))?;
+    DirBuilder::new().mode(0o700).create(view.join("refs"))?;
+    fs::write(view.join("HEAD"), "ref: refs/heads/none\n")?;
+    let config = if commit.len() == 64 {
+        "[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tobjectformat = sha256\n"
+    } else {
+        "[core]\n\trepositoryformatversion = 0\n\tbare = true\n"
+    };
+    fs::write(view.join("config"), config)?;
+    let mut alternates = objects_bytes.to_vec();
+    alternates.push(b'\n');
+    fs::write(view.join("objects").join("info").join("alternates"), alternates)?;
+    Ok(view)
+}
+
+/// A small file's text, or `None` when it is missing, not a regular file, or too big.
+fn read_small(path: &Path) -> Option<String> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > 4096 {
+        return None;
+    }
+    fs::read_to_string(path).ok()
+}
+
 /// Follows a `gitdir:` line to a folder that looks like a repository.
 fn gitfile_target(repo: &Path, file: &Path) -> Option<PathBuf> {
     use std::io::Read as _;
@@ -513,7 +582,7 @@ fn extract(archive: &Path, root: &Path, commit: &str) -> Result<SnapshotReport> 
 /// Any failure removes `dest`, so a partial snapshot never stays.
 ///
 /// `trusted_repo` is the host's own repository and must never be one the VM wrote.
-/// Hardened config still overrides hooks and helpers in its config.
+/// Its objects are read; its config is not (see [`objects_only_view`]).
 pub fn snapshot(trusted_repo: &Path, commit: &str, dest: &Path) -> Result<SnapshotReport> {
     validate_commit_id(commit)?;
     let git_dir = git_dir_of(trusted_repo)?;
@@ -526,9 +595,10 @@ pub fn snapshot(trusted_repo: &Path, commit: &str, dest: &Path) -> Result<Snapsh
     // Holds the whole archive, including files that will be excluded, until this
     // function returns. It is private to this user and removed on drop.
     let work = tempfile::Builder::new().prefix("gb-snapshot-").tempdir()?;
+    let view = objects_only_view(&git_dir, commit, work.path())?;
     let archive = work.path().join("archive.tar");
     GitCmd::new("archive")
-        .git_dir(&git_dir)
+        .git_dir(&view)
         .args(["archive", "--format=tar", commit])
         .stdout_file(&archive)
         .max_stdout(MAX_ARCHIVE_BYTES)
