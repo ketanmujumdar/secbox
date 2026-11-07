@@ -2456,3 +2456,161 @@ fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
     }
     found
 }
+
+// A service that was not ticked in the window gets nothing: no environment
+// file, no mounted secret, and no line in the override that names one.
+
+/// What one start wrote for each service: its environment file's body, and
+/// the override's block for it.
+fn written_for(f: &SecretFixture) -> (Vec<(String, String)>, String) {
+    let written = f.deps.inner.engine.inputs();
+    let envs = written
+        .iter()
+        .filter_map(|(args, body)| {
+            let path = args.last()?;
+            let service = path.rsplit_once("/env.")?.1;
+            Some((service.to_owned(), body.clone()))
+        })
+        .collect();
+    let yaml = written
+        .iter()
+        .rev()
+        .find(|(_, body)| body.starts_with("# Written by the host"))
+        .map(|(_, body)| body.clone())
+        .unwrap_or_default();
+    (envs, yaml)
+}
+
+/// The lines of the override under one service, up to the next one.
+fn block<'a>(yaml: &'a str, service: &str) -> Vec<&'a str> {
+    let head = format!("  \"{service}\":");
+    let mut lines = yaml.lines().skip_while(|l| *l != head);
+    if lines.next().is_none() {
+        return Vec::new();
+    }
+    lines.take_while(|l| l.starts_with("    ")).collect()
+}
+
+#[test]
+fn a_secret_ticked_for_web_only_never_reaches_api() {
+    // ENCRYPTION_KEY goes to api; STRIPE_KEY is set from the window for web.
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.set_secret("STRIPE_KEY", TYPED, &["web"]).unwrap();
+    f.up().unwrap();
+    let (envs, yaml) = written_for(&f);
+
+    let env = |s: &str| envs.iter().find(|(name, _)| name == s).map(|(_, b)| b.clone());
+    assert_eq!(env("web").as_deref(), Some(format!("STRIPE_KEY={TYPED}\n").as_str()));
+    assert_eq!(env("api").as_deref(), Some(format!("ENCRYPTION_KEY={FAKE_VALUE}\n").as_str()));
+
+    // The override gives each service its own file and nothing else.
+    let web = block(&yaml, "web");
+    let api = block(&yaml, "api");
+    assert!(web.iter().any(|l| l.ends_with("/env.web\"")), "{yaml}");
+    assert!(!web.iter().any(|l| l.contains("env.api")), "{yaml}");
+    assert!(api.iter().any(|l| l.ends_with("/env.api\"")), "{yaml}");
+    assert!(!api.iter().any(|l| l.contains("env.web")), "{yaml}");
+    assert!(!yaml.contains(TYPED) && !yaml.contains(FAKE_VALUE), "{yaml}");
+}
+
+#[test]
+fn unticking_every_service_stops_delivery_but_keeps_the_value() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.set_secret("ENCRYPTION_KEY", TYPED, &[]).unwrap();
+    f.up().unwrap();
+    let (envs, yaml) = written_for(&f);
+    assert!(envs.is_empty(), "{envs:?}");
+    assert!(yaml.is_empty(), "no override at all: {yaml}");
+    let everything: String = f
+        .deps
+        .inner
+        .engine
+        .inputs()
+        .into_iter()
+        .map(|(_, body)| body)
+        .collect();
+    assert!(!everything.contains(TYPED));
+    assert_eq!(f.stored("ENCRYPTION_KEY").as_deref(), Some(TYPED));
+}
+
+#[test]
+fn a_file_secret_moved_to_web_is_mounted_in_web_and_not_in_api() {
+    let f = with_secret(secrets::Delivery::InjectedFile, &["api"]);
+    f.set_secret("ENCRYPTION_KEY", TYPED, &["web"]).unwrap();
+    f.up().unwrap();
+    let (envs, yaml) = written_for(&f);
+    assert!(envs.is_empty(), "a file secret is not put in an environment: {envs:?}");
+    let web = block(&yaml, "web");
+    assert!(web.contains(&"    secrets:") && web.contains(&"      - \"ENCRYPTION_KEY\""), "{yaml}");
+    assert!(block(&yaml, "api").is_empty(), "{yaml}");
+}
+
+#[test]
+fn a_service_that_shares_web_s_mounts_or_processes_stops_the_start() {
+    for sharing in [
+        "    volumes_from:\n      - web\n",
+        "    pid: \"service:web\"\n",
+        "    ipc: \"service:web\"\n",
+        "    network_mode: \"service:web\"\n",
+    ] {
+        let project = tempfile::tempdir().unwrap();
+        let compose = format!("{COMPOSE}{sharing}");
+        std::fs::write(project.path().join("compose.yaml"), compose).unwrap();
+        std::fs::create_dir_all(project.path().join("web")).unwrap();
+        std::fs::write(project.path().join("web/Dockerfile"), "FROM scratch\n").unwrap();
+        std::fs::write(
+            project.path().join(brand::CONFIG_FILE),
+            "resources:\n  memory: 4G\n  cpus: 2\n  disk: 30G\n",
+        )
+        .unwrap();
+        let f = with_secret_in(project, secrets::Delivery::Injected, &["web"], FAKE_VALUE);
+        let plan = f.plan();
+        assert!(
+            plan.blockers.iter().any(|b| b.contains("service api could reach past its container")),
+            "{sharing}: {:?}",
+            plan.blockers
+        );
+        assert!(f.up().is_err(), "{sharing}");
+        assert!(f.deps.inner.engine.inputs().is_empty(), "{sharing}: nothing was delivered");
+    }
+}
+
+#[test]
+fn a_dockerfile_project_offers_its_one_service_and_unticked_means_nowhere() {
+    let f = with_secret_in(dockerfile_project(), secrets::Delivery::Injected, &["app"], FAKE_VALUE);
+    let listed = f.secrets();
+    assert_eq!(listed.services, vec!["app"]);
+
+    // There is no other service to give it to.
+    let refused = f.set_secret("STRIPE_KEY", TYPED, &["api"]).unwrap_err();
+    assert!(refused.message.contains("no service named api"), "{}", refused.message);
+
+    // Stored without ticking app: kept, and delivered nowhere.
+    f.set_secret("STRIPE_KEY", TYPED, &[]).unwrap();
+    f.up().unwrap();
+    let (envs, _) = written_for(&f);
+    assert_eq!(envs.len(), 1, "{envs:?}");
+    assert_eq!(envs[0].0, "app");
+    assert!(!envs[0].1.contains("STRIPE_KEY"), "{envs:?}");
+    assert!(envs[0].1.contains("ENCRYPTION_KEY="));
+}
+
+#[test]
+fn a_dockerfile_projects_secret_is_never_part_of_the_build() {
+    let f = with_secret_in(dockerfile_project(), secrets::Delivery::Injected, &["app"], FAKE_VALUE);
+    f.up().unwrap();
+    // The build runs from the generated Compose file and the project's own
+    // Dockerfile. Neither, nor any command, carries the value: it reaches the
+    // running container through its environment file only.
+    assert!(!f.calls_as_text().contains(FAKE_VALUE));
+    let generated = f
+        .deps
+        .inner
+        .engine
+        .inputs()
+        .into_iter()
+        .filter(|(_, body)| !body.starts_with("ENCRYPTION_KEY="))
+        .map(|(_, body)| body)
+        .collect::<String>();
+    assert!(!generated.contains(FAKE_VALUE), "{generated}");
+}
