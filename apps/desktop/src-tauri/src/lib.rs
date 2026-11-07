@@ -13,8 +13,8 @@ pub mod ops;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, TryLockError};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::ipc::Channel;
@@ -29,6 +29,8 @@ const TRAY_ID: &str = "main";
 const WINDOW: &str = "main";
 const TRAY_REFRESH: Duration = Duration::from_secs(10);
 const TRAY_PROJECTS: usize = 10;
+/// How long a note stays once the daemon is answering.
+const NOTICE_FOR: Duration = Duration::from_secs(15);
 
 /// Everything the commands share.
 pub struct AppState {
@@ -37,7 +39,7 @@ pub struct AppState {
     exe: Option<PathBuf>,
     daemon_log: PathBuf,
     /// What the app did about the daemon at launch, for the window to say.
-    notice: Mutex<Option<String>>,
+    notice: Mutex<Option<(String, Instant)>>,
     plans: ShownPlans,
     logs: Mutex<HashMap<u64, Stopper>>,
     next_log: AtomicU64,
@@ -74,7 +76,7 @@ impl AppState {
     }
 
     fn set_notice(&self, text: String) {
-        *self.notice.lock().unwrap_or_else(|e| e.into_inner()) = Some(text);
+        *self.notice.lock().unwrap_or_else(|e| e.into_inner()) = Some((text, Instant::now()));
     }
 
     /// Starts the daemon when nothing answers, or restarts it.
@@ -92,14 +94,13 @@ impl AppState {
                 brand::DAEMON_BIN
             ));
         };
-        let shown = proto::text::escape_path(&binary);
         if restart {
             daemon_proc::restart_daemon(&binary, &self.daemon_log, &self.client)?;
-            Ok(format!("Restarted {} from {shown}.", brand::DAEMON_BIN))
+            Ok(format!("Restarted {}.", brand::DAEMON_BIN))
         } else {
             daemon_proc::spawn_daemon(&binary, &self.daemon_log, &self.client)?;
             Ok(format!(
-                "No daemon was answering, so this app started {} from {shown}. It keeps running after you quit the app.",
+                "Started {}. It keeps running after you quit the app.",
                 brand::DAEMON_BIN
             ))
         }
@@ -110,6 +111,13 @@ impl AppState {
             .as_ref()
             .map_err(|reason| format!("Cannot find the state folder: {reason}"))
     }
+}
+
+/// Whether a note is still worth showing. One about a daemon that isn't
+/// answering stays, because it may be the reason why. Once the daemon answers,
+/// the note is history and goes after a moment.
+fn notice_is_current(age: Duration, daemon_answers: bool) -> bool {
+    !daemon_answers || age < NOTICE_FOR
 }
 
 fn message(error: CallError) -> String {
@@ -130,6 +138,8 @@ struct AppInfo {
     product: &'static str,
     cli_bin: &'static str,
     daemon_bin: &'static str,
+    /// The daemon this app would start, if it can find one.
+    daemon_path: Option<String>,
     version: &'static str,
     state_dir: Option<String>,
     /// The command line tool shipped inside the app, if this build has one.
@@ -142,6 +152,9 @@ fn app_info(state: State<'_, Arc<AppState>>) -> AppInfo {
         product: brand::PRODUCT_NAME,
         cli_bin: brand::CLI_BIN,
         daemon_bin: brand::DAEMON_BIN,
+        daemon_path: state
+            .daemon_binary()
+            .map(|p| proto::text::escape_path(&p)),
         version: env!("CARGO_PKG_VERSION"),
         state_dir: state
             .paths
@@ -156,16 +169,29 @@ fn app_info(state: State<'_, Arc<AppState>>) -> AppInfo {
 #[derive(Serialize)]
 struct DaemonState {
     running: bool,
+    /// Nothing answers yet, but this app is starting or restarting the daemon.
+    starting: bool,
     message: Option<String>,
     notice: Option<String>,
 }
 
 fn daemon_state_of(state: &AppState) -> DaemonState {
     let ping = state.client.ping();
+    let running = ping.is_ok();
+    let mut notice = state.notice.lock().unwrap_or_else(|e| e.into_inner());
+    if notice
+        .as_ref()
+        .is_some_and(|(_, set)| !notice_is_current(set.elapsed(), running))
+    {
+        *notice = None;
+    }
     DaemonState {
-        running: ping.is_ok(),
+        running,
+        // start_daemon holds this lock until the daemon answers or it gives up.
+        starting: !running
+            && matches!(state.daemon_lock.try_lock(), Err(TryLockError::WouldBlock)),
         message: ping.err().map(message),
-        notice: state.notice.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        notice: notice.as_ref().map(|(text, _)| text.clone()),
     }
 }
 
@@ -812,4 +838,17 @@ pub fn run() {
             api.prevent_exit();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_note_goes_only_once_the_daemon_answers() {
+        let old = NOTICE_FOR + Duration::from_secs(1);
+        assert!(notice_is_current(Duration::ZERO, true));
+        assert!(!notice_is_current(old, true));
+        assert!(notice_is_current(old, false));
+    }
 }

@@ -180,20 +180,35 @@
     }
     state.daemonRunning = daemon.running;
     const bin = state.info ? state.info.daemon_bin : 'The daemon';
-    const words = daemon.running ? bin + ' running' : bin + ' not running';
+    const starting = !daemon.running && !!daemon.starting;
+    const words = bin + (daemon.running ? ' running' : starting ? ' starting' : ' not running');
     for (const id of ['daemon-dot', 'choose-dot']) $(id).className = 'dot ' + (daemon.running ? 'on' : 'off');
     $('daemon-text').textContent = words;
-    $('choose-daemon').textContent = daemon.running ? words : words + '. Start it from the menu bar icon, or below.';
+    $('choose-daemon').textContent = daemon.running || starting ? words : words + '. Start it from the menu bar icon, or below.';
     const action = $('daemon-action');
     action.textContent = daemon.running ? 'Restart' : 'Start it';
-    show(action, true);
-    const title = !daemon.running && daemon.message ? daemon.message : '';
+    show(action, !starting);
+    const title = !daemon.running && !starting && daemon.message ? daemon.message : '';
     $('daemon-text').title = title;
     $('choose-daemon').title = title;
     show($('notice'), !!daemon.notice);
     $('notice').textContent = daemon.notice || '';
     updateButtons();
+    if (starting) watchDaemonStart();
     return daemon;
+  }
+
+  // The app starts the daemon by itself when it opens. Show the result as soon
+  // as there is one, not at the next regular refresh.
+  function watchDaemonStart() {
+    if (state.daemonWatch) return;
+    state.daemonWatch = setTimeout(async () => {
+      state.daemonWatch = null;
+      await refreshDaemon();
+      if (!state.daemonRunning || state.busy || state.starting) return;
+      await refreshProjects();
+      if (state.page === 'project') await loadStatus();
+    }, 500);
   }
 
   async function startDaemon(restart) {
@@ -2052,7 +2067,7 @@
     kv($('about'), [
       ['Version', info.version],
       ['State folder', info.state_dir || 'not found', 'mono'],
-      ['Daemon', info.daemon_bin, 'mono'],
+      ['Daemon', info.daemon_path || info.daemon_bin, 'mono'],
       ['Command line tool', info.bundled_cli || 'not bundled', 'mono'],
     ]);
   }

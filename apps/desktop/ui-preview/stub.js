@@ -203,9 +203,16 @@
       case 'app_info':
         return { product: 'secbox', cli_bin: 'secbox', daemon_bin: 'secboxd', version: '0.1.0', state_dir: STATE, bundled_cli: '/Applications/secbox.app/Contents/MacOS/secbox' };
       case 'daemon_state':
-        return { running: daemonRunning, message: daemonRunning ? null : 'Nothing answered on the socket.', notice: null };
+        // As the app opens with no daemon: starting for a moment, then a note.
+        if (scene === 'daemon-starting' && performance.now() < 3000) {
+          return { running: false, starting: true, message: 'Nothing answered on the socket.', notice: null };
+        }
+        if (scene === 'daemon-starting') {
+          return { running: true, starting: false, message: null, notice: 'Started secboxd. It keeps running after you quit the app.' };
+        }
+        return { running: daemonRunning, starting: false, message: daemonRunning ? null : 'Nothing answered on the socket.', notice: null };
       case 'start_daemon':
-        return args.restart ? 'Restarted secboxd from /Applications/secbox.app/Contents/MacOS/secboxd.' : 'The daemon is already running.';
+        return args.restart ? 'Restarted secboxd.' : 'The daemon is already running.';
       case 'list_projects':
         return daemonRunning ? projects : projects.map((p) => Object.assign({}, p, { state: 'no_answer', label: 'No answer' }));
       case 'add_project':
