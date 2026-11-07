@@ -212,3 +212,7 @@ The script rewrites project text files and renames files that carry the name, su
 - It does not move existing data. The old `~/.secbox` and old keychain entries stay under the old name, so remove them first with the old binary.
 
 Avoid a new name that is a common word or a part of other identifiers. The name is replaced as plain text wherever it appears, and the guard test matches any text containing it.
+
+## License
+
+[FSL-1.1-ALv2](LICENSE.md), the [Functional Source License](https://fsl.software). Use, change and share secbox for anything, including at work, except to sell it or offer it as a competing product or service. Each version becomes Apache-2.0 two years after its release.

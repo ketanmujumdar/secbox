@@ -63,7 +63,7 @@ How releases are built, signed and published, and what has not been tested, is i
 Getting into the main Homebrew repository would let people run `brew install secbox`. Its [acceptable formulae](https://docs.brew.sh/Acceptable-Formulae) rules are the ones to check at that point. Expect to need:
 
 - A stable, tagged release with a working source tarball.
-- An open-source license. The project uses Apache-2.0.
+- An open-source license. The project uses FSL-1.1-ALv2, which homebrew-core does not accept, so secbox stays in its own tap. Each version becomes Apache-2.0 two years after release.
 - Evidence of real use. Homebrew's notability checks look at things like stars, forks and watchers, and it does not accept tools that are too new or too niche.
 - No name clash. An openSUSE package is already called `secbox`, so settle the final name first.
 - A meaningful `test do` block, and a passing `brew audit --new --formula secbox`.

@@ -13,7 +13,7 @@ class Secbox < Formula
   url "https://github.com/ketanmujumdar/secbox/releases/download/v@VERSION@/secbox-@VERSION@-darwin-aarch64.tar.gz"
   version "@VERSION@"
   sha256 "@SHA256@"
-  license "Apache-2.0"
+  license "FSL-1.1-ALv2"
 
   # The engine boots VMs with Hypervisor.framework, on Apple Silicon only.
   depends_on arch: :arm64

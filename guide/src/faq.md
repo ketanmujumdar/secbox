@@ -56,4 +56,6 @@ Possibly. `secbox` is a working name, and an unrelated openSUSE package already 
 
 ### What license is it under?
 
-Apache-2.0.
+The [Functional Source License](https://fsl.software), FSL-1.1-ALv2. You can use, change and share secbox for anything, including at work, except to sell it or offer it as a product or service that competes with it. Two years after each version is released, that version is also available under Apache-2.0, with no restriction. The full text is [LICENSE.md](https://github.com/ketanmujumdar/secbox/blob/main/LICENSE.md).
+
+This makes secbox source-available, not open source as the OSI defines it.
