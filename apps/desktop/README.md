@@ -143,9 +143,8 @@ Run in a Linux container (x86_64, WebKitGTK 2.52) under Xvfb, with a real `secbo
 
 - **The current window on a Mac.** It has been seen in WebKitGTK and Chromium, not in WKWebView. Cloning, the Starting checklist with real progress, Logs, Changes and Git have been driven only against the stand-in.
 
-- **macOS.** Nothing has been built or run on a Mac: not the `.app`, the `.dmg`, the menu bar icon, code signing or notarization (neither is set up), or the `LocalPeerPid` path that *Restart daemon* uses there.
+- **macOS packaging.** It runs on a Mac when built from source. The `.app`, the `.dmg`, code signing and notarization have not been tried.
 - **The menu bar icon and its menu.** Xvfb has no tray host, so the icon and menu were never seen. *Restart daemon*, the project list in the menu and *Quit* have not been clicked. The window's own *Start it* uses the same start code as the menu.
 - **Closing the window to the tray.** Xvfb has no window manager to send a close request, so this was not exercised.
-- **A running sandbox.** No engine was available, so no project was started. Services, ports, resources, real log output and real blocked events have been rendered only from the fake engine in tests, not in the window.
 - **AppImage** was not built. A debug `.deb` was built with `cargo tauri build --debug --bundles deb`, and its contents list `usr/bin/secbox`, `usr/bin/secboxd` and `usr/bin/secbox-desktop`, but it was not installed. No release build was made.
 - **The `.app` launched from Finder.** It gets a minimal `PATH`, so it relies on the bundled `secboxd`, and the daemon then reads `HOME` from launchd. That should be right, but it has not been checked.

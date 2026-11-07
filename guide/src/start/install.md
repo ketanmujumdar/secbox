@@ -69,12 +69,14 @@ secbox doctor
 
 `doctor` checks the platform, the hypervisor, CPU, memory, disk, the state folder, the socket path length and the engine. Each line says `ok`, `warn` or `fail`, and a `next` line under a problem says what to do. Sample output on a Mac:
 
+For example, with made-up figures:
+
 ```text
-Platform      ok    macOS 26.5.1 on aarch64
+Platform      ok    macOS on aarch64
 Hypervisor    ok    Hypervisor.framework is supported
-CPU           ok    12 logical CPUs
-Memory        ok    48.0 GB total, about 9.0 GB free
-Disk          ok    89.3 GB free
+CPU           ok    8 logical CPUs
+Memory        ok    16.0 GB total, about 9.0 GB free
+Disk          ok    100.0 GB free
 State folder  ok    /Users/you/.secbox, not created yet
 Socket path   ok    daemon 32 bytes, engine 73 bytes, must be under 104
 Engine        ok    msb 0.7.13

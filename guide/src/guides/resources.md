@@ -93,7 +93,7 @@ The app follows your system's light or dark setting:
 
 ## How much to give
 
-Measured with a seven-service Compose project (Go API and Next.js web app):
+Measured with a seven-service Compose project:
 
 | Usage | Measured |
 | --- | --- |

@@ -1,17 +1,19 @@
 # secbox
 
-secbox is being built to run a project and its AI agent inside a disposable microVM, so that a compromised dependency or a tricked agent stays away from your machine. `docs/ARCHITECTURE.md` has the design.
+secbox runs a project and its AI agent inside a disposable microVM, so that a compromised dependency or a tricked agent stays away from your machine. Your secrets stay in the OS keychain, your SSH key stays on the host, and outbound traffic is denied unless a hostname is allowed.
+
+![The secbox desktop app showing a running project, its services, and the CPU, memory and disk it is using (sample data)](guide/src/images/app/overview-running.png)
+
+`docs/ARCHITECTURE.md` has the design.
 
 **User documentation:** <https://ketanmujumdar.github.io/secbox/>, built from [`guide/`](guide/src/index.md). It is also available as [`llms.txt`](https://ketanmujumdar.github.io/secbox/llms.txt) and [`llms-full.txt`](https://ketanmujumdar.github.io/secbox/llms-full.txt) for AI assistants.
-
-`secbox` is a working name. See [Changing the name](#changing-the-name).
 
 ## Status: early, and not protecting anything yet
 
 **Do not rely on this tool to contain anything.** A microVM has been shown to
-run a Compose project with its network constrained, in one spike on one Mac
-(`docs/spikes/0001-engine-compose.md`). Most commands below were built against
-a fake engine, and only some have run on a real VM. On real traffic, the only
+run a Compose project with its network constrained
+(`docs/spikes/0001-engine-compose.md`), and the main flows have run on a real
+Mac, but containment has not been shown under attack. On real traffic, the only
 network rule is the engine's own hostname allowlist: the rule engine in
 `crates/egress` is not connected to anything. Secrets assigned to a service are
 delivered into its sandbox on each start, by environment or file. That route
@@ -22,29 +24,44 @@ any of it can be called working.
 
 `docs/PROTECTIONS.md` lists each protection against the real attack it answers, the test that proves it, and whether it has run on a real VM.
 
+## Quick start
+
+You need a Rust toolchain, and macOS on Apple Silicon or Linux. There is no Homebrew tap or release yet, so [install from source](docs/INSTALL.md):
+
+```sh
+cargo install --path crates/cli --locked
+secbox doctor
+secbox check tests/fixtures/risky
+secbox net check tests/fixtures/policy.yaml PUT https://registry.npmjs.org/left-pad
+```
+
+`docs/MANUAL_TEST.md` is a step-by-step script for trying everything that is built.
+
+## What works today
+
 | Command | State |
 | --- | --- |
 | `doctor` | Works. Checks the host, without needing Docker |
-| `remove [path]` | Built, tested against a fake engine only. Removes a project from this machine: its sandbox, its records and any imported copy. Never a folder of your own. Secrets stay in the keychain |
+| `remove [path]` | Works. Removes a project from this machine: its sandbox, its records and any imported copy. Never a folder of your own. Secrets stay in the keychain |
 | `net allow <host> [--project PATH]` | Works on a real VM on a small project. Lets a sandbox reach one more exact hostname, by replacing it with its data kept and restarting its services. Also the Approve button in the desktop app and `a` in the terminal interface's Traffic panel, which have only been run against a fake engine |
 | `check [path]` | Works. Reads a project's Compose file as data and reports what it asks for. For a project with only a Dockerfile, reads its `EXPOSE` lines |
 | `open`, `checks` | Works. Editor safety checks, and the gate before launching an editor |
-| `resources [path]` | Works. Shows requested and resolved limits, but nothing applies them yet |
+| `resources [path]` | Works. Shows requested and resolved limits. To keep a limit, use the desktop app or `secbox.yaml`. A change applies the next time a stopped sandbox starts |
 | `secrets import/set/list/rm` | Works, with the OS keychain. Assigned secrets are delivered on each `up`, but not by the proxy route, which is refused |
 | `net check <policy> <METHOD> <url>` | Works. Explains a policy decision, but nothing enforces it yet |
 | `net blocked [--project PATH] [-f]` | Works, through the daemon, on a sandbox created since this was added. Blocked hostnames only. See [Blocked hostnames](#blocked-hostnames) |
 | `uninstall --purge` | Works. Removes the state folder only |
-| `new <git-url \| path> [--ref REF] [--port P] [--no-ports] [--yes]` | Built, tested against a fake engine and a fake fetch only: **never run on a real VM or server**. Brings a project in from an SSH remote or a folder. It sends the same requests as `up`, shows the plan as what the project will be able to reach, open, get and use, and asks once, defaulting to no. Without a terminal it needs `--yes`. See [Bringing a project in](guide/src/guides/new.md) |
+| `new <git-url \| path> [--ref REF] [--port P] [--no-ports] [--yes]` | Has run on a real Mac against a real Git server. Brings a project in from an SSH remote or a folder. It sends the same requests as `up`, shows the plan as what the project will be able to reach, open, get and use, and asks once, defaulting to no. Without a terminal it needs `--yes`. See [Bringing a project in](guide/src/guides/new.md) |
 | `up`, `down`, `status` | Built, for Compose projects and projects with only a Dockerfile. They need the daemon |
-| `up git@host:org/repo.git [--ref REF]` | Built, never run on a real VM or server. Clones the remote into the sandbox with its history, through a relay that uses your SSH key on this machine. See [docs/GIT.md](docs/GIT.md) |
-| `git status\|pull\|commit\|push [--project P]` | Built, never run on a real VM or server. Pull and push go through the same relay; a push to `main` or `master`, a delete or a tag is refused before anything is sent |
+| `up git@host:org/repo.git [--ref REF]` | Has run on a real VM with a real Git server. Clones the remote into the sandbox with its history, through a relay that uses your SSH key on this machine. See [docs/GIT.md](docs/GIT.md) |
+| `git status\|pull\|commit\|push [--project P]` | Status, commit and pull have run on a real VM. **A real push has not.** Pull and push go through the same relay; a push to `main` or `master`, a delete or a tag is refused before anything is sent |
 | `logs [SERVICE] [-f] [--tail N] [--project PATH]` | Works on a running sandbox, through the daemon. Removes terminal control codes, and replaces assigned secret values with their names |
 | `shell [SERVICE]`, `exec [--service S] -- CMD...` | Work on a running sandbox, on your real terminal. Control codes can't be filtered there |
-| `mcp serve --project PATH` | Built, never run on a real VM. An MCP server on stdin and stdout that lets an AI agent on this machine work in one project's sandbox. See [AI agents](#ai-agents-claude-code-codex) |
+| `mcp serve --project PATH` | Has run against a real VM. An MCP server on stdin and stdout that lets an AI agent on this machine work in one project's sandbox. See [AI agents](#ai-agents-claude-code-codex) |
 | `mcp setup claude FOLDER`, `mcp setup codex` | Works. Makes a folder for Claude Code with its own host tools denied, or prints how to add the server to Codex |
-| `diff [PATH]` | Built, through the daemon, and tested against a fake engine only: **never run on a real VM**. Lists what changed in a running sandbox since its snapshot, with files that could act on your machine flagged first. Copies nothing out. See [Reviewing changes](#reviewing-changes-in-a-sandbox) |
+| `diff [PATH]` | Works, through the daemon, on a real VM. Lists what changed in a running sandbox since its snapshot, with files that could act on your machine flagged first. Copies nothing out. See [Reviewing changes](#reviewing-changes-in-a-sandbox) |
 | `export` | Not built |
-| Desktop app (`apps/desktop`) | Early first cut. A menu bar icon that keeps the daemon running, and a window that brings a project in (clone from an SSH remote, or add a folder), shows its plan before it starts, and gives each project Overview, Logs, Network (blocked hostnames), Changes (compare, then commit, pull and push), Secrets and Settings tabs, with stop and destroy. Same daemon, same powers as the CLI. Run on Linux under Xvfb only; macOS untested. See [its README](apps/desktop/README.md) |
+| Desktop app (`apps/desktop`) | Early build, with no signed release yet. A menu bar icon that keeps the daemon running, and a window that brings a project in (clone from an SSH remote, or add a folder), shows its plan before it starts, and gives each project Overview, Logs, Network (blocked hostnames), Changes (compare, then commit, pull and push), Secrets and Settings tabs, with stop and destroy, plus memory, CPU and disk limits and live use. Same daemon, same powers as the CLI. Runs on a Mac when built from source. See [its README](apps/desktop/README.md) |
 
 `new`, `up`, `down`, `status`, `logs`, `net blocked`, `shell`, `exec` and `diff` send requests to a daemon,
 `secboxd`, which holds the secrets, the policy and the approvals. With no daemon
@@ -130,7 +147,7 @@ The terminal UI clones a remote with `g` on its New project page, and pulls and 
 
 Starting a sandbox, `net allow` and every push through the relay wait for you to confirm in macOS's own prompt, with Touch ID or your login password. The daemon puts it up itself, naming the project and what will happen ("push my-change (1f2a120 to 9c3d4e5) from shop to git@github.com:org/shop.git"), so a program running as you, or an AI agent, can ask but cannot answer. Cancelling does nothing at all. The CLI, terminal interface and desktop app only show that a prompt is up, and say so plainly when nobody could be asked.
 
-On Linux there is no prompt yet: the action goes ahead as before, and every client and the audit log say so. Code already running as you can still reach the engine and your SSH agent without secbox. Built and tested with a stand-in person; **never run on a real Mac**. See [the guide page](guide/src/concepts/confirming.md).
+On Linux there is no prompt yet: the action goes ahead as before, and every client and the audit log say so. Code already running as you can still reach the engine and your SSH agent without secbox. Lightly tried on a real Mac: a confirmation has gone through, but not every case has. See [the guide page](guide/src/concepts/confirming.md).
 
 ## AI agents (Claude Code, Codex)
 
@@ -165,19 +182,6 @@ Read this before relying on the list:
 
 The record comes from the engine's log on the host, read by the daemon. As measured on engine 0.7.13, the guest could not write to the folder holding it. If a check on that folder fails, the output says the record is not trustworthy.
 
-## Quick start
-
-You need a Rust toolchain, and macOS on Apple Silicon or Linux. There is no Homebrew tap or release yet, so [install from source](docs/INSTALL.md):
-
-```sh
-cargo install --path crates/cli --locked
-secbox doctor
-secbox check tests/fixtures/risky
-secbox net check tests/fixtures/policy.yaml PUT https://registry.npmjs.org/left-pad
-```
-
-`docs/MANUAL_TEST.md` is a step-by-step script for trying everything that is built.
-
 ## Exit codes
 
 | Code | Meaning |
@@ -193,25 +197,6 @@ secbox net check tests/fixtures/policy.yaml PUT https://registry.npmjs.org/left-
 ## Files it keeps
 
 State lives in `~/.secbox`, owner-only: per-project secret names, their assignments, a names-only audit log, and for each sandbox a small Git repository holding the commit of the snapshot it was given (`baseline.git`, removed by `down --destroy`). Secret values go only to macOS Keychain or Linux Secret Service. Set `SECBOX_HOME` to use `$SECBOX_HOME/.secbox` instead, which helps when testing or when your home path is too long for Unix sockets.
-
-## Changing the name
-
-The name is defined once, in `crates/brand/src/lib.rs`. Rust code outside that crate must use its constants, and a test in that crate fails if it does not.
-
-```sh
-scripts/rename.sh newname   # lowercase letters and digits, starting with a letter
-cargo test --workspace
-```
-
-The script rewrites project text files and renames files that carry the name, such as the Homebrew formula. Some things it does not do:
-
-- It does not rename the project folder.
-- It does not change images in `docs/images`, which show the old name.
-- It rewrites the desktop app's `tauri.conf.json`, but no other JSON, HTML or JavaScript. The app's page asks the app for the name at run time, and the app takes it from the brand crate, so the page has none to change.
-- It leaves lines about the unrelated openSUSE package alone. Review the "Final name" row in `docs/ARCHITECTURE.md` by hand.
-- It does not move existing data. The old `~/.secbox` and old keychain entries stay under the old name, so remove them first with the old binary.
-
-Avoid a new name that is a common word or a part of other identifiers. The name is replaced as plain text wherever it appears, and the guard test matches any text containing it.
 
 ## License
 

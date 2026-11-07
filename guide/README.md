@@ -58,6 +58,11 @@ It also rewrites `src/reference/screenshots.md`, the gallery page, from
 uses a fresh state folder at `/tmp/secbox-demo` and a real daemon with no VM
 engine, so commands that need a running sandbox cannot be captured yet.
 
+`doctor` and `resources` print the machine they ran on: its OS version, CPUs,
+memory and disk. Those shots are marked `host_details` and skipped by default, so
+a run on your own computer cannot publish them. To retake them, use a throwaway
+machine and pass `--include-host-details`.
+
 The window screenshots in `src/images/app/` are different. They were taken by
 hand in a browser from `apps/desktop/ui-preview`, at 1360 wide: the app's real
 page with sample data from `stub.js`, not a real sandbox. The pages that use

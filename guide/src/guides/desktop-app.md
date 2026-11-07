@@ -2,7 +2,7 @@
 
 The desktop app is a menu bar icon and a window for the same daemon the command line uses. It keeps `secboxd` running and lets you start, stop and destroy sandboxes, read logs and see blocked hostnames.
 
-> **Early first cut.** It has run on Linux under a virtual display only. Nothing has been built or run on a Mac. There is no signed release.
+> **Early build.** It runs on a Mac when built from source. There is no signed release yet.
 
 ## What it has
 

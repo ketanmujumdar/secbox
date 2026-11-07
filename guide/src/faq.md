@@ -4,7 +4,7 @@ Short answers to common questions about secbox.
 
 ### Is it safe to use for untrusted code today?
 
-No. secbox is an early build. Most of it has been tested against a fake engine, and only the hostname allowlist applies to real network traffic. See [What works today](start/status.md).
+No. secbox is an early build. Its main flows have run on a real Mac, but containment has not been shown under attack, and only the hostname allowlist applies to real network traffic. See [What works today](start/status.md).
 
 ### How is this different from Docker?
 

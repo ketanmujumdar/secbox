@@ -4,7 +4,7 @@ As of Nov 5, 2026. `secbox` is a working name, see "Changing the name" in the RE
 
 The project's code lives in a sandbox, so an AI agent running on your machine (Claude Code, Codex, or anything else that speaks MCP) cannot see it. This page covers how such an agent connects to the sandbox, what keeps that connection safe, and what it does not protect.
 
-**Status: early, and never run against a real VM.** The tools have been tested against the real daemon logic, with a fake engine and a stub in place of the engine's binary. Claude Code has connected to the server and listed its tools. No model has yet used them on a running sandbox. See [What has been tested](#what-has-been-tested).
+**Status: early, and run against a real VM.** The tools have also been tested against the real daemon logic, with a fake engine and a stub in place of the engine's binary. See [What has been tested](#what-has-been-tested).
 
 ## Two ways to run an agent
 

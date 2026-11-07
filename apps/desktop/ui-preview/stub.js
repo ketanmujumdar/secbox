@@ -15,12 +15,12 @@
   const METHOD = 'Touch ID or your login password';
 
   const STATE = '/Users/ana/.secbox';
-  const CRM = STATE + '/remote/7f3a9c0e21/demo_shop';
+  const SHOP = STATE + '/remote/7f3a9c0e21/demo_shop';
   const DOCS = '/Users/ana/code/docs-site';
   const BILLING = '/Users/ana/code/billing-api';
 
   const projects = scene === 'empty' ? [] : [
-    { name: 'demo_shop', path: CRM, state: (scene === 'stopped' || scene === 'confirming') ? 'stopped' : 'running', label: (scene === 'stopped' || scene === 'confirming') ? 'Stopped' : 'Running' },
+    { name: 'demo_shop', path: SHOP, state: (scene === 'stopped' || scene === 'confirming') ? 'stopped' : 'running', label: (scene === 'stopped' || scene === 'confirming') ? 'Stopped' : 'Running' },
     { name: 'docs-site', path: DOCS, state: 'none', label: 'No sandbox' },
     { name: 'billing-api', path: BILLING, state: 'stopped', label: 'Stopped' },
   ];
@@ -64,7 +64,7 @@
   }
 
   const plan = {
-    path: CRM,
+    path: SHOP,
     digest: '9e1d4c07a3b2f6118d0c55e2a1f4b3c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3',
     summary: [
       '4 services from commit 4f2c1a9e0b7d',
@@ -212,8 +212,8 @@
         projects.push({ name: args.path.split('/').filter(Boolean).pop(), path: args.path, state: 'none', label: 'No sandbox' });
         return 'Added.';
       case 'import_remote':
-        if (!projects.some((p) => p.path === CRM)) projects.push({ name: 'demo_shop', path: CRM, state: 'none', label: 'No sandbox' });
-        return { project_path: CRM, commit: '4f2c1a9e0b7d5c3a2f1e0d9c8b7a6f5e4d3c2b1a', fetched: true, message: 'Fetched ' + args.url + ' at 4f2c1a9e0b7d. Your key stayed on this machine.' };
+        if (!projects.some((p) => p.path === SHOP)) projects.push({ name: 'demo_shop', path: SHOP, state: 'none', label: 'No sandbox' });
+        return { project_path: SHOP, commit: '4f2c1a9e0b7d5c3a2f1e0d9c8b7a6f5e4d3c2b1a', fetched: true, message: 'Fetched ' + args.url + ' at 4f2c1a9e0b7d. Your key stayed on this machine.' };
       case 'status':
         return status(args.project);
       case 'plan':

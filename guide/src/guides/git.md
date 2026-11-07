@@ -2,7 +2,7 @@
 
 You can use any Git command on a sandboxed project, and so can your AI agent. Your SSH key, token and agent never go into the sandbox. This page explains why that matters, what you can do, and how it stays safe.
 
-> Built, and tested with real Git against a fake engine, where a local folder stands in for the VM and a local repository stands in for GitHub. It has never run on a real VM or against a real Git server. See [What works today](../start/status.md).
+> Built, and tested in depth with real Git against a fake engine, where a local folder stands in for the VM and a local repository stands in for GitHub. Cloning and pulling have since run on a real VM with a real Git server. A real push has not. See [What works today](../start/status.md).
 
 ## Why this is useful
 

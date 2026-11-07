@@ -46,11 +46,11 @@ secbox doctor; echo "exit $?"
 Sample output:
 
 ```text
-Platform      ok    macOS 26.5.1 on aarch64
+Platform      ok    macOS on aarch64
 Hypervisor    ok    Hypervisor.framework is supported
-CPU           ok    12 logical CPUs
-Memory        ok    48.0 GB total, about 9.0 GB free
-Disk          ok    89.3 GB free
+CPU           ok    8 logical CPUs
+Memory        ok    16.0 GB total, about 9.0 GB free
+Disk          ok    100.0 GB free
 State folder  ok    /tmp/sbtest/.secbox (set by override), not created yet
 Socket path   ok    daemon 32 bytes, engine 73 bytes, must be under 104
 Engine        warn  not found at /tmp/sbtest/.secbox/msb/bin/msb

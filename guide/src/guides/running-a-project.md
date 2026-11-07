@@ -2,7 +2,7 @@
 
 `secbox up` starts a project in its own VM, `secbox status` shows it, and `secbox down` stops or destroys it. All three need the daemon (`secboxd`) running.
 
-> Built, and most of it tested only against a fake engine. See [What works today](../start/status.md).
+> Built, and has run on a real Mac. See [What works today](../start/status.md).
 
 `secbox new` sends the same requests with one review and one question. See [Bringing a project in](new.md).
 

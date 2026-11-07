@@ -51,7 +51,7 @@ A Linux build never claims a person confirmed anything. A prompt for Linux, such
 
 - **It guards what goes through the daemon.** Code already running as you can still use your SSH agent directly, run the engine itself to get into a running sandbox and read the secrets delivered there, or replace secbox's own programs. The prompt makes secbox stop being the easy way to do those things. It does not make a compromised Mac safe.
 - **`shell`, `exec`, pull, stop and destroy do not ask.** Pull only brings code into the sandbox. `shell` and `exec` go to the engine directly, so a prompt in the daemon would not stop them.
-- **It has not been run on a real Mac yet.** See the checklist in `docs/NEEDS_A_VM.md` under "Confirming with Touch ID".
+- **It has only been lightly tried on a real Mac.** A confirmation has gone through, but not every case has. See the checklist in `docs/NEEDS_A_VM.md` under "Confirming with Touch ID".
 
 ## In the audit log
 

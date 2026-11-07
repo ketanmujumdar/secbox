@@ -121,20 +121,20 @@ Each project gets one VM, and its whole Compose stack runs on that VM's private 
 
 **Within a project, compromise can spread.** If `app` is compromised, it can attack `db` on the same network. Separate networks and narrowly assigned secrets reduce this.
 
-### Test case: demo_shop
+### Test case: a typical Compose project
 
-`demo_shop` is a useful first test: 7 default services, with `worker` running 2 replicas, plus Documenso as an optional profile. The API is Go and the web app is Next.js.
+The first test was a private seven-service Compose project (`demo_shop` in these documents), with a worker running two replicas and a Node build step. It raised these points, which apply to many projects:
 
 | Finding | Why it matters | secbox behavior |
 | --- | --- | --- |
-| `npm ci` runs in `web/Dockerfile`, with 638 locked npm packages | The dependency install happens during a build | Build inside the VM, with registry access only |
-| Only 1 locked package has an install script (`unrs-resolver`) | Install-script risk is small today | Flag any new install script on rebuild |
-| 7 ports published on all interfaces, including Postgres with `crm:crm` | Other devices on the network may reach them today | Forward only to `127.0.0.1` |
+| A package install runs during the image build | The dependency install happens during a build | Build inside the VM, with registry access only |
+| A locked package can add an install script later | Install-script risk changes with every update | Flag any new install script on rebuild |
+| Ports published on all interfaces, including a database | Other devices on the network may reach them today | Forward only to `127.0.0.1` |
 | `.env` at the repo root | Compose would load it automatically | Leave out of the snapshot |
-| `seed`, `api` and `worker` share one environment block | One compromised service could see all of those secrets | Assign secrets per service |
-| Fakes run when Airwallex and Documenso keys are absent | The stack should start with no real secrets | Default to no secrets |
-| Three repo files bind-mounted read-only, one only with Documenso | These need to exist in the VM | Resolve them from the snapshot |
-| Documenso and WebAuthn expect specific `localhost` addresses | Remapping ports could break sign-in and signing | Keep the same port numbers |
+| Several services share one environment block | One compromised service could see all of those secrets | Assign secrets per service |
+| The stack can start with fakes when third-party keys are absent | It should start with no real secrets | Default to no secrets |
+| Repo files bind-mounted read-only | These need to exist in the VM | Resolve them from the snapshot |
+| Sign-in expects specific `localhost` addresses | Remapping ports could break it | Keep the same port numbers |
 
 ### Projects without Docker
 
@@ -304,11 +304,9 @@ Running the CLI with no arguments could open a full-screen, 1990s-style terminal
 
 The app talks to the daemon over an owner-only Unix socket and has no local web port. Browsers don't isolate cookies by port, so a compromised app on `localhost:3000` could otherwise target a UI on another local port. Logs, filenames and AI reports display as plain text.
 
-![Desktop UI mockup: project overview with sample values](images/ui-overview.png)
+![The desktop app's overview, in the preview with sample data](../guide/src/images/app/overview-running.png)
 
 The overview shows the RAM, CPU and disk limits next to the services using them. Blocked traffic has its own panel, so a failed request can be traced directly to the rule that stopped it.
-
-![Desktop UI mockup: secrets and Git review with sample values](images/ui-secrets-git.png)
 
 The secrets screen shows where each secret goes, but not its value. The review screen puts files that could affect the host first, and the approve button names the exact commit.
 

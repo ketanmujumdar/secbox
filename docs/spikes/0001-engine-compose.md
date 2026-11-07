@@ -4,7 +4,7 @@
 
 **Verdict: use microsandbox as the first engine, with the conditions in [Verdict](#verdict).** The main unsolved problem is that secret injection needs TLS interception, and with interception on, HTTPS from nested containers and build steps fails until they trust the gateway's CA.
 
-Run on 2026-11-05 on macOS 26.5.1 (25F80), Apple Silicon, 48 GB RAM, 12 CPUs, with microsandbox v0.7.13 (`docker:dind` with Docker 29.9.3 and Compose v5.7.0, kernel 6.12.113, arm64).
+Run on 2026-11-05 on a Mac with Apple Silicon, with microsandbox v0.7.13 (`docker:dind` with Docker 29.9.3 and Compose v5.7.0, kernel 6.12.113, arm64).
 
 Raw logs are in `.spike/logs/` (git-ignored). State lives in `~/.secbox/msb`, because the project path is too long for it (see [State directory](#state-directory)).
 
@@ -34,7 +34,7 @@ Docker Compose version v5.7.0
 ## 2. demo_shop build
 
 ```console
-$ msb exec spike-crm --no-stdin --no-tty --timeout 28m -w /work -- sh -c 'docker compose up --build -d --wait --wait-timeout 300'
+$ msb exec spike-demo --no-stdin --no-tty --timeout 28m -w /work -- sh -c 'docker compose up --build -d --wait --wait-timeout 300'
 up_exit=0 up_seconds=88.5
 SERVICE    STATE     HEALTH
 api        running   healthy
@@ -288,7 +288,7 @@ Out of memory: Killed process 227 (python3) total-vm:485368kB, anon-rss:466432kB
 
 **Not tested:**
 
-- Documenso profile, or x86-only images
+- Optional Compose profiles, or x86-only images
 - Linux hosts, or any host with IPv6
 - VM escape or attacks on the hypervisor
 - DNS tunneling volume, domain fronting, or QUIC
@@ -334,22 +334,22 @@ These ran as written under zsh, from the project root, on 2026-11-05. The copy a
 export MSB_HOME="$HOME/.secbox/msb"
 MSB="$PWD/.tools/msb/bin/msb"
 
-"$MSB" create docker:dind --name crm-manual --memory 6G --cpus 4 --root-disk flat:30G \
+"$MSB" create docker:dind --name demo-manual --memory 6G --cpus 4 --root-disk flat:30G \
   -p 127.0.0.1:3000:3000 -p 127.0.0.1:8080:8080 -p 127.0.0.1:5432:5432 \
   -p 127.0.0.1:8333:8333 -p 127.0.0.1:8888:8888 -p 127.0.0.1:8025:8025 -p 127.0.0.1:1025:1025
 
-"$MSB" copy "$PWD/.spike/demo_shop" crm-manual:/work
-"$MSB" exec --detach crm-manual --no-stdin -- sh -c 'dockerd >/tmp/dockerd.log 2>&1'
-until "$MSB" exec crm-manual --no-stdin --no-tty -- docker info >/dev/null 2>&1; do sleep 1; done
+"$MSB" copy "$PWD/.spike/demo_shop" demo-manual:/work
+"$MSB" exec --detach demo-manual --no-stdin -- sh -c 'dockerd >/tmp/dockerd.log 2>&1'
+until "$MSB" exec demo-manual --no-stdin --no-tty -- docker info >/dev/null 2>&1; do sleep 1; done
 
-"$MSB" exec crm-manual --no-stdin --no-tty --timeout 25m --workdir /work -- \
+"$MSB" exec demo-manual --no-stdin --no-tty --timeout 25m --workdir /work -- \
   docker compose up --build -d --wait --wait-timeout 300
-"$MSB" exec crm-manual --no-stdin --no-tty --workdir /work -- docker compose ps -a
+"$MSB" exec demo-manual --no-stdin --no-tty --workdir /work -- docker compose ps -a
 
 curl -i http://127.0.0.1:8080/healthz    # then open http://127.0.0.1:3000
-"$MSB" exec crm-manual --workdir /work   # a shell inside the VM
+"$MSB" exec demo-manual --workdir /work   # a shell inside the VM
 
-"$MSB" remove --force crm-manual         # removes the VM and everything in it
+"$MSB" remove --force demo-manual         # removes the VM and everything in it
 "$MSB" status -a
 ```
 

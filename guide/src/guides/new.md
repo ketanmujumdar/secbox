@@ -2,7 +2,7 @@
 
 `secbox new` brings a project in from an SSH remote or a folder, shows what it will be able to do, asks once, and starts it. It needs the daemon (`secboxd`) running.
 
-> Built, and tested only against a fake engine and a fake fetch. It has never run on a real VM or against a real Git server. See [What works today](../start/status.md).
+> Built, and has run on a real Mac against a real Git server. See [What works today](../start/status.md).
 
 ```sh
 secbox new git@github.com:acme/shop.git               # the remote's default branch

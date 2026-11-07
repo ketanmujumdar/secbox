@@ -2,7 +2,7 @@
 
 `secbox diff` shows what changed inside a running sandbox since it started, and flags first the files that could act on your machine, such as a planted hook for an AI coding tool. It copies nothing out.
 
-> **Built, and tested against a fake engine only. Never run on a real VM.** `export`, which would bring reviewed changes back to your machine, is not built. Nothing reviewed here can leave the sandbox yet.
+> **Built, and has run on a real VM.** `export`, which would bring reviewed changes back to your machine, is not built. Nothing reviewed here can leave the sandbox yet.
 
 ```sh
 secbox diff                     # the current folder's project

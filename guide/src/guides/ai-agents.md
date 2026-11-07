@@ -2,7 +2,7 @@
 
 The project's code lives in the sandbox, so an AI agent on your machine cannot see it. `secbox mcp serve` is an MCP server that lets Claude Code, Codex or any other MCP client work inside one project's sandbox, while its own host tools are switched off.
 
-> **Built, never run against a real VM.** Claude Code has connected to the server and listed its tools. No model has yet used them on a running sandbox.
+> **Built, and run against a real VM.** MCP adds a way into the sandbox. It doesn't limit what an agent can do on your machine.
 
 ## One button, on a Mac
 

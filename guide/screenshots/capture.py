@@ -10,6 +10,11 @@ PNG by the Chromium that Playwright drives. Nothing is drawn by hand.
     guide/screenshots/capture.py doctor up-plan   # just these
     guide/screenshots/capture.py --no-build       # use the binaries already built
 
+Shots marked host_details in shots.toml print the machine they ran on, so a run
+on your own computer would publish its OS version, CPUs, memory and disk. They
+are skipped unless you pass --include-host-details, which is for a throwaway
+machine.
+
 Needs: cargo, Python 3.11+ with pyte (`pip install pyte`), and Node with
 Playwright and Chromium (`npm i -g playwright && npx playwright install chromium`).
 
@@ -215,6 +220,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("names", nargs="*", help="only these shots")
     parser.add_argument("--no-build", action="store_true", help="do not run cargo build first")
+    parser.add_argument("--include-host-details", action="store_true",
+                        help="also capture shots that show this machine's OS version, CPUs, memory and disk")
     args = parser.parse_args()
 
     shots = tomllib.loads((HERE / "shots.toml").read_text(encoding="utf-8"))["shot"]
@@ -222,6 +229,14 @@ def main() -> int:
     unknown = set(args.names) - {s["name"] for s in shots}
     if unknown:
         sys.exit(f"no such shot: {', '.join(sorted(unknown))}")
+    if not args.include_host_details:
+        skipped = [s["name"] for s in wanted if s.get("host_details")]
+        wanted = [s for s in wanted if not s.get("host_details")]
+        if skipped:
+            print(f"skipped, because they show this machine: {', '.join(skipped)}. "
+                  "Use --include-host-details on a throwaway machine.")
+        if not wanted:
+            return 0
 
     if not args.no_build:
         subprocess.run(["cargo", "build", "-q", "-p", "cli", "-p", "daemon"], cwd=REPO, check=True)

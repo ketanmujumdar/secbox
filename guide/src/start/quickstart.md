@@ -14,7 +14,7 @@ secbox doctor
 
 ![secbox doctor output: each check with ok, warn or fail, and a next step under each problem](../images/cli/doctor.png)
 
-This was captured on a Mac with Apple Silicon. On Linux without KVM, the hypervisor line fails and says what to do next.
+This was captured on a Linux machine without KVM, so the hypervisor line fails. On a Mac with Apple Silicon it says `ok`.
 
 ### Check a risky project
 

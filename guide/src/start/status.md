@@ -9,11 +9,11 @@ secbox is an early build. This page says exactly which parts work, which are bui
 - A microVM has run a real Compose project with its network restricted, in one test on one Mac.
 - The commands that only read files (`doctor`, `check`, `resources`, `net check`) work anywhere.
 - Secrets are stored in the OS keychain and work.
-- Starting, stopping and inspecting a sandbox (`up`, `down`, `status`, `logs`, `shell`, `exec`) are built. Most of that was tested against a fake engine. `logs`, `shell` and `exec` have run against a real sandbox.
+- Starting, stopping and inspecting a sandbox (`up`, `down`, `status`, `logs`, `shell`, `exec`) have run on a real Mac.
 - The only network rule on real traffic is the engine's own **hostname allowlist**. The fuller policy engine (HTTP methods, paths) explains decisions but enforces nothing yet.
 - `logs` and `net blocked` replace secret values with their names.
-- On macOS, starting a sandbox, `net allow` and every push wait for your Touch ID or password, asked by the daemon itself. Built and tested with a stand-in person, **never run on a real Mac**. Linux has no prompt. See [Confirming with Touch ID](../concepts/confirming.md).
-- `diff` shows what changed in a sandbox and flags risky files, tested against a fake engine only. There is still **no way to bring changes back** to your machine: `export` is not built.
+- On macOS, starting a sandbox, `net allow` and every push wait for your Touch ID or password, asked by the daemon itself. Lightly tried on a real Mac: a confirmation has gone through, but not every case has. Linux has no prompt. See [Confirming with Touch ID](../concepts/confirming.md).
+- `diff` shows what changed in a sandbox and flags risky files, and has run on a real VM. There is still **no way to bring changes back** to your machine: `export` is not built.
 
 ## Command by command
 
@@ -22,21 +22,21 @@ secbox is an early build. This page says exactly which parts work, which are bui
 | `doctor` | Works. Checks the host, without needing Docker |
 | `check [PATH]` | Works. Reads a project's Compose file as data and reports what it asks for. For a project with only a Dockerfile, reads its `EXPOSE` lines |
 | `open`, `checks` | Works. Editor safety checks, and the gate before launching an editor |
-| `resources [PATH]` | Works. Shows requested and resolved limits, but nothing applies them yet |
+| `resources [PATH]` | Works. Shows requested and resolved limits. To keep a limit, use the desktop app or `secbox.yaml` |
 | `secrets import/set/fill/list/rm` | Works, with the OS keychain. A template such as `.env.example` adds names only, to fill in later. Assigned secrets are delivered on each `up` by environment or file. The proxy route is refused |
 | `net check POLICY METHOD URL` | Works. Explains a policy decision. Nothing enforces it yet |
 | `net blocked` | Works, through the daemon, on a sandbox created recently enough. Hostnames only |
 | `uninstall --purge` | Works. Removes the state folder only |
-| `new REMOTE` or `new PATH` | Built, tested against a fake engine and a fake fetch only. **Never run on a real VM or server.** The same requests as `up`, with one review and one question that defaults to no |
+| `new REMOTE` or `new PATH` | Has run on a real Mac against a real Git server. The same requests as `up`, with one review and one question that defaults to no |
 | `up`, `down`, `status` | Built, for Compose projects and projects with only a Dockerfile. Need the daemon |
 | `logs` | Works on a running sandbox, through the daemon. Removes terminal control codes, and replaces assigned secret values with their names |
 | `shell`, `exec` | Work on a running sandbox, on your real terminal. Their output is not masked |
-| `mcp serve` | Built, never run on a real VM |
+| `mcp serve` | Has run against a real VM |
 | `mcp setup claude`, `mcp setup codex` | Works |
-| `diff [PATH]` | Built, through the daemon, tested against a fake engine only. **Never run on a real VM.** Lists what changed in a running sandbox, with risky files flagged first. Copies nothing out |
-| Touch ID before `up`, `net allow` and each push | macOS only. Built, tested with a stand-in person, **never shown on a real Mac**. No prompt on Linux |
+| `diff [PATH]` | Works, through the daemon, on a real VM. Lists what changed in a running sandbox, with risky files flagged first. Copies nothing out |
+| Touch ID before `up`, `net allow` and each push | macOS only. Lightly tried on a real Mac. No prompt on Linux |
 | `export` | Not built. Exits with code 69 |
-| Desktop app | Early first cut. Run on Linux only, under a virtual display. macOS untested. The Secrets tab, which sets values through the daemon, has been seen only in a browser preview |
+| Desktop app | Early build. Runs on a Mac when built from source. There is no signed release yet |
 
 ## What kind of project can it start
 

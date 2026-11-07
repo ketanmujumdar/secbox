@@ -28,7 +28,7 @@ Most cloud environments are Linux and may have no KVM, so they can't run the VM 
 | Leak suite runs | | Yes |
 | Touch ID and real macOS Keychain | | Mac only |
 
-`.tools/` and `.spike/` are git-ignored, so a new machine has no engine or `demo_shop` copy. The `demo_shop` tests skip when its file is missing, and a skipped test proves nothing.
+`.tools/` and `.spike/` are git-ignored, so a new machine has no engine or `demo_shop` copy.
 
 ## Current state
 

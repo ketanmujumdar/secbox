@@ -2,7 +2,7 @@
 
 As of Nov 5, 2026. `secbox` is a working name, see "Changing the name" in the README.
 
-**Status: built, and never run against a real VM or a real Git server.** Every piece below has run with real Git on both sides, in tests where a local folder stands in for the VM and a local repository stands in for GitHub. The engine's two-way exec, Git inside the guest, and your SSH agent have not been tried together. See [What has been tested](#what-has-been-tested).
+**Status: cloning and pulling have run against a real VM and a real Git server. A real push has not.** Every piece below has also run with real Git on both sides, in tests where a local folder stands in for the VM and a local repository stands in for GitHub. See [What has been tested](#what-has-been-tested).
 
 ## In one picture
 
