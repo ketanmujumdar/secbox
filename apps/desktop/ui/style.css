@@ -659,6 +659,11 @@ pre.cmd {
 .problems-table td { vertical-align: top; }
 .problems-table td.project { width: 160px; }
 .problems-table td.what { width: 28%; }
+.warn-text { color: var(--warn); }
+.flagged-projects { display: flex; flex-direction: column; gap: 14px; }
+.flagged-projects:empty { display: none; }
+.flagged-project { display: flex; flex-direction: column; gap: 8px; }
+.flagged-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 
 /* changes */
 .changes { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }

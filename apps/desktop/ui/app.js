@@ -1638,10 +1638,92 @@
     await refreshProblemCount();
   }
 
+  // The flags of every running sandbox, as its Changes tab shows them first.
+  // The comparisons run together, and each answer is kept for that project's
+  // Changes tab. A stopped sandbox cannot be compared, so it is only named.
+  let flaggedRun = 0;
+
+  function flaggedProject(row, diff, failed) {
+    const block = el('div', null, 'flagged-project');
+    const head = el('div', null, 'flagged-head');
+    const open = el('button', row.name, 'link strong');
+    open.title = row.path;
+    open.addEventListener('click', async () => {
+      await openProject(row.path);
+      await openTab('changes');
+    });
+    head.appendChild(open);
+    if (failed) {
+      head.appendChild(el('span', 'could not be compared: ' + failed, 'small-text warn-text'));
+      block.appendChild(head);
+      return block;
+    }
+    const flags = diff.view.flags;
+    head.appendChild(el('span', plural(flags.length, 'change', 'changes') + ' to look at', 'small-text bad-text'));
+    block.appendChild(head);
+    const list = el('ul', null, 'flags');
+    for (const flag of flags) {
+      const item = el('li');
+      item.appendChild(el('div', flag.path, 'mono strong'));
+      item.appendChild(el('div', flag.message));
+      list.appendChild(item);
+    }
+    block.appendChild(list);
+    return block;
+  }
+
+  async function readFlagged(force) {
+    const run = ++flaggedRun;
+    const notes = $('flagged-notes');
+    const box = $('flagged-projects');
+    clear(notes);
+    clear(box);
+    const running = state.projects.filter((p) => p.state === 'running');
+    const stopped = state.projects.length - running.length;
+    if (!running.length) {
+      notes.appendChild(el('li', 'No sandbox is running, so nothing was compared.'));
+      return;
+    }
+    const button = $('flagged-read');
+    button.disabled = true;
+    const waiting = el('li', 'Comparing ' + plural(running.length, 'running sandbox', 'running sandboxes') + '…');
+    notes.appendChild(waiting);
+    const results = await Promise.all(running.map(async (row) => {
+      const kept = state.diffs.get(row.path);
+      if (!force && kept && Date.now() - kept.at < COMPARE_FRESH_MS) return { row, diff: kept };
+      try {
+        const view = await invoke('diff', { project: row.path });
+        const now = new Date();
+        const diff = { view, at: now.getTime(), when: String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') };
+        state.diffs.set(row.path, diff);
+        return { row, diff };
+      } catch (error) {
+        return { row, failed: errorText(error) };
+      }
+    }));
+    button.disabled = false;
+    if (run !== flaggedRun) return;
+    waiting.remove();
+    let clean = 0;
+    for (const result of results) {
+      if (!result.failed && result.diff.view.flags.length === 0) {
+        clean += 1;
+        continue;
+      }
+      box.appendChild(flaggedProject(result.row, result.diff, result.failed));
+    }
+    if (clean) notes.appendChild(el('li', plural(clean, 'running sandbox has', 'running sandboxes have') + ' nothing flagged.'));
+    if (stopped) notes.appendChild(el('li', plural(stopped, 'project is', 'projects are') + ' not running, so not compared. Start one to check it.'));
+  }
+
   async function openProblems() {
     banner('');
     showPage('problems');
+    // The refusals are read from a file and show at once; the comparisons
+    // run inside the sandboxes and fill in after.
+    const flagged = readFlagged(false);
     await readProblems();
+    await flagged;
   }
 
   async function readRefused() {
@@ -1663,6 +1745,7 @@
   $('btn-problems').addEventListener('click', openProblems);
   $('choose-problems').addEventListener('click', openProblems);
   $('problems-read').addEventListener('click', readProblems);
+  $('flagged-read').addEventListener('click', () => readFlagged(true));
   $('refused-read').addEventListener('click', readRefused);
 
   // ---------- changes ----------

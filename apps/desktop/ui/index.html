@@ -487,7 +487,16 @@
         <div class="column wide-column">
           <div class="crumbs"><button class="link back" data-back>← Back</button></div>
           <h1>Problems</h1>
-          <div class="subtitle"><p>What the daemon refused, or what failed, recently. Newest first.</p></div>
+          <div class="subtitle"><p>Changes to look at before you pull them, and what the daemon refused or what failed recently.</p></div>
+          <div class="card">
+            <div class="card-head">
+              <h2>Changes to look at</h2>
+              <span class="buttons"><button class="small" id="flagged-read">Compare again</button></span>
+            </div>
+            <p class="hint">Each running sandbox is compared with the snapshot it started from, as in its Changes tab. Flags are a heuristic aid: no flag proves nothing.</p>
+            <ul class="notes" id="flagged-notes"></ul>
+            <div class="flagged-projects" id="flagged-projects"></div>
+          </div>
           <div class="card">
             <div class="card-head">
               <h2>Refused and failed</h2>
