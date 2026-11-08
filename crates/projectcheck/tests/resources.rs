@@ -339,7 +339,10 @@ fn memory_reserve_boundary() {
             ..
         }
     ));
-    assert!(err.to_string().contains("6G"));
+    assert_eq!(
+        err.to_string(),
+        "not enough memory: 6 GB needed, 9 GB available, and 4 GB must stay free for this computer"
+    );
 }
 
 #[test]

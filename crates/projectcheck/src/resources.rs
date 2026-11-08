@@ -37,7 +37,7 @@ pub enum ResourceError {
     #[error("{place} must be a mapping")]
     NotAMapping { place: String },
     #[error(
-        "not enough {resource}: {needed} needed, {available} available, and {reserve} must stay free for the host"
+        "not enough {resource}: {needed} needed, {available} available, and {reserve} must stay free for this computer"
     )]
     HostReserve {
         resource: &'static str,
@@ -432,9 +432,9 @@ pub fn resolve(
     if peak.bytes() > host.available_memory.saturating_sub(host.memory_reserve) {
         return Err(ResourceError::HostReserve {
             resource: "memory",
-            needed: peak.to_string(),
-            available: show_bytes(host.available_memory),
-            reserve: show_bytes(host.memory_reserve),
+            needed: plain_bytes(peak.bytes()),
+            available: plain_bytes(host.available_memory),
+            reserve: plain_bytes(host.memory_reserve),
         });
     }
     if cpus.millis()
@@ -452,9 +452,9 @@ pub fn resolve(
     if disk.bytes() > host.available_disk.saturating_sub(host.disk_reserve) {
         return Err(ResourceError::HostReserve {
             resource: "disk",
-            needed: disk.to_string(),
-            available: show_bytes(host.available_disk),
-            reserve: show_bytes(host.disk_reserve),
+            needed: plain_bytes(disk.bytes()),
+            available: plain_bytes(host.available_disk),
+            reserve: plain_bytes(host.disk_reserve),
         });
     }
     Ok(ResolvedResources {
@@ -483,18 +483,6 @@ fn fit<T: Copy + Ord>(
     }
 }
 
-struct ShowBytes(u64);
-
-impl fmt::Display for ShowBytes {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write_bytes(f, self.0)
-    }
-}
-
-fn show_bytes(bytes: u64) -> String {
-    ShowBytes(bytes).to_string()
-}
-
 struct ShowMillis(u32);
 
 impl fmt::Display for ShowMillis {
@@ -503,6 +491,35 @@ impl fmt::Display for ShowMillis {
     }
 }
 
+/// A size for a person to read, in the GB and MB the app shows: `64 GB`,
+/// or `about 14.7 GB` when it is not a whole number.
+fn plain_bytes(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    let (size, unit) = if bytes >= GIB { (GIB, "GB") } else { (MIB, "MB") };
+    if bytes.is_multiple_of(size) {
+        return format!("{} {unit}", bytes / size);
+    }
+    let tenths = (u128::from(bytes) * 10 + u128::from(size) / 2) / u128::from(size);
+    if tenths % 10 == 0 {
+        format!("about {} {unit}", tenths / 10)
+    } else {
+        format!("about {}.{} {unit}", tenths / 10, tenths % 10)
+    }
+}
+
 fn show_millis(millis: u32) -> String {
     ShowMillis(millis).to_string()
+}
+
+#[cfg(test)]
+mod plain_size_tests {
+    use super::plain_bytes;
+
+    #[test]
+    fn sizes_read_in_the_units_the_app_shows() {
+        assert_eq!(plain_bytes(64 << 30), "64 GB");
+        assert_eq!(plain_bytes(15_365_568 * 1024), "about 14.7 GB");
+        assert_eq!(plain_bytes(512 << 20), "512 MB");
+        assert_eq!(plain_bytes((2 << 30) + 1), "about 2 GB");
+    }
 }
