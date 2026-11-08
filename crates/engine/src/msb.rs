@@ -1,8 +1,8 @@
 //! Adapter for the microsandbox CLI.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::argv;
@@ -58,6 +58,8 @@ pub struct MsbEngine {
     redactor: Arc<dyn Redactor>,
     secret_env: BTreeMap<String, String>,
     secret_redactor: LiteralRedactor,
+    /// The last CPU reading per sandbox, since use is worked out between two.
+    cpu_samples: Mutex<HashMap<SandboxName, CpuSample>>,
 }
 
 // Hand-written so that secret values can never appear in debug output.
@@ -121,6 +123,7 @@ impl MsbEngine {
             redactor: Arc::new(NoRedaction),
             secret_env: BTreeMap::new(),
             secret_redactor: LiteralRedactor::default(),
+            cpu_samples: Mutex::new(HashMap::new()),
         })
     }
 
@@ -248,7 +251,9 @@ impl MsbEngine {
             reason: e.kind().to_string(),
         };
         // Nothing on the way may be a link: the guest's own shares are siblings.
-        let (logs, above) = dirs.split_last().expect("the list ends with the logs folder");
+        let (logs, above) = dirs
+            .split_last()
+            .expect("the list ends with the logs folder");
         for dir in above.iter().chain([logs]) {
             match std::fs::symlink_metadata(dir) {
                 Ok(meta) if meta.is_dir() => {}
@@ -389,7 +394,48 @@ fn parse_status(json: &str) -> Result<SandboxStatus> {
     }
 }
 
-fn parse_metrics(json: &str) -> Result<SandboxMetrics> {
+/// One CPU reading: the VM's CPU time so far, how long it had been up, and
+/// the use worked out when it was taken.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CpuSample {
+    uptime_secs: f64,
+    vcpu_time_ns: u64,
+    cpu_millis: u32,
+}
+
+/// The counters a CPU figure is worked out from, as the engine reports them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CpuCounters {
+    uptime_secs: f64,
+    vcpu_time_ns: u64,
+    cpus: u32,
+}
+
+/// CPU in use between two readings, where 1000 is one whole CPU. The engine's
+/// own `cpu_percent` is always 0, so this is worked out from its CPU time.
+/// With no earlier reading, or after a restart set the counters back, there is
+/// nothing to compare with, so it is 0 until the next reading. The engine
+/// takes a reading about once a second, so two asks in that time get the same
+/// one and the same answer.
+fn cpu_millis_between(previous: Option<CpuSample>, now: CpuCounters) -> u32 {
+    let Some(previous) = previous else { return 0 };
+    if now.uptime_secs < previous.uptime_secs || now.vcpu_time_ns < previous.vcpu_time_ns {
+        return 0;
+    }
+    let elapsed_secs = now.uptime_secs - previous.uptime_secs;
+    if elapsed_secs <= 0.0 {
+        return previous.cpu_millis;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let busy_secs = (now.vcpu_time_ns - previous.vcpu_time_ns) as f64 / 1e9;
+    let most = f64::from(now.cpus.max(1)) * 1000.0;
+    // A saturating cast of a figure already held between 0 and the VM's CPUs.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let millis = (busy_secs / elapsed_secs * 1000.0).clamp(0.0, most).round() as u32;
+    millis
+}
+
+fn parse_metrics(json: &str) -> Result<(SandboxMetrics, Option<CpuCounters>)> {
     let bad = |stderr: String| EngineError::CommandFailed {
         operation: "msb metrics".to_owned(),
         code: Some(0),
@@ -398,12 +444,25 @@ fn parse_metrics(json: &str) -> Result<SandboxMetrics> {
     let value: serde_json::Value =
         serde_json::from_str(json).map_err(|e| bad(format!("output was not JSON: {e}")))?;
     let bytes = |field: &str| value.get(field).and_then(serde_json::Value::as_u64);
-    let required = |field: &str| bytes(field).ok_or_else(|| bad(format!("output had no {field} field")));
+    let required =
+        |field: &str| bytes(field).ok_or_else(|| bad(format!("output had no {field} field")));
     let percent = value
         .get("cpu_percent")
         .and_then(serde_json::Value::as_f64)
         .ok_or_else(|| bad("output had no cpu_percent field".to_owned()))?;
-    Ok(SandboxMetrics {
+    let counters = match (
+        value.get("uptime_secs").and_then(serde_json::Value::as_f64),
+        bytes("vcpu_time_ns"),
+        bytes("cpus").and_then(|c| u32::try_from(c).ok()),
+    ) {
+        (Some(uptime_secs), Some(vcpu_time_ns), Some(cpus)) => Some(CpuCounters {
+            uptime_secs,
+            vcpu_time_ns,
+            cpus,
+        }),
+        _ => None,
+    };
+    let metrics = SandboxMetrics {
         // A saturating cast: a nonsense figure shows as a nonsense figure and
         // goes no further.
         cpu_millis: (percent * 10.0).round() as u32,
@@ -411,7 +470,8 @@ fn parse_metrics(json: &str) -> Result<SandboxMetrics> {
         memory_limit_bytes: required("memory_limit_bytes")?,
         memory_host_bytes: required("memory_host_resident_bytes")?,
         disk_used_bytes: bytes("upper_host_allocated_bytes"),
-    })
+    };
+    Ok((metrics, counters))
 }
 
 /// The engine answers a change it will not make, such as a smaller disk, with a
@@ -507,7 +567,25 @@ impl Engine for MsbEngine {
 
     fn metrics(&self, name: &SandboxName) -> Result<SandboxMetrics> {
         let done = self.run("msb metrics", &argv::metrics(name), self.timeout)?;
-        parse_metrics(&self.expect_success("msb metrics", Some(name), done)?)
+        let (mut metrics, counters) =
+            parse_metrics(&self.expect_success("msb metrics", Some(name), done)?)?;
+        // An engine that does not report its CPU time keeps its own figure.
+        if let Some(now) = counters {
+            let mut samples = self
+                .cpu_samples
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            metrics.cpu_millis = cpu_millis_between(samples.get(name).copied(), now);
+            samples.insert(
+                name.clone(),
+                CpuSample {
+                    uptime_secs: now.uptime_secs,
+                    vcpu_time_ns: now.vcpu_time_ns,
+                    cpu_millis: metrics.cpu_millis,
+                },
+            );
+        }
+        Ok(metrics)
     }
 
     /// A non-zero exit from the guest command is a normal result, not an error. The
@@ -626,7 +704,11 @@ impl Engine for MsbEngine {
     fn keep_root_disk(&self, name: &SandboxName, dest: &Path) -> Result<()> {
         // Named here because the CLI has no command for it. On a Mac this copy
         // shares its blocks with the original, so it is instant and costs little.
-        let disk = self.home.join("sandboxes").join(name.as_str()).join("rootfs.raw");
+        let disk = self
+            .home
+            .join("sandboxes")
+            .join(name.as_str())
+            .join("rootfs.raw");
         let spawn_error = |e: std::io::Error| EngineError::Spawn {
             operation: "keep the sandbox's disk".to_owned(),
             reason: e.kind().to_string(),
@@ -790,7 +872,11 @@ mod tests {
     fn engine_logs(root: &Path) -> PathBuf {
         let logs = root.join("sandboxes").join("demo").join("logs");
         fs::create_dir_all(&logs).unwrap();
-        fs::write(logs.join(EXEC_LOG), "{\"s\":\"stdout\",\"d\":\"token: fake-token-1234\\n\"}\n").unwrap();
+        fs::write(
+            logs.join(EXEC_LOG),
+            "{\"s\":\"stdout\",\"d\":\"token: fake-token-1234\\n\"}\n",
+        )
+        .unwrap();
         fs::write(logs.join(KERNEL_LOG), "consoletoken1234\n").unwrap();
         fs::write(logs.join("runtime.log"), "kept\n").unwrap();
         logs
@@ -803,16 +889,29 @@ mod tests {
         // The engine holds the file open while it runs.
         let held = fs::File::open(logs.join(EXEC_LOG)).unwrap();
         seal_capture_logs(&logs).unwrap();
-        assert_eq!(held.metadata().unwrap().len(), 0, "what was captured is cleared");
+        assert_eq!(
+            held.metadata().unwrap().len(),
+            0,
+            "what was captured is cleared"
+        );
         let exec = fs::symlink_metadata(logs.join(EXEC_LOG)).unwrap();
         assert!(exec.is_dir());
         assert_eq!(fs::read_dir(logs.join(EXEC_LOG)).unwrap().count(), 0);
-        assert_eq!(fs::read_link(logs.join(KERNEL_LOG)).unwrap(), Path::new("/dev/null"));
-        assert_eq!(fs::read_to_string(logs.join("runtime.log")).unwrap(), "kept\n");
+        assert_eq!(
+            fs::read_link(logs.join(KERNEL_LOG)).unwrap(),
+            Path::new("/dev/null")
+        );
+        assert_eq!(
+            fs::read_to_string(logs.join("runtime.log")).unwrap(),
+            "kept\n"
+        );
         // Twice is the same as once.
         seal_capture_logs(&logs).unwrap();
         assert!(fs::symlink_metadata(logs.join(EXEC_LOG)).unwrap().is_dir());
-        assert_eq!(fs::read_link(logs.join(KERNEL_LOG)).unwrap(), Path::new("/dev/null"));
+        assert_eq!(
+            fs::read_link(logs.join(KERNEL_LOG)).unwrap(),
+            Path::new("/dev/null")
+        );
     }
 
     #[test]
@@ -828,7 +927,10 @@ mod tests {
         seal_capture_logs(&logs).unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "mine\n");
         assert!(fs::symlink_metadata(logs.join(EXEC_LOG)).unwrap().is_dir());
-        assert_eq!(fs::read_link(logs.join(KERNEL_LOG)).unwrap(), Path::new("/dev/null"));
+        assert_eq!(
+            fs::read_link(logs.join(KERNEL_LOG)).unwrap(),
+            Path::new("/dev/null")
+        );
     }
 
     #[test]
@@ -966,7 +1068,7 @@ mod tests {
     #[test]
     fn metrics_read_the_figures_the_engine_reports() {
         assert_eq!(
-            parse_metrics(METRICS).unwrap(),
+            parse_metrics(METRICS).unwrap().0,
             SandboxMetrics {
                 cpu_millis: 1266,
                 memory_used_bytes: 321_859_584,
@@ -979,8 +1081,85 @@ mod tests {
 
     #[test]
     fn metrics_without_the_disk_figure_leave_only_that_out() {
-        let json = METRICS.replace("\"upper_host_allocated_bytes\":786317312", "\"upper_host_allocated_bytes\":null");
-        assert_eq!(parse_metrics(&json).unwrap().disk_used_bytes, None);
+        let json = METRICS.replace(
+            "\"upper_host_allocated_bytes\":786317312",
+            "\"upper_host_allocated_bytes\":null",
+        );
+        assert_eq!(parse_metrics(&json).unwrap().0.disk_used_bytes, None);
+    }
+
+    #[test]
+    fn metrics_read_the_cpu_counters_when_the_engine_reports_them() {
+        assert_eq!(parse_metrics(METRICS).unwrap().1, None);
+        let json = METRICS.replace("\"cpus\":2,", "\"cpus\":2,\"vcpu_time_ns\":59033298916,");
+        assert_eq!(
+            parse_metrics(&json).unwrap().1,
+            Some(CpuCounters {
+                uptime_secs: 1.5,
+                vcpu_time_ns: 59_033_298_916,
+                cpus: 2
+            })
+        );
+    }
+
+    fn reading(uptime_secs: f64, vcpu_time_ns: u64) -> CpuCounters {
+        CpuCounters {
+            uptime_secs,
+            vcpu_time_ns,
+            cpus: 2,
+        }
+    }
+
+    fn sample(uptime_secs: f64, vcpu_time_ns: u64, cpu_millis: u32) -> Option<CpuSample> {
+        Some(CpuSample {
+            uptime_secs,
+            vcpu_time_ns,
+            cpu_millis,
+        })
+    }
+
+    #[test]
+    fn cpu_is_cpu_time_over_elapsed_time() {
+        // Half a CPU second over two seconds is a quarter of one CPU.
+        assert_eq!(
+            cpu_millis_between(sample(10.0, 1_000_000_000, 0), reading(12.0, 1_500_000_000)),
+            250
+        );
+        // Two CPUs fully busy.
+        assert_eq!(
+            cpu_millis_between(sample(10.0, 0, 0), reading(11.0, 2_000_000_000)),
+            2000
+        );
+    }
+
+    #[test]
+    fn cpu_with_nothing_to_compare_with_is_zero() {
+        assert_eq!(cpu_millis_between(None, reading(12.0, 1_500_000_000)), 0);
+        // A restart sets the counters back.
+        assert_eq!(
+            cpu_millis_between(sample(500.0, 9_000_000_000, 700), reading(3.0, 100)),
+            0
+        );
+        assert_eq!(
+            cpu_millis_between(sample(5.0, 9_000_000_000, 700), reading(6.0, 100)),
+            0
+        );
+    }
+
+    #[test]
+    fn cpu_from_the_same_reading_repeats_the_last_figure() {
+        assert_eq!(
+            cpu_millis_between(sample(10.0, 5, 430), reading(10.0, 5)),
+            430
+        );
+    }
+
+    #[test]
+    fn cpu_never_shows_more_than_the_vm_has() {
+        assert_eq!(
+            cpu_millis_between(sample(10.0, 0, 0), reading(11.0, 9_000_000_000)),
+            2000
+        );
     }
 
     #[test]
@@ -992,14 +1171,19 @@ mod tests {
     #[test]
     fn a_resize_the_engine_did_not_apply_is_an_error() {
         assert!(check_resize(r#"{"applied":true,"conflicts":[]}"#).is_ok());
-        let refused = check_resize(r#"{"applied":false,"conflicts":["root disk can only grow"]}"#).unwrap_err();
+        let refused = check_resize(r#"{"applied":false,"conflicts":["root disk can only grow"]}"#)
+            .unwrap_err();
         assert!(refused.to_string().contains("can only grow"), "{refused}");
         assert!(check_resize("{}").is_err());
     }
 
     #[test]
     fn resize_argv_names_the_disk_only_when_it_grows() {
-        let mut spec = ResizeSpec { memory_mib: 6144, cpus: 4, grow_disk_gib: None };
+        let mut spec = ResizeSpec {
+            memory_mib: 6144,
+            cpus: 4,
+            grow_disk_gib: None,
+        };
         assert_eq!(
             argv::resize(&name(), &spec),
             ["modify", "demo", "--memory", "6144M", "--cpus", "4", "--format", "json"]
@@ -1007,7 +1191,18 @@ mod tests {
         spec.grow_disk_gib = Some(30);
         assert_eq!(
             argv::resize(&name(), &spec),
-            ["modify", "demo", "--memory", "6144M", "--cpus", "4", "--root-disk", "30G", "--format", "json"]
+            [
+                "modify",
+                "demo",
+                "--memory",
+                "6144M",
+                "--cpus",
+                "4",
+                "--root-disk",
+                "30G",
+                "--format",
+                "json"
+            ]
         );
     }
 
@@ -1218,7 +1413,10 @@ touch "$(dirname "$0")/ran""#,
     /// here outlives the test's patience, so only early delivery can pass.
     #[test]
     fn a_stream_delivers_output_before_the_command_ends() {
-        for script in ["echo first; exec sleep 60", "printf 'no newline'; exec sleep 60"] {
+        for script in [
+            "echo first; exec sleep 60",
+            "printf 'no newline'; exec sleep 60",
+        ] {
             let stub = running_stub(script);
             let mut sink = Collect {
                 stop_after_first: true,
@@ -1325,9 +1523,9 @@ touch "$(dirname "$0")/ran""#,
             r#"if [ "$1" = status ]; then echo '{"status":"Stopped"}'; exit 0; fi
 touch "$(dirname "$0")/ran""#,
         );
-        let result = stub
-            .engine()
-            .exec_stream(&name(), &ExecRequest::new(["x"]), &mut Collect::default());
+        let result =
+            stub.engine()
+                .exec_stream(&name(), &ExecRequest::new(["x"]), &mut Collect::default());
         assert!(matches!(result, Err(EngineError::InvalidState { .. })));
         assert!(!stub.dir.join("ran").exists());
     }
