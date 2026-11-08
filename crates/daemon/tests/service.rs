@@ -3159,3 +3159,144 @@ fn a_dockerfile_projects_secret_is_never_part_of_the_build() {
         .collect::<String>();
     assert!(!generated.contains(FAKE_VALUE), "{generated}");
 }
+
+// Publishing approved ports where the engine's forward arrives.
+
+/// A copy of `tests/fixtures/clean`, whose one service publishes
+/// `127.0.0.1:8080:80`, as a careful project would.
+fn clean_fixture() -> Fixture {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/clean");
+    let project = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(source).unwrap().flatten() {
+        std::fs::copy(entry.path(), project.path().join(entry.file_name())).unwrap();
+    }
+    fixture_from(project, TestDeps::new())
+}
+
+/// The ports override written into the guest on the last start, if any.
+fn ports_override(f: &Fixture) -> Option<String> {
+    let path = daemon::ports::override_path();
+    f.deps
+        .engine
+        .inputs()
+        .into_iter()
+        .rev()
+        .find(|(command, _)| command.last() == Some(&path))
+        .map(|(_, body)| body)
+}
+
+/// The first `docker compose ... up` command that ran.
+fn compose_up_command(f: &Fixture) -> Vec<String> {
+    f.deps
+        .engine
+        .calls()
+        .into_iter()
+        .find_map(|call| match call {
+            FakeCall::Exec(_, request) if request.command.contains(&"up".to_owned()) => {
+                Some(request.command)
+            }
+            _ => None,
+        })
+        .expect("compose up ran")
+}
+
+#[test]
+fn a_port_published_on_the_guests_loopback_is_republished_where_the_forward_arrives() {
+    let f = clean_fixture();
+    let plan = f.plan();
+    assert_eq!(plan.blockers, Vec::<String>::new());
+    assert_eq!(
+        plan.ports.iter().map(|p| (p.host_port, p.container_port)).collect::<Vec<_>>(),
+        vec![(8080, 80)]
+    );
+
+    let report = f.up(vec![8080]).unwrap();
+    assert_eq!(report.ports, vec![8080]);
+    // The host side is unchanged: one port, which the engine binds on the
+    // host's 127.0.0.1 only.
+    assert_eq!(create_spec(&f).ports, vec![engine::HostPort(8080)]);
+
+    // Inside the guest the port is published with no address, so on every
+    // interface, including the one the forward reaches. The project's
+    // `127.0.0.1` is replaced, not added to.
+    let yaml = ports_override(&f).expect("the ports override was written");
+    assert!(yaml.contains("\"web\":\n    ports: !override\n"), "{yaml}");
+    assert!(yaml.contains("target: 80\n"), "{yaml}");
+    assert!(yaml.contains("published: \"8080\"\n"), "{yaml}");
+    assert!(!yaml.contains("127.0.0.1:8080"), "{yaml}");
+    assert!(!yaml.contains("host_ip"), "{yaml}");
+
+    // And Compose is given it after the project's own file.
+    let up = compose_up_command(&f);
+    let path = daemon::ports::override_path();
+    assert_eq!(
+        &up[..6],
+        ["docker", "compose", "-f", "compose.yaml", "-f", path.as_str()]
+    );
+}
+
+#[test]
+fn a_port_that_was_not_approved_is_not_published_even_inside_the_guest() {
+    let f = clean_fixture();
+    f.up(vec![]).unwrap();
+    assert!(create_spec(&f).ports.is_empty());
+    let yaml = ports_override(&f).expect("the ports override was written");
+    assert!(yaml.contains("\"web\":\n    ports: !reset []\n"), "{yaml}");
+    assert!(!yaml.contains("8080"), "{yaml}");
+}
+
+#[test]
+fn only_the_approved_ports_of_a_dockerfile_project_are_published_inside_the_guest() {
+    let f = dockerfile_fixture();
+    f.up(vec![8080]).unwrap();
+    assert_eq!(create_spec(&f).ports, vec![engine::HostPort(8080)]);
+    let yaml = ports_override(&f).expect("the ports override was written");
+    assert!(yaml.contains("\"app\":\n    ports: !override\n"), "{yaml}");
+    assert!(yaml.contains("published: \"8080\""), "{yaml}");
+    // 3000 is offered by the Dockerfile and was not approved.
+    assert!(!yaml.contains("3000"), "{yaml}");
+}
+
+#[test]
+fn the_ports_override_is_written_again_on_every_start() {
+    let f = clean_fixture();
+    f.up(vec![8080]).unwrap();
+    f.call(Request::Down(DownArgs {
+        project: f.path(),
+        destroy: false,
+    }))
+    .unwrap();
+    f.up(vec![8080]).unwrap();
+    let path = daemon::ports::override_path();
+    let written: Vec<String> = f
+        .deps
+        .engine
+        .inputs()
+        .into_iter()
+        .filter(|(command, _)| command.last() == Some(&path))
+        .map(|(_, body)| body)
+        .collect();
+    assert_eq!(written.len(), 2);
+    assert!(written.iter().all(|y| y.contains("published: \"8080\"")));
+}
+
+#[test]
+fn a_project_that_publishes_nothing_gets_no_ports_override() {
+    let f = fixture_with("services:\n  web:\n    image: nginx:1.27\n", None);
+    f.up(vec![]).unwrap();
+    assert_eq!(ports_override(&f), None);
+    let up = compose_up_command(&f);
+    assert!(!up.iter().any(|a| a.ends_with("ports.yaml")), "{up:?}");
+}
+
+#[test]
+fn a_udp_port_blocks_the_plan_rather_than_being_forwarded_as_tcp() {
+    let f = fixture_with(
+        "services:\n  dns:\n    image: coredns:1\n    ports:\n      - \"127.0.0.1:5353:53/udp\"\n",
+        None,
+    );
+    let plan = f.plan();
+    assert!(plan.ports.is_empty());
+    assert_eq!(plan.blockers.len(), 1, "{:?}", plan.blockers);
+    assert!(plan.blockers[0].contains("5353/udp"), "{:?}", plan.blockers);
+}

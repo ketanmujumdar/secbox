@@ -355,6 +355,22 @@ fn plan_ports(services: &[&ComposeService], blockers: &mut Vec<String>) -> Vec<P
                 ));
                 continue;
             };
+            if port.target_end.is_some() {
+                blockers.push(format!(
+                    "{name} publishes a range of container ports on {host_port}, which is not one fixed port. Ranges cannot be approved."
+                ));
+                continue;
+            }
+            // The engine forwards TCP only, and every published port is
+            // rewritten for the forward (see `crate::ports`), so one this
+            // could not forward is not quietly turned into a TCP port.
+            if port.protocol != "tcp" {
+                blockers.push(format!(
+                    "{name} publishes {host_port}/{}, and only TCP ports can be forwarded. Remove it, or publish it over TCP.",
+                    text::escape_short(&port.protocol, 20)
+                ));
+                continue;
+            }
             if let Some(other) = ports.iter().find(|p| p.host_port == host_port) {
                 blockers.push(format!(
                     "{name} and {} both want host port {host_port}.",
@@ -591,6 +607,22 @@ mod tests {
         let ports = plan_ports(&[&a, &b], &mut blockers);
         assert!(ports.is_empty());
         assert_eq!(blockers.len(), 2);
+    }
+
+    #[test]
+    fn a_port_the_engine_cannot_forward_as_tcp_blocks_the_plan() {
+        let mut udp = port(Some("5353"), Some(53));
+        udp.protocol = "udp".to_owned();
+        let mut range = port(Some("8000"), Some(80));
+        range.target_end = Some(81);
+        let a = service("a", vec![udp, port(Some("3000"), Some(3000))]);
+        let b = service("b", vec![range]);
+        let mut blockers = Vec::new();
+        let ports = plan_ports(&[&a, &b], &mut blockers);
+        assert_eq!(ports.iter().map(|p| p.host_port).collect::<Vec<_>>(), vec![3000]);
+        assert_eq!(blockers.len(), 2, "{blockers:?}");
+        assert!(blockers[0].contains("5353/udp"), "{blockers:?}");
+        assert!(blockers[1].contains("range"), "{blockers:?}");
     }
 
     #[test]

@@ -25,6 +25,7 @@ pub mod netallow;
 pub mod mask;
 pub mod person;
 pub mod plan;
+pub mod ports;
 pub mod remote;
 pub mod resourceset;
 pub mod run;
