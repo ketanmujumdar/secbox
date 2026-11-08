@@ -153,7 +153,6 @@
     for (const item of $('projects').children) {
       item.classList.toggle('selected', page === 'project' && item.dataset.path === state.selected);
     }
-    $('btn-problems').classList.toggle('selected', page === 'problems');
     $('content').scrollTop = 0;
   }
 
@@ -277,6 +276,7 @@
       state.status = null;
     }
     show($('rail'), rows.length > 0);
+    renderProblemBadges();
     if (state.page === 'project') renderHeader();
   }
 
@@ -337,6 +337,7 @@
     const diff = state.diffs.get(state.selected);
     changes.textContent = diff ? String(diff.view.files.length) : '';
     show(changes, !!diff && diff.view.files.length > 0);
+    renderProblemBadges();
   }
 
   function updateButtons() {
@@ -1577,27 +1578,22 @@
 
   // ---------- problems ----------
 
+  // Each project has its own Problems tab: its flagged changes and what the
+  // daemon refused or what failed for it. The rail shows a count by each
+  // project from the audit log and the last comparison the window made, so
+  // nothing is compared just to draw the list.
+
   // Rows of things refused or failed, newest first. Every field is text from
   // the audit log, escaped by the app's Rust side, and goes in as text.
-  function renderProblems(table, tbody, notes, view, withProject) {
+  function renderProblems(table, tbody, notes, view) {
     clear(tbody);
-    clear(notes);
-    for (const note of view.notes) notes.appendChild(el('li', note.text, note.weight === 'plain' ? '' : note.weight));
+    if (notes) {
+      clear(notes);
+      for (const note of view.notes) notes.appendChild(el('li', note.text, note.weight === 'plain' ? '' : note.weight));
+    }
     for (const problem of view.rows) {
       const tr = el('tr');
       tr.appendChild(el('td', problem.time, 'mono muted time'));
-      if (withProject) {
-        const cell = el('td', null, 'project');
-        if (problem.project_path) {
-          const open = el('button', problem.project || lastSegment(problem.project_path), 'link');
-          open.title = problem.project_path;
-          open.addEventListener('click', () => openProject(problem.project_path));
-          cell.appendChild(open);
-        } else {
-          cell.appendChild(el('span', problem.project || 'No project', problem.project ? '' : 'muted'));
-        }
-        tr.appendChild(cell);
-      }
       tr.appendChild(el('td', problem.what, 'what'));
       tr.appendChild(el('td', problem.why, 'why'));
       tbody.appendChild(tr);
@@ -1605,12 +1601,49 @@
     show(table, view.rows.length > 0);
   }
 
-  // How many problems are less than a day old, for the rail and first run.
-  function recentCount(view) {
-    const since = Date.now() / 1000 - 24 * 60 * 60;
-    return view.rows.filter((r) => r.at_unix >= since).length;
+  // Refusals less than a day old count towards a project's badge.
+  function isRecent(row) {
+    return row.at_unix >= Date.now() / 1000 - 24 * 60 * 60;
   }
 
+  // How many problems a project has: recent refusals plus the flags of the
+  // last comparison of a running sandbox.
+  function problemCount(path) {
+    const refused = (state.problemRows || []).filter((r) => r.project_path === path && isRecent(r)).length;
+    const row = state.projects.find((p) => p.path === path);
+    const diff = state.diffs.get(path);
+    const flags = diff && row && row.state === 'running' ? diff.view.flags.length : 0;
+    return { refused, flags, total: refused + flags };
+  }
+
+  function renderProblemBadges() {
+    for (const item of $('projects').children) {
+      let badge = item.querySelector('.badge');
+      const count = problemCount(item.dataset.path);
+      if (!badge) {
+        badge = el('span', '', 'badge bad hidden');
+        item.insertBefore(badge, item.querySelector('.word'));
+      }
+      badge.textContent = String(count.total);
+      badge.title = problemWords(count);
+      show(badge, count.total > 0);
+    }
+    const tab = $('badge-problems');
+    const count = state.selected ? problemCount(state.selected) : { total: 0 };
+    tab.textContent = String(count.total);
+    tab.title = count.total ? problemWords(count) : '';
+    show(tab, count.total > 0);
+  }
+
+  function problemWords(count) {
+    const parts = [];
+    if (count.flags) parts.push(plural(count.flags, 'change', 'changes') + ' to look at');
+    if (count.refused) parts.push(plural(count.refused, 'refusal', 'refusals') + ' in the last 24 hours');
+    return parts.join(', ');
+  }
+
+  // Reads every refusal once, for the badges and for failed fetches, which
+  // never became a project and are shown on the Clone from Git page.
   async function refreshProblemCount() {
     let view;
     try {
@@ -1618,112 +1651,11 @@
     } catch (error) {
       return;
     }
-    const recent = recentCount(view);
-    const badge = $('badge-problems');
-    badge.textContent = String(recent);
-    badge.title = plural(recent, 'problem', 'problems') + ' in the last 24 hours';
-    show(badge, recent > 0);
-    show($('choose-problems'), view.rows.length > 0);
+    state.problemRows = view.rows;
+    renderProblemBadges();
+    const loose = view.rows.filter((r) => !r.project_path);
+    renderProblems($('fetch-failed-card'), $('fetch-failed-rows'), null, { rows: loose.slice(0, 10), notes: [] });
     return view;
-  }
-
-  async function readProblems() {
-    let view;
-    try {
-      view = await invoke('problems', { project: null });
-    } catch (error) {
-      view = { rows: [], notes: [{ weight: 'alert', text: errorText(error) }] };
-    }
-    renderProblems($('problems-table'), $('problems-rows'), $('problems-notes'), view, true);
-    await refreshProblemCount();
-  }
-
-  // The flags of every running sandbox, as its Changes tab shows them first.
-  // The comparisons run together, and each answer is kept for that project's
-  // Changes tab. A stopped sandbox cannot be compared, so it is only named.
-  let flaggedRun = 0;
-
-  function flaggedProject(row, diff, failed) {
-    const block = el('div', null, 'flagged-project');
-    const head = el('div', null, 'flagged-head');
-    const open = el('button', row.name, 'link strong');
-    open.title = row.path;
-    open.addEventListener('click', async () => {
-      await openProject(row.path);
-      await openTab('changes');
-    });
-    head.appendChild(open);
-    if (failed) {
-      head.appendChild(el('span', 'could not be compared: ' + failed, 'small-text warn-text'));
-      block.appendChild(head);
-      return block;
-    }
-    const flags = diff.view.flags;
-    head.appendChild(el('span', plural(flags.length, 'change', 'changes') + ' to look at', 'small-text bad-text'));
-    block.appendChild(head);
-    const list = el('ul', null, 'flags');
-    for (const flag of flags) {
-      const item = el('li');
-      item.appendChild(el('div', flag.path, 'mono strong'));
-      item.appendChild(el('div', flag.message));
-      list.appendChild(item);
-    }
-    block.appendChild(list);
-    return block;
-  }
-
-  async function readFlagged(force) {
-    const run = ++flaggedRun;
-    const notes = $('flagged-notes');
-    const box = $('flagged-projects');
-    clear(notes);
-    clear(box);
-    const running = state.projects.filter((p) => p.state === 'running');
-    const stopped = state.projects.length - running.length;
-    if (!running.length) {
-      notes.appendChild(el('li', 'No sandbox is running, so nothing was compared.'));
-      return;
-    }
-    const button = $('flagged-read');
-    button.disabled = true;
-    const waiting = el('li', 'Comparing ' + plural(running.length, 'running sandbox', 'running sandboxes') + '…');
-    notes.appendChild(waiting);
-    const results = await Promise.all(running.map(async (row) => {
-      const kept = state.diffs.get(row.path);
-      if (!force && kept && Date.now() - kept.at < COMPARE_FRESH_MS) return { row, diff: kept };
-      try {
-        const view = await invoke('diff', { project: row.path });
-        const now = new Date();
-        const diff = { view, at: now.getTime(), when: String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') };
-        state.diffs.set(row.path, diff);
-        return { row, diff };
-      } catch (error) {
-        return { row, failed: errorText(error) };
-      }
-    }));
-    button.disabled = false;
-    if (run !== flaggedRun) return;
-    waiting.remove();
-    let clean = 0;
-    for (const result of results) {
-      if (!result.failed && result.diff.view.flags.length === 0) {
-        clean += 1;
-        continue;
-      }
-      box.appendChild(flaggedProject(result.row, result.diff, result.failed));
-    }
-    if (clean) notes.appendChild(el('li', plural(clean, 'running sandbox has', 'running sandboxes have') + ' nothing flagged.'));
-    if (stopped) notes.appendChild(el('li', plural(stopped, 'project is', 'projects are') + ' not running, so not compared. Start one to check it.'));
-  }
-
-  async function openProblems() {
-    banner('');
-    showPage('problems');
-    // The refusals are read from a file and show at once; the comparisons
-    // run inside the sandboxes and fill in after.
-    const flagged = readFlagged(false);
-    await readProblems();
-    await flagged;
   }
 
   async function readRefused() {
@@ -1739,14 +1671,48 @@
       view = { rows: [], notes: [{ weight: 'alert', text: errorText(error) }] };
     }
     if (state.selected !== row.path) return;
-    renderProblems($('refused-table'), $('refused-rows'), $('refused-notes'), view, false);
+    renderProblems($('refused-table'), $('refused-rows'), $('refused-notes'), view);
+    await refreshProblemCount();
   }
 
-  $('btn-problems').addEventListener('click', openProblems);
-  $('choose-problems').addEventListener('click', openProblems);
-  $('problems-read').addEventListener('click', readProblems);
-  $('flagged-read').addEventListener('click', () => readFlagged(true));
+  // The flags of this project's last comparison, as its Changes tab shows
+  // them first. A stopped sandbox cannot be compared.
+  function renderFlagged() {
+    const notes = $('flagged-notes');
+    const list = $('flagged-list');
+    clear(notes);
+    clear(list);
+    show($('flagged-open'), false);
+    $('flagged-when').textContent = '';
+    const s = state.status;
+    const running = s ? s.state === 'running' : (selectedRow() || {}).state === 'running';
+    $('flagged-read').disabled = !running || state.comparing;
+    if (!running) {
+      notes.appendChild(el('li', 'The sandbox is not running, so its changes cannot be compared. Start it to check them.'));
+      return;
+    }
+    const diff = state.diffs.get(state.selected);
+    if (!diff) {
+      notes.appendChild(el('li', state.comparing ? 'Comparing inside the sandbox…' : 'Not compared yet.'));
+      return;
+    }
+    $('flagged-when').textContent = state.comparing ? 'Comparing inside the sandbox…' : 'Compared at ' + diff.when;
+    const flags = diff.view.flags;
+    if (!flags.length) {
+      notes.appendChild(el('li', 'Nothing flagged.'));
+    }
+    for (const flag of flags) {
+      const item = el('li');
+      item.appendChild(el('div', flag.path, 'mono strong'));
+      item.appendChild(el('div', flag.message));
+      list.appendChild(item);
+    }
+    show($('flagged-open'), diff.view.files.length > 0);
+  }
+
   $('refused-read').addEventListener('click', readRefused);
+  $('flagged-read').addEventListener('click', () => readReview());
+  $('flagged-open').addEventListener('click', () => openTab('changes'));
 
   // ---------- changes ----------
 
@@ -1956,6 +1922,7 @@
     state.comparing = true;
     updateButtons();
     $('review-when').textContent = 'Comparing inside the sandbox…';
+    if (state.tab === 'problems') renderFlagged();
     try {
       const view = await invoke('diff', { project: row.path });
       const now = new Date();
@@ -1965,11 +1932,17 @@
         renderDiff(diff);
         renderBadges();
         renderChangesCard();
+        renderFlagged();
       }
     } catch (error) {
       if (state.selected === row.path) {
         clearReview();
         $('review-notes').appendChild(el('li', errorText(error), 'alert'));
+        if (state.tab === 'problems') {
+          renderFlagged();
+          clear($('flagged-notes'));
+          $('flagged-notes').appendChild(el('li', 'Could not be compared: ' + errorText(error), 'alert'));
+        }
       }
     } finally {
       state.comparing = false;
@@ -1977,14 +1950,14 @@
     }
     if (state.compareAgain) {
       state.compareAgain = false;
-      if (state.tab === 'changes') await readReview();
+      if (state.tab === 'changes' || state.tab === 'problems') await readReview();
     }
   }
 
   // Compares by itself when the Changes tab is on show. `force` is for when the
   // files are known to have moved, as after a Git command.
   async function compareIfWanted(force) {
-    if (state.tab !== 'changes' || !state.selected) return;
+    if ((state.tab !== 'changes' && state.tab !== 'problems') || !state.selected) return;
     if (!state.status) await loadStatus();
     if (!state.status || state.status.state !== 'running') return;
     if (state.comparing) {
@@ -2125,9 +2098,13 @@
     if (tab !== 'secrets') closeSecretForm();
     if (tab === 'secrets') await loadSecrets();
     if (tab === 'settings') await loadLimits();
-    if (tab === 'network') {
-      await readTraffic();
-      await readRefused();
+    if (tab === 'network') await readTraffic();
+    if (tab === 'problems') {
+      renderFlagged();
+      const refused = readRefused();
+      await compareIfWanted(false);
+      renderFlagged();
+      await refused;
     }
     if (tab === 'changes') {
       renderGitAvailability();

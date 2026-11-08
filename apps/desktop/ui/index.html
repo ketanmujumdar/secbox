@@ -22,7 +22,6 @@
         <button class="link small-text" id="refresh" title="Read the list again">Refresh</button>
       </div>
       <ul class="projects" id="projects"></ul>
-      <button class="rail-item" id="btn-problems" title="What was refused or failed recently, for every project"><span>Problems</span><span class="badge hidden" id="badge-problems"></span></button>
       <div class="rail-foot">
         <div class="daemon">
           <span class="dot" id="daemon-dot"></span>
@@ -69,7 +68,6 @@
           <div class="hero-foot">
             <span class="daemon-line"><span class="dot" id="choose-dot"></span><span id="choose-daemon">Checking the daemon</span></span>
             <span>Prefer the terminal? <span class="mono strong" id="choose-cli"></span></span>
-            <button class="link small-text hidden" id="choose-problems">See what was refused recently</button>
           </div>
           <button class="link hidden" id="choose-cancel">Cancel</button>
         </div>
@@ -91,6 +89,14 @@
             </label>
             <p class="hint lock">Fetched here with your SSH key. Your SSH agent (1Password, ssh-agent) may ask you to approve. The key never enters the sandbox.</p>
           </form>
+          <div class="card hidden" id="fetch-failed-card">
+            <h2>Fetches that failed</h2>
+            <p class="hint">A fetch that failed never became a project, so it is listed here. Newest first, from the daemon's audit log.</p>
+            <table class="table problems-table">
+              <thead><tr><th class="time">Time (UTC)</th><th>What was asked</th><th>Why it did not happen</th></tr></thead>
+              <tbody id="fetch-failed-rows"></tbody>
+            </table>
+          </div>
           <div class="page-actions">
             <button type="button" data-back>Cancel</button>
             <button type="submit" class="primary" form="git-form" id="git-go">Fetch and review →</button>
@@ -206,6 +212,7 @@
         </header>
         <nav class="tabs" aria-label="Project">
           <button class="tab active" data-tab="overview">Overview</button>
+          <button class="tab" data-tab="problems">Problems <span class="badge bad hidden" id="badge-problems"></span></button>
           <button class="tab" data-tab="logs">Logs</button>
           <button class="tab" data-tab="network">Network <span class="badge bad hidden" id="badge-network"></span></button>
           <button class="tab" data-tab="changes">Changes <span class="badge hidden" id="badge-changes"></span></button>
@@ -257,6 +264,31 @@
             <ul class="notes" id="status-notes"></ul>
           </section>
 
+          <section class="panel hidden" data-panel="problems">
+            <div class="card">
+              <div class="card-head">
+                <h2>Changes to look at</h2>
+                <span class="buttons"><span class="muted small-text" id="flagged-when"></span><button class="small" id="flagged-read">Compare again</button></span>
+              </div>
+              <p class="hint">The files in the running sandbox, compared with the snapshot it started from, as in the Changes tab. Flags are a heuristic aid: no flag proves nothing.</p>
+              <ul class="notes" id="flagged-notes"></ul>
+              <ul class="flags" id="flagged-list"></ul>
+              <button class="link hidden" id="flagged-open">Open in Changes →</button>
+            </div>
+            <div class="card">
+              <div class="card-head">
+                <h2>Refused and failed</h2>
+                <span class="buttons"><button class="small" id="refused-read">Read again</button></span>
+              </div>
+              <p class="hint">Pushes, starts and other requests for this project that the daemon refused, that were not confirmed, or that failed, newest first. It does not matter who asked: the command line, this window or an AI agent. Blocked hostnames are in the Network tab.</p>
+              <ul class="notes" id="refused-notes"></ul>
+              <table class="table problems-table hidden" id="refused-table">
+                <thead><tr><th class="time">Time (UTC)</th><th>What was asked</th><th>Why it did not happen</th></tr></thead>
+                <tbody id="refused-rows"></tbody>
+              </table>
+            </div>
+          </section>
+
           <section class="panel hidden" data-panel="logs">
             <div class="toolbar">
               <div class="chips-select" id="log-services" role="group" aria-label="Service"></div>
@@ -281,18 +313,6 @@
               <table class="table">
                 <thead><tr><th>Time (UTC)</th><th class="num">Count</th><th>Hostname</th><th></th></tr></thead>
                 <tbody id="traffic-rows"></tbody>
-              </table>
-            </div>
-            <div class="card">
-              <div class="card-head">
-                <h2>Refused for this project</h2>
-                <span class="buttons"><button class="small" id="refused-read">Read again</button></span>
-              </div>
-              <p class="hint">Pushes, starts and other requests the daemon refused or that were not confirmed, newest first. It does not matter who asked: the command line, this window or an AI agent.</p>
-              <ul class="notes" id="refused-notes"></ul>
-              <table class="table problems-table hidden" id="refused-table">
-                <thead><tr><th class="time">Time (UTC)</th><th>What was asked</th><th>Why it did not happen</th></tr></thead>
-                <tbody id="refused-rows"></tbody>
               </table>
             </div>
           </section>
@@ -479,36 +499,6 @@
               </div>
             </div>
           </section>
-        </div>
-      </section>
-
-      <!-- What was refused or failed, for every project and none. -->
-      <section class="page hidden" data-page="problems">
-        <div class="column wide-column">
-          <div class="crumbs"><button class="link back" data-back>← Back</button></div>
-          <h1>Problems</h1>
-          <div class="subtitle"><p>Changes to look at before you pull them, and what the daemon refused or what failed recently.</p></div>
-          <div class="card">
-            <div class="card-head">
-              <h2>Changes to look at</h2>
-              <span class="buttons"><button class="small" id="flagged-read">Compare again</button></span>
-            </div>
-            <p class="hint">Each running sandbox is compared with the snapshot it started from, as in its Changes tab. Flags are a heuristic aid: no flag proves nothing.</p>
-            <ul class="notes" id="flagged-notes"></ul>
-            <div class="flagged-projects" id="flagged-projects"></div>
-          </div>
-          <div class="card">
-            <div class="card-head">
-              <h2>Refused and failed</h2>
-              <span class="buttons"><button class="small" id="problems-read">Read again</button></span>
-            </div>
-            <p class="hint">From the daemon's audit log on this computer, whoever asked: the command line, this window or an AI agent. A fetch that failed never became a project, so it is listed here only. Blocked hostnames are under each project's Network tab.</p>
-            <ul class="notes" id="problems-notes"></ul>
-            <table class="table problems-table hidden" id="problems-table">
-              <thead><tr><th class="time">Time (UTC)</th><th>Project</th><th>What was asked</th><th>Why it did not happen</th></tr></thead>
-              <tbody id="problems-rows"></tbody>
-            </table>
-          </div>
         </div>
       </section>
 

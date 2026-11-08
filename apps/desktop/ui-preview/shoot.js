@@ -119,6 +119,11 @@ async function run(browser, scheme) {
   await p.click('.tab[data-tab=network]');
   await p.waitForTimeout(200);
   await shot(p, scheme, '07-network');
+  await p.click('.tab[data-tab=problems]');
+  await p.waitForSelector('#flagged-notes li, #flagged-list li');
+  await p.waitForTimeout(200);
+  if (await p.evaluate(() => !document.querySelector('.tab[data-tab=problems] .badge') || document.querySelector('.tab[data-tab=problems] .badge').classList.contains('hidden'))) problems.push(`[${scheme}] the Problems tab has no count for a project with refusals`);
+  await shot(p, scheme, '07b-problems');
   await p.click('.tab[data-tab=changes]');
   await p.click('#review-read');
   await p.waitForSelector('#review-files li');
