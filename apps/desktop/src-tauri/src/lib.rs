@@ -861,4 +861,29 @@ mod tests {
         assert!(!notice_is_current(old, true));
         assert!(notice_is_current(old, false));
     }
+
+    /// The names inside `generate_handler![...]` in this file.
+    fn handled_commands() -> Vec<String> {
+        let source = include_str!("lib.rs");
+        let start = source.find("generate_handler![").expect("the handler list") + "generate_handler![".len();
+        let end = start + source[start..].find(']').expect("the end of the handler list");
+        source[start..end]
+            .split(',')
+            .map(|name| name.trim().rsplit("::").next().unwrap_or("").to_owned())
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn every_command_the_window_can_call_is_declared_and_granted() {
+        let declared = include_str!("../build.rs");
+        let granted = include_str!("../capabilities/main.json");
+        let commands = handled_commands();
+        assert!(commands.len() > 10, "found too few commands: {commands:?}");
+        for name in commands {
+            assert!(declared.contains(&format!("\"{name}\"")), "{name} is missing from COMMANDS in build.rs");
+            let permission = format!("\"allow-{}\"", name.replace('_', "-"));
+            assert!(granted.contains(&permission), "{permission} is missing from capabilities/main.json");
+        }
+    }
 }

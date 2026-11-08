@@ -29,6 +29,8 @@
     "allow-use-secret-file",
     "allow-connect-agent",
     "allow-open-in-vscode",
-    "allow-problems"
+    "allow-problems",
+    "allow-resource-choices",
+    "allow-set-resources"
   ]
 }

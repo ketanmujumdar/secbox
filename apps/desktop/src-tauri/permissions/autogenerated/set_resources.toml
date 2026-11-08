@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-resources"
+description = "Enables the set_resources command without any pre-configured scope."
+commands.allow = ["set_resources"]
+
+[[permission]]
+identifier = "deny-set-resources"
+description = "Denies the set_resources command without any pre-configured scope."
+commands.deny = ["set_resources"]
