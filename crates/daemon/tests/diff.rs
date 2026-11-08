@@ -485,6 +485,99 @@ fn a_hostile_name_is_escaped_and_a_case_trick_is_still_flagged() {
     assert!(report.flags.iter().any(|f| f.kind == "suspicious_path"));
 }
 
+/// Plain git that returns what it printed.
+fn git_out(cwd: &Path, args: &[&str], stdin: &[u8]) -> String {
+    use std::io::Write;
+    let mut child = Command::new("git")
+        .env_clear()
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env("HOME", cwd)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .args(["-c", "user.name=guest", "-c", "user.email=guest@example.invalid"])
+        .args(args)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+/// Seen on a real VM: two copies of a Claude settings file that differ only in
+/// case. The guest's disk keeps both, and so must the review. Built from git's
+/// own objects here, since this machine's disk may not tell case apart.
+#[test]
+fn two_settings_files_that_differ_only_in_case_are_both_flagged() {
+    let f = fixture();
+    f.up();
+    let base = f.baseline();
+    let store = f.project_state().join(daemon::diff::BASELINE_STORE);
+    let work = f.scratch.path().join("plumbing.git");
+    git(f.scratch.path(), &["init", "-q", "--bare", work.to_str().unwrap()]);
+    git(&work, &["fetch", "-q", store.to_str().unwrap(), &format!("refs/base/{base}:refs/heads/base")]);
+    let blob = git_out(&work, &["hash-object", "-w", "--stdin"], PLANTED_HOOK.as_bytes());
+    let index = f.scratch.path().join("index");
+    let with_index = |args: &[&str]| {
+        let mut all = vec!["-c", "core.ignorecase=false"];
+        all.extend_from_slice(args);
+        let out = Command::new("git")
+            .env_clear()
+            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .env("HOME", f.scratch.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_INDEX_FILE", &index)
+            .args(&all)
+            .current_dir(&work)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    with_index(&["read-tree", &base]);
+    for path in [".claude/settings.json", ".CLAUDE/Settings.json"] {
+        with_index(&["update-index", "--add", "--cacheinfo", &format!("100644,{blob},{path}")]);
+    }
+    let tree = with_index(&["write-tree"]);
+    let tip = git_out(&work, &["commit-tree", &tree, "-p", &base, "-m", "work"], b"");
+    git(&work, &["update-ref", daemon::diff::TIP_REF, &tip]);
+    let out = f.scratch.path().join("case.bundle");
+    git(&work, &["bundle", "create", "-q", out.to_str().unwrap(), daemon::diff::TIP_REF, &format!("^{base}")]);
+    f.guest_sends(&base64(&std::fs::read(&out).unwrap()));
+
+    let report = f.diff().unwrap();
+    let flagged: Vec<&str> = report
+        .flags
+        .iter()
+        .filter(|flag| flag.kind == "agent_hook")
+        .filter_map(|flag| flag.path.as_deref())
+        .collect();
+    assert!(flagged.contains(&".claude/settings.json"), "{flagged:?}");
+    assert!(flagged.contains(&".CLAUDE/Settings.json"), "{flagged:?}");
+}
+
+/// Whatever stops the guest from bundling, the person is told that nothing was
+/// reviewed, and the request fails rather than coming back empty.
+#[test]
+fn a_bundle_the_guest_cannot_make_is_reported_as_not_reviewed() {
+    let f = fixture();
+    f.up();
+    f.deps.engine.push_stream_output(
+        OutputStream::Stderr,
+        b"fatal: will not add file alias '.CLAUDE/settings.json' ('.CLAUDE/Settings.json' already exists in index)\n",
+    );
+    f.deps.engine.set_stream_code(128);
+    let error = f.diff().unwrap_err();
+    assert_eq!(error.code, ErrorCode::Engine);
+    assert!(error.message.starts_with(daemon::diff::NOT_REVIEWED), "{}", error.message);
+    assert!(error.message.contains("will not add file alias"), "{}", error.message);
+}
+
 /// The hostile demo plants exactly this, from inside a container that has
 /// the project mounted. Whatever it writes there must come out flagged.
 #[test]

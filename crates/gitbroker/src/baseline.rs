@@ -109,6 +109,16 @@ pub fn make_baseline(snapshot: &Path, store: &Path) -> Result<String> {
             &commit,
         ])
         .ok()?;
+    // `init` on a Mac's disk writes `core.ignorecase=true` and
+    // `core.precomposeunicode=true`, which describe this disk and not the
+    // guest's. Carried in, they made git in the guest refuse two paths that
+    // differ only in case, so the guest's changes could not be bundled.
+    for (key, value) in [("core.ignorecase", "false"), ("core.precomposeunicode", "false")] {
+        GitCmd::new("config")
+            .git_dir(&dot_git)
+            .args(["config", key, value])
+            .ok()?;
+    }
 
     let mut kept = Quarantine::create(store)?;
     kept.import_base(snapshot, &commit)?;
@@ -151,6 +161,20 @@ mod tests {
             ],
         );
         assert_eq!(kept, format!("refs/base/{commit} {commit}"));
+    }
+
+    /// The repository goes into a guest whose disk tells case apart, so it must
+    /// not say otherwise, wherever it was made.
+    #[test]
+    fn the_repository_given_to_the_guest_does_not_ignore_case() {
+        let (_dir, root) = root();
+        let snap = root.join("snap");
+        fs::create_dir_all(&snap).unwrap();
+        fs::write(snap.join("a.txt"), "a\n").unwrap();
+        make_baseline(&snap, &root.join("store.git")).unwrap();
+        let config = fs::read_to_string(snap.join(".git/config")).unwrap();
+        assert_eq!(plain_git(&snap, &["config", "core.ignorecase"]), "false", "{config}");
+        assert_eq!(plain_git(&snap, &["config", "core.precomposeunicode"]), "false", "{config}");
     }
 
     #[test]
