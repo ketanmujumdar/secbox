@@ -30,7 +30,7 @@ Common problems and how to fix them. Start with `secbox doctor`, which checks mo
 
 | Symptom | Fix |
 | --- | --- |
-| `this project is not a git repository` | `up` starts from a commit. Run `git init` and commit |
+| `this folder is not the top folder of a Git repository` | `up` starts from a commit, and only a repository's top folder has one. Start that folder, or copy this one into a repository of its own: `git init`, then commit. A folder inside a repository, such as `tests/fixtures/clean`, is refused |
 | `this repository has no commits yet` | Make a first commit |
 | `including uncommitted changes is not built yet` | Commit your changes, then run `up` again |
 | `This cannot be started yet`, with a memory, CPU or disk line | The host would be left with too little. Free resources, or lower the request with `secbox.yaml` |

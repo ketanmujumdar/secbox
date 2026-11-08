@@ -1520,6 +1520,26 @@ fn a_failed_fetch_says_what_to_do_and_starts_nothing() {
     assert!(done.err.contains("Permission denied"), "{}", done.err);
     assert!(done.err.contains("ssh-add"), "{}", done.err);
     assert!(facts.engine.calls().iter().all(|call| matches!(call, FakeCall::Status(_))), "{:?}", facts.engine.calls());
+    // The refusal is on record, and the folder this fetch made is gone again.
+    let log = std::fs::read_to_string(h.state().join(hoststate::DAEMON_AUDIT_FILE)).unwrap_or_default();
+    assert!(log.contains("remote_fetch_failed") && log.contains(REMOTE), "{log}");
+    assert!(log.contains("No key was accepted"), "{log}");
+    let left: Vec<_> = std::fs::read_dir(h.state().join("remote")).unwrap().collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn a_failed_fetch_keeps_a_mirror_that_was_already_there() {
+    let w = relay_world();
+    let (h, facts) = (&w.h, &w.facts);
+    let down = h.run(&["down", REMOTE, "--destroy"], "y\n");
+    assert_eq!(down.code, 0, "{}", down.all());
+    let before: Vec<_> = std::fs::read_dir(h.state().join("remote")).unwrap().map(|e| e.unwrap().path()).collect();
+    assert_eq!(before.len(), 1);
+    *facts.fetch_error.lock().unwrap() = Some("Host key verification failed.".to_owned());
+    let done = h.run(&["up", REMOTE, "--all-ports"], "");
+    assert_eq!(done.code, cli::exit::FAILED, "{}", done.all());
+    assert!(before[0].join("mirror.git").join("HEAD").is_file(), "the earlier mirror was kept");
 }
 
 #[test]
@@ -1770,6 +1790,19 @@ fn a_push_the_person_declines_sends_the_remote_nothing() {
     assert_eq!(branches, "", "the remote got the branch anyway");
     let log = std::fs::read_to_string(w.h.state().join("daemon-audit.jsonl")).unwrap_or_default();
     assert!(log.contains("person_declined"), "{log}");
+}
+
+#[test]
+fn a_push_with_nothing_new_does_not_ask_the_person() {
+    let w = relay_world();
+    *w.facts.person.lock().unwrap() = Some(false);
+    let before = test_git(&w.bare, &["for-each-ref"]);
+    // main in the sandbox is where the remote's main is, so Git has nothing to send.
+    let push = w.h.run(&["git", "push", "--project", REMOTE], "");
+    assert_eq!(push.code, 0, "{}", push.all());
+    assert!(w.facts.asked.lock().unwrap().is_empty(), "the person was asked for nothing");
+    assert!(push.all().contains("Nothing needs pushing"), "{}", push.all());
+    assert_eq!(test_git(&w.bare, &["for-each-ref"]), before);
 }
 
 #[test]

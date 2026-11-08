@@ -28,6 +28,7 @@
     "allow-read-secret-file",
     "allow-use-secret-file",
     "allow-connect-agent",
-    "allow-open-in-vscode"
+    "allow-open-in-vscode",
+    "allow-problems"
   ]
 }

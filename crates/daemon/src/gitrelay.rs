@@ -131,7 +131,7 @@ fn end_marker() -> String {
 /// What `core.sshCommand` says in the VM's clone, for a `git push` typed there.
 fn ssh_stub() -> String {
     format!(
-        "sh -c 'echo \"This sandbox holds no Git credentials, on purpose. Pull and push from your machine with: {cli} git pull, {cli} git push (or the git_pull and git_push tools).\" >&2; exit 1'",
+        "sh -c 'echo \"git push and pull cannot reach the remote from inside this sandbox, which holds no Git credentials, on purpose. Run them on your machine instead: {cli} git push, {cli} git pull (or the git_push and git_pull tools).\" >&2; exit 1'",
         cli = brand::CLI_BIN
     )
 }
@@ -220,6 +220,12 @@ pub fn clone_into_sandbox(
     let agent = remote::last_agent(url);
     let done = relay(service, project, url, git, GitService::UploadPack, agent.as_deref(), &mut crate::Quiet)?;
     if !done.ok {
+        service.record(
+            audit::entry(service.deps().now_unix(), audit::Action::SandboxCloneFailed)
+                .project(project.id.as_str())
+                .subject(url)
+                .detail(done.refused.clone().unwrap_or_else(|| last_line(&done.output))),
+        );
         return Err(refused(format!("cloning into the sandbox failed:\n{}", done.output.trim_end())));
     }
     // At the approved commit, whatever the branch has gained since, and with
@@ -328,6 +334,11 @@ fn with_identity(identity: &GitIdentity) -> Vec<String> {
         "-c".to_owned(),
         format!("user.email={}", identity.email),
     ]
+}
+
+/// The last line with anything on it, which is where Git says what went wrong.
+fn last_line(output: &str) -> String {
+    output.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("no output").trim().to_owned()
 }
 
 fn clean(bytes: &[u8]) -> String {
@@ -486,6 +497,7 @@ fn relay(
 
     let mut refusal: Option<String> = None;
     let mut updates = Vec::new();
+    let mut nothing_to_push = false;
     let mut ssh_err: Option<Arc<Mutex<Vec<u8>>>> = None;
 
     match read_header(&mut vm_out) {
@@ -507,7 +519,7 @@ fn relay(
         Ok(Some(header)) => {
             match service.deps().spawn_ssh(url, header.service, header.git_protocol.as_deref(), agent) {
                 Err(reason) => {
-                    refusal = Some(remote::explain_ssh(&reason));
+                    refusal = Some(remote::explain_ssh(&reason, url));
                     drop(vm_in);
                 }
                 Ok(mut child) => {
@@ -520,6 +532,17 @@ fn relay(
                     if header.service == GitService::ReceivePack {
                         match read_commands(&mut vm_out) {
                             Ok((raw, commands)) => match check_commands(&commands) {
+                                // Git found nothing new to push. It sends an
+                                // empty list and the remote changes nothing,
+                                // so there is nothing to ask the person. Only
+                                // that list goes on; whatever might follow it
+                                // is not sent.
+                                Ok(found) if found.is_empty() => {
+                                    nothing_to_push = true;
+                                    if let Some(mut input) = ssh_in.take() {
+                                        let _ = input.write_all(&raw).and_then(|()| input.flush());
+                                    }
+                                }
                                 // The person sees the exact branches and
                                 // commits, and nothing reaches the remote
                                 // until they confirm.
@@ -573,9 +596,12 @@ fn relay(
     if let Some(err) = &ssh_err {
         let text = clean(&take(err));
         if !text.trim().is_empty() {
-            output.push_str(&remote::explain_ssh(text.trim_end()));
+            output.push_str(&remote::explain_ssh(text.trim_end(), url));
             output.push('\n');
         }
+    }
+    if nothing_to_push {
+        output.push_str("Nothing needs pushing, so you were not asked to confirm.\n");
     }
     if timed_out {
         output.push_str(&format!("\nstopped after {} minutes\n", NETWORK_LIMIT.as_secs() / 60));

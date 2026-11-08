@@ -85,9 +85,21 @@ pub(crate) fn is_suspicious_name(raw: &[u8]) -> bool {
     }
 }
 
-/// Escape a stderr blob from git, keeping it one bounded line.
+/// Escape a stderr blob from git, keeping it one bounded line. Its lines are
+/// joined with a space and blank ones dropped, so it reads as git wrote it
+/// rather than as `\r\n` escapes. Anything else unprintable is still escaped.
 pub(crate) fn escape_stderr(raw: &[u8]) -> String {
-    escape_for_display(raw)
+    let lines: Vec<&[u8]> = raw
+        .split(|b| *b == b'\n')
+        .map(<[u8]>::trim_ascii)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let shown = escape_for_display(&lines.join(&b' '));
+    // Drop the quotes around the whole, which only matter for a name.
+    match shown.strip_prefix('"').and_then(|rest| rest.rsplit_once('"')) {
+        Some((inner, tail)) => format!("{inner}{tail}"),
+        None => shown,
+    }
 }
 
 #[cfg(test)]
@@ -124,6 +136,18 @@ mod tests {
         let shown = escape_for_display(&[b'a'; 5000]);
         assert!(shown.len() < 1100);
         assert!(shown.ends_with("more bytes)"), "{shown}");
+    }
+
+    #[test]
+    fn stderr_reads_as_one_plain_line() {
+        let raw = b"No ED25519 host key is known for codeberg.org.\r\nHost key verification failed.\r\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\n";
+        assert_eq!(
+            escape_stderr(raw),
+            "No ED25519 host key is known for codeberg.org. Host key verification failed. fatal: Could not read from remote repository. Please make sure you have the correct access rights"
+        );
+        assert_eq!(escape_stderr(b"a\x1b[2Jb\rc"), r"a\x1b[2Jb\rc");
+        assert_eq!(escape_stderr(b""), "");
+        assert!(escape_stderr(&[b'a'; 5000]).ends_with("more bytes)"));
     }
 
     #[test]

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-const AUDIT_FILE: &str = "daemon-audit.jsonl";
+const AUDIT_FILE: &str = hoststate::DAEMON_AUDIT_FILE;
 const MAX_DETAIL_CHARS: usize = 200;
 
 /// What happened. Each is a fixed word, so the log cannot be filled with text
@@ -49,6 +49,11 @@ pub enum Action {
     SnapshotTaken,
     /// A project was fetched from a Git remote, over SSH, on the host.
     RemoteFetched,
+    /// A fetch from a Git remote was refused or failed. The URL and why, never
+    /// a key or a credential: the URL cannot hold one, as it was checked first.
+    RemoteFetchFailed,
+    /// Cloning a fetched remote into a new sandbox failed. The URL and why.
+    SandboxCloneFailed,
     /// A pull ran through the relay.
     GitPulled,
     /// A Git command typed by a person or an agent ran in a sandbox. The

@@ -28,6 +28,7 @@ const COMMANDS: &[&str] = &[
     "secret_files",
     "read_secret_file",
     "use_secret_file",
+    "problems",
 ];
 
 fn main() {

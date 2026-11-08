@@ -9,6 +9,7 @@ pub mod agent;
 pub mod client;
 pub mod daemon_proc;
 pub mod ops;
+pub mod problems;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -611,6 +612,14 @@ async fn blocked(project: String, state: State<'_, Arc<AppState>>) -> Result<Blo
 
 /// Compares the project's running sandbox with the snapshot it was given.
 /// Nothing is copied out: the daemon reviews a bundle and sends the findings.
+/// What was refused or failed recently: for one project, or for all and none.
+/// Read from the daemon's audit log in the state folder, as the project list is.
+#[tauri::command]
+async fn problems(project: Option<String>, state: State<'_, Arc<AppState>>) -> Result<problems::ProblemsView, String> {
+    let state = Arc::clone(&state);
+    blocking(move || Ok(problems::problems(state.paths()?, project.as_deref()))).await
+}
+
 #[tauri::command]
 async fn diff(project: String, state: State<'_, Arc<AppState>>) -> Result<DiffView, String> {
     let state = Arc::clone(&state);
@@ -826,6 +835,7 @@ pub fn run() {
             secret_files,
             read_secret_file,
             use_secret_file,
+            problems,
             resource_choices,
             set_resources,
         ])

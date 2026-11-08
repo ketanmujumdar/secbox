@@ -83,6 +83,13 @@ pub trait Deps: Send + Sync {
         dest: &Path,
     ) -> Result<proto::SnapshotPlan, String>;
 
+    /// Whether a snapshot of `source` can be taken from `root`, asked when the
+    /// plan is made so that `up` fails before any prompt. A seam beside
+    /// `snapshot`, so a test project need not be a Git repository.
+    fn check_source(&self, _root: &Path, _source: &proto::Source) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Fetches `git_ref` from an SSH remote into the bare repository at
     /// `mirror`, with the user's own `ssh` and, if given, their agent. Returns
     /// the full id of the commit fetched. The URL and ref were checked first.

@@ -105,6 +105,10 @@ impl Deps for RealDeps {
         personcheck::confirm(reason)
     }
 
+    fn check_source(&self, root: &Path, source: &proto::Source) -> Result<(), String> {
+        gitref::check_source(root, source)
+    }
+
     fn fetch_remote(
         &self,
         mirror: &Path,

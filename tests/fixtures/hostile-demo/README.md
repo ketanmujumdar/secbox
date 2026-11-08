@@ -27,9 +27,16 @@ is no cloud metadata service and no secbox.
 inside the same VM: `privileged`, `pid: host`, a mount of `/run` (where the
 secrets are) and the Docker socket.
 
+`up` starts from a commit, so it needs the top folder of a Git repository.
+A folder inside this repository is not one, so copy the fixture into a
+repository of its own first:
+
 ```sh
-secbox secrets set DEMO_TOKEN --service api --project tests/fixtures/hostile-demo
-secbox up tests/fixtures/hostile-demo
+D=~/code/hostile-demo
+cp -R tests/fixtures/hostile-demo $D
+git -C $D init -q -b main && git -C $D add . && git -C $D -c commit.gpgsign=false commit -qm fixture
+secbox secrets set DEMO_TOKEN --service api --project $D
+secbox up $D
 ```
 
 Expected: the plan lists four blockers, all naming `evil`, and nothing starts.
@@ -39,11 +46,15 @@ The daemon tests prove this against the fake engine.
 
 Only `api`, with no escape settings. Its `probe.sh` tries to send the token
 over HTTPS to a host not on the allowlist, over HTTP to a raw IP, to the cloud
-metadata address, inside a DNS name, and to read the secret folder. Its build
-also tries to phone home.
+metadata address and inside a DNS name, and sweeps the disk for secret-shaped
+strings. Its build also tries to phone home.
+
+Copy it into a repository of its own first, as above:
 
 ```sh
-P=tests/fixtures/hostile-demo-run
+P=~/code/hostile-demo-run
+cp -R tests/fixtures/hostile-demo-run $P
+git -C $P init -q -b main && git -C $P add . && git -C $P -c commit.gpgsign=false commit -qm fixture
 secbox secrets set DEMO_TOKEN --service api --project $P   # any fake value
 secbox up $P
 secbox logs api --project $P        # each line: BLOCKED or LEAKED
@@ -55,6 +66,18 @@ secbox down --destroy $P
 
 Expected: every probe prints BLOCKED, and `net blocked` lists
 `exfil.example.net` and `build-exfil.example.net`.
+
+BLOCKED alone shows little: the targets are made-up names and a documentation
+address, which would not answer anyway. Check that the sandbox's network is
+what stops them. From inside, these must fail:
+
+```sh
+secbox exec --service api --project $P -- wget -q -T 5 -O /dev/null https://example.com; echo "exit $?"
+secbox exec --service api --project $P -- wget -q -T 5 -O /dev/null http://1.1.1.1/; echo "exit $?"
+```
+
+while the same addresses answer from your Mac: `curl -sI https://example.com`
+and `curl -sI http://1.1.1.1/`.
 
 The probe also plants a hook for AI coding tools, as s1ngularity and
 testmetest did. `api` has the project mounted at `/work`, as a dev setup

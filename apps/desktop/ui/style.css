@@ -289,6 +289,25 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; m
 .projects li.selected .name { font-weight: 600; }
 .projects .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .projects .word { font-size: 12px; color: var(--muted); }
+/* Problems, below the projects. A plain row, so it reads as a place to look,
+   not as an alarm. */
+button.rail-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  margin: 4px 0;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  font-size: 14px;
+  text-align: left;
+}
+button.rail-item:hover:not(:disabled) { background: var(--soft); }
+button.rail-item.selected { background: var(--accent-soft); font-weight: 600; }
 .rail-foot {
   display: flex;
   justify-content: space-between;
@@ -636,6 +655,10 @@ pre.cmd {
 .table th { text-align: left; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--line); }
 .table td { padding: 8px 10px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
 .table .num { text-align: right; width: 80px; }
+.problems-table th.time, .problems-table td.time { width: 150px; white-space: nowrap; }
+.problems-table td { vertical-align: top; }
+.problems-table td.project { width: 160px; }
+.problems-table td.what { width: 28%; }
 
 /* changes */
 .changes { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }

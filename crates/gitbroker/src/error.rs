@@ -15,7 +15,7 @@ pub enum Error {
     Timeout { op: &'static str, seconds: u64 },
     #[error("git {op} produced more than {limit} bytes of output")]
     OutputTooLarge { op: &'static str, limit: u64 },
-    #[error("git {op} failed with status {code:?}: {stderr}")]
+    #[error("git {op} failed{}: {stderr}", exit_note(*.code))]
     GitFailed {
         op: &'static str,
         code: Option<i32>,
@@ -77,6 +77,11 @@ pub enum Error {
     SnapshotFormat(&'static str),
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
+}
+
+/// " (exit code 128)", or nothing when git was ended by a signal.
+fn exit_note(code: Option<i32>) -> String {
+    code.map(|code| format!(" (exit code {code})")).unwrap_or_default()
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
