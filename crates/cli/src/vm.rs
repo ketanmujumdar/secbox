@@ -507,10 +507,15 @@ fn show_plan(plan: &PlanReport, deps: &mut Deps) {
             } else {
                 ""
             };
+            let moved = if port.on_mac() == port.host_port {
+                String::new()
+            } else {
+                format!(" (the project publishes {}; moved with {} ports)", port.host_port, brand::CLI_BIN)
+            };
             say!(
                 deps,
-                "  {} -> {} in {}{note}{guess}",
-                port.host_port,
+                "  {} -> {} in {}{note}{guess}{moved}",
+                port.on_mac(),
                 port.container_port,
                 esc(&port.service)
             );
@@ -594,6 +599,23 @@ fn choose_ports(plan: &PlanReport, args: &UpArgsCli, deps: &mut Deps) -> Result<
     }
     if !args.ports.is_empty() {
         return listed_ports(plan, &args.ports, "up", deps);
+    }
+    // A choice made before, at a start or with `ports`, is used again. The
+    // start's own prompt names every port it opens.
+    if plan.ports.iter().any(|p| p.chosen.is_some()) {
+        let chosen: Vec<&proto::PortPlan> = plan.ports.iter().filter(|p| p.chosen == Some(true)).collect();
+        say!(deps);
+        if chosen.is_empty() {
+            say!(deps, "No ports will be forwarded, as chosen before. Change them with: {} ports", brand::CLI_BIN);
+        } else {
+            say!(
+                deps,
+                "Forwarding {} to 127.0.0.1, as chosen before. Change them with: {} ports",
+                chosen.iter().map(|p| p.on_mac().to_string()).collect::<Vec<_>>().join(", "),
+                brand::CLI_BIN
+            );
+        }
+        return Ok(chosen.iter().map(|p| p.host_port).collect());
     }
 
     say!(deps);

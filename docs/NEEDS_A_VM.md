@@ -94,6 +94,7 @@ Built on Nov 5, 2026 and tested only against `FakeEngine`, with `tests/fixtures/
 ### Ports, resources, rules
 
 - [ ] Ports the daemon approved appearing on `127.0.0.1` only, with their numbers unchanged, and gone after `down`.
+- [ ] Changing ports on an existing sandbox (`secbox ports`, Nov 8, 2026). The engine applies a port change only at a start, so the daemon calls `msb modify --port`/`--port-rm` on the stopped sandbox before starting it. Not yet run on a real VM. Check: `secbox ports open 3000 --on 3001`, `down`, `up`: 3001 answers on `127.0.0.1` only, 3000 is closed, and the Touch ID prompt says "opening port 3001 (web:80)". Unconfirmed: that the engine's ingress rule matches the guest's port, not the host's, when the numbers differ. If 3001 resets connections, that is why. A port unticked at creation and opened later relies on the ingress rule the sandbox was created with for every planned port.
 - [ ] A port in the plan but not approved **not** appearing.
 
 #### A port the project publishes on `127.0.0.1` (fixed Nov 8, 2026, not yet rerun)

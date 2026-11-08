@@ -26,6 +26,7 @@ pub mod mask;
 pub mod person;
 pub mod plan;
 pub mod ports;
+pub mod portset;
 pub mod remote;
 pub mod resourceset;
 pub mod run;
@@ -255,6 +256,14 @@ impl Service {
             Request::SetResources(args) => {
                 let project = self.open(&args.project)?;
                 resourceset::set(self, &project, args.choice).map(|r| Reply::SetResources(Box::new(r)))
+            }
+            Request::PortChoices(args) => {
+                let project = self.open(&args.project)?;
+                portset::report(self, &project).map(Reply::PortChoices)
+            }
+            Request::SetPort(args) => {
+                let project = self.open(&args.project)?;
+                portset::set(self, &project, args).map(Reply::SetPort)
             }
         }
     }

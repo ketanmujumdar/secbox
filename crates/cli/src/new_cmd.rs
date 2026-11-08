@@ -325,7 +325,7 @@ fn review(plan: &PlanReport, ports: &[u16], no_ports: bool, deps: &mut Deps) {
         };
         let text = format!(
             "127.0.0.1:{} → {}{inside}",
-            port.host_port,
+            port.on_mac(),
             esc(&port.service)
         );
         if ports.contains(&port.host_port) {
@@ -543,7 +543,7 @@ fn started(plan: &PlanReport, report: &UpReport, deps: &mut Deps) {
         let service = plan
             .ports
             .iter()
-            .find(|p| p.host_port == *port)
+            .find(|p| p.on_mac() == *port)
             .map(|p| format!(" → {}", esc(&p.service)))
             .unwrap_or_default();
         let ok = tick(deps);

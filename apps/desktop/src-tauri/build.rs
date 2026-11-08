@@ -31,6 +31,8 @@ const COMMANDS: &[&str] = &[
     "problems",
     "resource_choices",
     "set_resources",
+    "port_choices",
+    "set_port",
 ];
 
 fn main() {

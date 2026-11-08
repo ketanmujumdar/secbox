@@ -213,6 +213,42 @@ pub fn resource_choices(client: &Client, path: &str) -> Result<proto::ResourceCh
     Ok(*report)
 }
 
+/// The ports a project publishes, and which are open on which number of this Mac.
+pub fn port_choices(client: &Client, path: &str) -> Result<proto::PortChoicesReport, CallError> {
+    let reply = client.call(
+        Request::PortChoices(ProjectArgs { project: path.to_owned() }),
+        Some(STATUS_LIMIT),
+    )?;
+    let Reply::PortChoices(report) = reply else {
+        return Err(wrong_reply());
+    };
+    Ok(report)
+}
+
+/// Keeps a person's choice for one port. No sandbox changes until its next
+/// start, which asks them to confirm the ports it opens.
+pub fn set_port(
+    client: &Client,
+    path: &str,
+    port: u16,
+    open: bool,
+    mac_port: Option<u16>,
+) -> Result<proto::PortChoicesReport, CallError> {
+    let reply = client.call(
+        Request::SetPort(proto::SetPortArgs {
+            project: path.to_owned(),
+            port,
+            open,
+            mac_port,
+        }),
+        Some(STATUS_LIMIT),
+    )?;
+    let Reply::SetPort(report) = reply else {
+        return Err(wrong_reply());
+    };
+    Ok(report)
+}
+
 /// Keeps a person's limits for a project. No sandbox changes until its next start.
 pub fn set_resources(
     client: &Client,
@@ -332,8 +368,13 @@ pub fn status_view(report: &StatusReport) -> StatusView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PortView {
     pub service: String,
+    /// The number the project publishes, which names the port in an approval.
     pub host_port: u16,
+    /// The number used on this Mac.
+    pub mac_port: u16,
     pub container_port: u16,
+    /// Whether it was chosen open before. `None` when nothing was chosen yet.
+    pub chosen: Option<bool>,
     pub note: Option<String>,
 }
 
@@ -399,7 +440,7 @@ pub fn dialog_lines(plan: &PlanReport, ports: &[u16]) -> Vec<String> {
 }
 
 pub fn plan_view(plan: &PlanReport) -> PlanView {
-    let ports: Vec<u16> = plan.ports.iter().map(|p| p.host_port).collect();
+    let ports: Vec<u16> = plan.ports.iter().map(proto::PortPlan::on_mac).collect();
     let route = |r: proto::SecretRoute| match r {
         proto::SecretRoute::Proxy => "held by the proxy",
         proto::SecretRoute::Injected => "put in the environment",
@@ -431,7 +472,9 @@ pub fn plan_view(plan: &PlanReport) -> PlanView {
             .map(|p| PortView {
                 service: text::escape(&p.service),
                 host_port: p.host_port,
+                mac_port: p.on_mac(),
                 container_port: p.container_port,
+                chosen: p.chosen,
                 note: match (p.was_all_interfaces, p.dynamic) {
                     (_, true) => Some("A variable can change this number at start.".to_owned()),
                     (true, false) => Some("Asked for every interface; forwarded on 127.0.0.1 only.".to_owned()),
@@ -1362,6 +1405,8 @@ mod tests {
                 service: "web".to_owned(),
                 host_port: 3000,
                 container_port: 3000,
+                mac_port: 3000,
+                chosen: None,
                 was_all_interfaces: true,
                 dynamic: false,
             }],

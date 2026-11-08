@@ -481,6 +481,18 @@
                 </div>
               </form>
             </div>
+            <div class="card">
+              <h2>Ports</h2>
+              <p class="hint">Each port opens on this Mac's 127.0.0.1 only. Change the number when another project already uses it.</p>
+              <form id="ports-form" autocomplete="off">
+                <ul class="port-choices" id="port-choices"></ul>
+                <p class="hint" id="ports-note"></p>
+                <div class="limits-actions">
+                  <button type="submit" class="primary" id="ports-save">Save ports</button>
+                  <button type="button" class="hidden" id="ports-restart">Restart to apply</button>
+                </div>
+              </form>
+            </div>
             <div class="card danger-card">
               <h2>Remove</h2>
               <div class="danger-row">

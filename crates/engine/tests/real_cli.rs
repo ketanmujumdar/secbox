@@ -86,6 +86,7 @@ fn full_lifecycle_against_a_real_vm() {
         network: NetworkPolicy::DenyAll,
         secrets: vec![],
         ports: vec![],
+        ingress_ports: vec![],
         previous_disk: None,
     })
     .unwrap();
@@ -157,6 +158,7 @@ fn resizing_a_stopped_sandbox_keeps_its_data_and_reports_the_new_limits() {
             network: NetworkPolicy::PublicInternet,
             secrets: Vec::new(),
             ports: Vec::new(),
+            ingress_ports: Vec::new(),
             previous_disk: None,
         })
         .unwrap();

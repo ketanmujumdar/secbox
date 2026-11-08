@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::error::{EngineError, Result};
 use crate::types::{
     CreateSpec, EngineLocation, ExecOutput, ExecRequest, GuestPath, LogOptions, OutputSink,
-    OutputStream, ResizeSpec, SandboxMetrics, SandboxName, SandboxStatus, StreamEnd,
+    OutputStream, PortForward, ResizeSpec, SandboxMetrics, SandboxName, SandboxStatus, StreamEnd,
 };
 use crate::Engine;
 
@@ -23,6 +23,7 @@ pub enum FakeCall {
     KeepRootDisk(SandboxName, PathBuf),
     Status(SandboxName),
     Resize(SandboxName, ResizeSpec),
+    SetPorts(SandboxName, Vec<PortForward>, Vec<PortForward>),
     Metrics(SandboxName),
     Exec(SandboxName, ExecRequest),
     ExecStream(SandboxName, ExecRequest),
@@ -386,6 +387,33 @@ impl Engine for FakeEngine {
         Ok(())
     }
 
+    /// Like the real engine, a running sandbox is refused, and a forward to
+    /// remove that is not there is an error.
+    fn set_ports(&self, name: &SandboxName, remove: &[PortForward], add: &[PortForward]) -> Result<()> {
+        let mut state = self.begin(FakeCall::SetPorts(name.clone(), remove.to_vec(), add.to_vec()))?;
+        let entry = state.boxes.get_mut(name).ok_or_else(|| not_found(name))?;
+        if entry.running {
+            return Err(EngineError::InvalidState {
+                name: name.to_string(),
+                reason: "is running, and its ports change only when it starts".to_owned(),
+            });
+        }
+        for port in remove {
+            let Some(at) = entry.spec.ports.iter().position(|p| p.host == port.host) else {
+                return Err(EngineError::InvalidInput {
+                    field: "port",
+                    reason: format!("{} is not forwarded", port.host),
+                });
+            };
+            entry.spec.ports.remove(at);
+        }
+        for port in add {
+            entry.spec.ports.retain(|p| p.host != port.host);
+            entry.spec.ports.push(*port);
+        }
+        Ok(())
+    }
+
     /// Fixed use against the limits the sandbox really has.
     fn metrics(&self, name: &SandboxName) -> Result<SandboxMetrics> {
         let mut state = self.begin(FakeCall::Metrics(name.clone()))?;
@@ -626,6 +654,7 @@ mod tests {
             network: NetworkPolicy::DenyAll,
             secrets: vec![],
             ports: vec![],
+            ingress_ports: vec![],
             previous_disk: None,
         }
     }

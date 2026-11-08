@@ -156,6 +156,10 @@ meter::-webkit-meter-even-less-good-value { background: var(--bad); border-radiu
 .limits-note, .limits-actions { grid-column: 1 / -1; }
 .limits-note:empty { display: none; }
 .limits-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.port-choices { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.port-choice { display: grid; grid-template-columns: auto 1fr auto; gap: 6px 12px; align-items: center; }
+.port-choice input[type=number] { width: 7em; }
+.port-choice .hint { grid-column: 2 / -1; }
 
 input[type=text], input[type=password], input[type=number], textarea {
   font: inherit;

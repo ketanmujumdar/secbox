@@ -148,6 +148,13 @@ pub enum Request {
     /// no way to send this: the socket is on the host, and no agent tool reaches
     /// it.
     SetResources(SetResourcesArgs),
+    /// The ports a project publishes, which are open, on which number of this
+    /// Mac, and what the next start would change. Changes nothing.
+    PortChoices(ProjectArgs),
+    /// Keeps a person's choice for one port: open or closed, and the number it
+    /// uses on this Mac. Nothing changes in a sandbox until it next starts, and
+    /// that start asks the person to confirm, naming the ports it opens.
+    SetPort(SetPortArgs),
 }
 
 /// A CPU limit in words: "1 CPU", "1.5 CPUs", "2 CPUs".
@@ -175,6 +182,49 @@ pub struct ResourceChoice {
 pub struct SetResourcesArgs {
     pub project: String,
     pub choice: ResourceChoice,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetPortArgs {
+    pub project: String,
+    /// The port as the project publishes it, which names it.
+    pub port: u16,
+    pub open: bool,
+    /// The number to use on this Mac. `None` keeps the one chosen before, or
+    /// the project's own number.
+    #[serde(default)]
+    pub mac_port: Option<u16>,
+}
+
+/// One port a project publishes, and what a person chose for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortChoice {
+    pub service: String,
+    pub container_port: u16,
+    /// The number the project publishes. It names the port.
+    pub port: u16,
+    /// The number the next start uses on this Mac's `127.0.0.1`.
+    pub mac_port: u16,
+    /// Whether the next start opens it.
+    pub open: bool,
+    /// The number it is open on now. `None` when it is closed, or there is no
+    /// sandbox.
+    pub open_now: Option<u16>,
+    /// Why it cannot be opened on this sandbox, if it cannot.
+    pub cannot_open: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortChoicesReport {
+    pub project_id: String,
+    pub ports: Vec<PortChoice>,
+    /// Why the ports could not be read from the project's files, if they could not.
+    pub problem: Option<String>,
+    /// True when it is running with ports other than the next start's.
+    pub restart_needed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -587,6 +637,8 @@ pub enum Reply {
     // Boxed for the same reason as a plan.
     ResourceChoices(Box<ResourceChoicesReport>),
     SetResources(Box<ResourceChoicesReport>),
+    PortChoices(PortChoicesReport),
+    SetPort(PortChoicesReport),
 }
 
 /// What changed inside a sandbox since the snapshot it started from.
@@ -914,19 +966,39 @@ pub struct PlanReport {
 }
 
 /// A port the project asks to publish. Every one is forwarded to `127.0.0.1`
-/// and keeps its number, so there is no bind address or remapping here.
+/// only, so there is no bind address here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PortPlan {
     pub service: String,
+    /// The number the project publishes. It names the port in an approval.
     pub host_port: u16,
     pub container_port: u16,
+    /// The number used on this Mac. The same as `host_port` unless a person
+    /// chose another. `0` from an older daemon means the same.
+    #[serde(default)]
+    pub mac_port: u16,
+    /// Whether a person chose to open it, for a project where they have chosen.
+    /// `None` when nothing was chosen yet.
+    #[serde(default)]
+    pub chosen: Option<bool>,
     /// The project published this on every interface. Inside the sandbox that
     /// is harmless; on the host it is still only `127.0.0.1`.
     pub was_all_interfaces: bool,
     /// A variable can change this at start time, so the number here is a guess
     /// from the file's defaults.
     pub dynamic: bool,
+}
+
+impl PortPlan {
+    /// The number used on this Mac.
+    pub fn on_mac(&self) -> u16 {
+        if self.mac_port == 0 {
+            self.host_port
+        } else {
+            self.mac_port
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

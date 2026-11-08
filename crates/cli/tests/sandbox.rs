@@ -697,6 +697,32 @@ fn status_reports_the_sandbox_after_it_is_started() {
 }
 
 #[test]
+fn a_port_moved_with_ports_is_used_by_the_next_start() {
+    let h = harness();
+    assert_eq!(h.run(&["up", "--all-ports"], "").code, 0);
+    let mac = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+
+    let saved = h.run(&["ports", "open", "web:3000", "--on", &mac.to_string()], "");
+    assert_eq!(saved.code, 0, "{}", saved.all());
+    let text = saved.all();
+    assert!(text.contains("Saved. Nothing changes until it next starts"), "{text}");
+    assert!(text.contains(&format!("open on 127.0.0.1:{mac}, now open on 127.0.0.1:3000")), "{text}");
+    assert!(text.contains("Restart it to apply them"), "{text}");
+
+    let unknown = h.run(&["ports", "close", "9999"], "");
+    assert_eq!(unknown.code, 2, "{}", unknown.all());
+    assert!(unknown.err.contains("is not a port this project publishes"), "{}", unknown.all());
+
+    assert_eq!(h.run(&["down"], "").code, 0);
+    let started = h.run(&["up"], "").all();
+    assert!(started.contains(&format!("Forwarding {mac}")), "{started}");
+    assert!(started.contains("as chosen before"), "{started}");
+    let status = h.run(&["status"], "").all();
+    assert!(status.contains(&format!("127.0.0.1:{mac}")), "{status}");
+    assert!(!status.contains("127.0.0.1:3000"), "{status}");
+}
+
+#[test]
 fn down_stops_and_destroy_removes() {
     let h = harness();
     h.run(&["up", "--all-ports"], "");

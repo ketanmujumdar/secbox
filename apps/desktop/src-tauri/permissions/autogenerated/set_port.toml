@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-port"
+description = "Enables the set_port command without any pre-configured scope."
+commands.allow = ["set_port"]
+
+[[permission]]
+identifier = "deny-set-port"
+description = "Denies the set_port command without any pre-configured scope."
+commands.deny = ["set_port"]

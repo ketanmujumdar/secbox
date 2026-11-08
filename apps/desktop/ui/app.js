@@ -428,7 +428,7 @@
     renderSecrets();
     renderSettings();
     if (state.tab === 'secrets') loadSecrets();
-    if (state.tab === 'settings') loadLimits();
+    if (state.tab === 'settings') { loadLimits(); loadPorts(); }
   }
 
   function resourcePairs(r) {
@@ -949,6 +949,102 @@
   $('limits-restart').addEventListener('click', () => startProject(true));
   $('btn-limits').addEventListener('click', () => openTab('settings'));
 
+  // ---------- ports ----------
+
+  async function loadPorts() {
+    const path = state.selected;
+    if (!path) return;
+    let report;
+    try {
+      report = await invoke('port_choices', { project: path });
+    } catch (error) {
+      if (state.selected === path) $('ports-note').textContent = 'Could not read the ports: ' + errorText(error);
+      return;
+    }
+    if (state.selected === path) renderPorts(report);
+  }
+
+  function renderPorts(report) {
+    const list = $('port-choices');
+    clear(list);
+    for (const p of report.ports) {
+      const item = el('li', null, 'port-choice');
+      item.dataset.port = String(p.port);
+      item.dataset.open = String(p.open);
+      item.dataset.mac = String(p.mac_port);
+      const open = el('input');
+      open.type = 'checkbox';
+      open.checked = p.open;
+      open.disabled = !!p.cannot_open && !p.open;
+      open.setAttribute('aria-label', 'Open ' + p.service + ':' + p.container_port);
+      const name = el('label', null);
+      name.appendChild(open);
+      name.appendChild(el('span', ' ' + p.service + ':' + p.container_port, 'mono'));
+      item.appendChild(name);
+      item.appendChild(el('span', p.port === p.mac_port ? '' : 'the project publishes ' + p.port, 'muted'));
+      const number = el('input');
+      number.type = 'number';
+      number.min = '1024';
+      number.max = '65535';
+      number.value = String(p.mac_port);
+      number.setAttribute('aria-label', 'Number on this Mac for ' + p.service + ':' + p.container_port);
+      item.appendChild(number);
+      const now = p.open_now ? 'Open now on 127.0.0.1:' + p.open_now + '.' : 'Closed now.';
+      item.appendChild(el('span', p.cannot_open || now, 'hint'));
+      list.appendChild(item);
+    }
+    if (!report.ports.length) list.appendChild(el('li', report.problem ? 'Could not read the ports: ' + report.problem : 'This project publishes no ports.', 'empty-line'));
+    $('ports-note').textContent = report.restart_needed
+      ? 'It is running with other ports. Restart it to apply these; its data is kept.'
+      : 'Changes apply at the next start, which asks you to confirm the ports it opens.';
+    show($('ports-save'), report.ports.length > 0);
+    show($('ports-restart'), report.restart_needed);
+    $('ports-restart').disabled = !report.restart_needed || $('menu-restart').disabled;
+  }
+
+  $('ports-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const path = state.selected;
+    if (!path) return;
+    const changed = [];
+    for (const item of $('port-choices').querySelectorAll('li.port-choice')) {
+      const open = item.querySelector('input[type=checkbox]').checked;
+      const mac = Number(item.querySelector('input[type=number]').value);
+      if (!Number.isInteger(mac) || mac < 1 || mac > 65535) {
+        banner('Not saved: ' + item.querySelector('.mono').textContent.trim() + ' needs a whole number from 1024 to 65535.');
+        return;
+      }
+      if (String(open) !== item.dataset.open || String(mac) !== item.dataset.mac) {
+        changed.push({ port: Number(item.dataset.port), open, macPort: String(mac) === item.dataset.mac ? null : mac });
+      }
+    }
+    if (!changed.length) {
+      banner('Nothing changed.', 'ok');
+      return;
+    }
+    $('ports-save').disabled = true;
+    let report = null;
+    try {
+      for (const c of changed) {
+        report = await invoke('set_port', { project: path, port: c.port, open: c.open, macPort: c.macPort });
+      }
+      const row = selectedRow();
+      banner(report.restart_needed
+        ? 'Saved. Restart it to apply them.'
+        : row && row.state === 'stopped' ? 'Saved. It uses them on its next start.'
+        : 'Saved.', 'ok');
+    } catch (error) {
+      banner('Not saved: ' + errorText(error));
+    } finally {
+      $('ports-save').disabled = false;
+      if (state.selected === path) {
+        if (report) renderPorts(report);
+        else loadPorts();
+      }
+    }
+  });
+  $('ports-restart').addEventListener('click', () => startProject(true));
+
   // ---------- review and start ----------
 
   // Lines the Ports card says for itself, since a port can be unticked there.
@@ -1017,11 +1113,12 @@
       const label = el('label');
       const box = el('input');
       box.type = 'checkbox';
-      box.checked = true;
+      // A choice made before is kept; with none, every port starts ticked.
+      box.checked = p.chosen !== false;
       box.dataset.index = String(index);
       box.disabled = blocked;
       label.appendChild(box);
-      label.appendChild(el('span', '127.0.0.1:' + p.host_port, 'mono'));
+      label.appendChild(el('span', '127.0.0.1:' + (p.mac_port || p.host_port), 'mono'));
       label.appendChild(el('span', p.service + ':' + p.container_port, 'right muted'));
       item.appendChild(label);
       if (p.note) item.appendChild(el('div', p.note, 'hint'));
@@ -1164,7 +1261,11 @@
     }
     if (review.restart) list.appendChild(stepRow('down', 'Stopping it, keeping its data', 'pending'));
     for (const key of STEP_ORDER) list.appendChild(stepRow(key, STEP_WORDS[key], 'pending'));
-    list.appendChild(stepRow('ports', ports.length ? 'Opening ports ' + ports.join(', ') + ' on 127.0.0.1' : 'No ports to open', 'pending'));
+    const onMac = ports.map((n) => {
+      const p = review.plan.ports.find((q) => q.host_port === n);
+      return p && p.mac_port ? p.mac_port : n;
+    });
+    list.appendChild(stepRow('ports', ports.length ? 'Opening ports ' + onMac.join(', ') + ' on 127.0.0.1' : 'No ports to open', 'pending'));
     showPage('starting');
 
     let current = null;
@@ -2097,7 +2198,7 @@
     if (tab !== 'logs') stopLogs();
     if (tab !== 'secrets') closeSecretForm();
     if (tab === 'secrets') await loadSecrets();
-    if (tab === 'settings') await loadLimits();
+    if (tab === 'settings') { await loadLimits(); await loadPorts(); }
     if (tab === 'network') await readTraffic();
     if (tab === 'problems') {
       renderFlagged();

@@ -17,8 +17,8 @@ pub use fake::{FakeCall, FakeEngine};
 pub use msb::{MsbEngine, MsbLocation, DERIVED_SOCKET_SUFFIX_BYTES, TESTED_VERSION};
 pub use redact::{LiteralRedactor, NoRedaction, Redactor};
 pub use types::{
-    CreateSpec, EngineLocation, ExecOutput, ExecRequest, GuestPath, HostPort, LogOptions,
-    NetworkPolicy, OutputSink, OutputStream, ResizeSpec, Resources, SandboxMetrics, SandboxName, SandboxStatus,
+    CreateSpec, EngineLocation, ExecOutput, ExecRequest, GuestPath, LogOptions,
+    NetworkPolicy, OutputSink, OutputStream, PortForward, ResizeSpec, Resources, SandboxMetrics, SandboxName, SandboxStatus,
     SecretRule, StreamEnd, TlsMode,
 };
 
@@ -41,6 +41,15 @@ pub trait Engine: Send + Sync {
     /// disk stays. The disk can only grow: anything else is an error and nothing
     /// changes. Memory and CPUs cannot be changed while it runs.
     fn resize(&self, name: &SandboxName, spec: &ResizeSpec) -> Result<()>;
+    /// Changes a stopped sandbox's port forwards, for its next start: removes
+    /// the forwards in `remove` and adds those in `add`. A running sandbox is
+    /// refused, because the engine only applies a port change when it starts.
+    fn set_ports(&self, _name: &SandboxName, _remove: &[PortForward], _add: &[PortForward]) -> Result<()> {
+        Err(EngineError::NotSupported {
+            operation: "set_ports",
+            reason: "this engine cannot change a sandbox's ports",
+        })
+    }
     /// Reports what a running sandbox is using now.
     fn metrics(&self, name: &SandboxName) -> Result<SandboxMetrics>;
     /// Runs a command in a running sandbox, without a shell on the host side.

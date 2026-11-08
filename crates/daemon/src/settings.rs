@@ -9,6 +9,7 @@
 //! for something, in its own committed config, but asking is not approving, so
 //! a hostile file in a project cannot widen anything here.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use projectcheck::resources::{ByteSize, MilliCpus, UserLimits};
@@ -113,6 +114,13 @@ pub struct Approvals {
     /// project's folder so that nothing in a repository can set them.
     #[serde(default)]
     pub resources: proto::ResourceChoice,
+    /// The number a port uses on this Mac, by the number the project
+    /// publishes, where a person chose another.
+    #[serde(default)]
+    pub mac_ports: BTreeMap<u16, u16>,
+    /// True once a person chose which ports open, at a start or on their own.
+    #[serde(default)]
+    pub ports_chosen: bool,
 }
 
 impl Approvals {
@@ -162,6 +170,15 @@ pub struct SandboxRecord {
     /// inside it are compared with. `None` when there is none to compare with.
     #[serde(default)]
     pub baseline: Option<String>,
+    /// The number each forwarded port uses on this Mac, by the number the
+    /// project publishes, where it is not the same.
+    #[serde(default)]
+    pub mac_ports: BTreeMap<u16, u16>,
+    /// The sandbox's ports that the engine lets in from the host's loopback,
+    /// which are the only ones that can be forwarded. `None` for a sandbox
+    /// made before this was recorded: then only those it was created with.
+    #[serde(default)]
+    pub ingress_ports: Option<Vec<u16>>,
 }
 
 const RECORD_FILE: &str = "sandbox.json";
@@ -270,6 +287,8 @@ mod tests {
             ports: vec![3000, 8080, 3000],
             run_hosts: vec!["b.example.com".into(), "a.example.com".into()],
             resources: proto::ResourceChoice::default(),
+            mac_ports: BTreeMap::from([(3000, 3001)]),
+            ports_chosen: true,
         };
         approvals.save(dir.path()).unwrap();
         let back = Approvals::load(dir.path()).unwrap();
@@ -295,6 +314,8 @@ mod tests {
             log_level: Some("debug".to_owned()),
             reachable_hosts: Some(vec!["registry.npmjs.org".to_owned()]),
             baseline: Some("a".repeat(40)),
+            mac_ports: BTreeMap::from([(3000, 3001)]),
+            ingress_ports: Some(vec![3000, 8080]),
         };
         record.save(dir.path()).unwrap();
         assert_eq!(SandboxRecord::load(dir.path()).unwrap(), Some(record));

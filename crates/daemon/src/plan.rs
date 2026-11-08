@@ -108,6 +108,11 @@ pub fn build(
             port.was_all_interfaces = false;
         }
     }
+    crate::portset::fill_plan(
+        &mut ports,
+        &Approvals::load(&project.dir).map_err(internal)?,
+        SandboxRecord::load(&project.dir).map_err(internal)?.is_some(),
+    );
     let resources = plan_resources(service, project, &files.model, &mut blockers)?;
     let secrets = plan_secrets(project, &mut blockers)?;
     let network = plan_network(project, &secrets, &mut blockers)?;
@@ -388,6 +393,8 @@ fn plan_ports(services: &[&ComposeService], blockers: &mut Vec<String>) -> Vec<P
                 service: name,
                 host_port,
                 container_port,
+                mac_port: host_port,
+                chosen: None,
                 was_all_interfaces: matches!(port.interface, Interface::All | Interface::Unknown),
                 dynamic: port.dynamic,
             });

@@ -163,6 +163,17 @@ async function run(browser, scheme) {
   await shot(p, scheme, '09c-secret-saved');
   await p.click('.tab[data-tab=settings]');
   await shot(p, scheme, '09-settings');
+  // Move a port to another number and close one: each is sent, and the card says a restart applies them.
+  await p.waitForSelector('#port-choices li.port-choice');
+  await p.locator('#port-choices li[data-port="8080"] input[type=number]').fill('8081');
+  await p.locator('#port-choices li[data-port="3000"] input[type=checkbox]').uncheck();
+  await p.click('#ports-save');
+  await p.waitForFunction(() => window.__calls.filter((c) => c.cmd === 'set_port').length >= 2);
+  const moved = await p.evaluate(() => window.__calls.filter((c) => c.cmd === 'set_port').map((c) => c.args));
+  if (!moved.some((a) => a.port === 8080 && a.open && a.macPort === 8081)) problems.push(`[${scheme}] set_port did not move 8080: ${JSON.stringify(moved)}`);
+  if (!moved.some((a) => a.port === 3000 && !a.open)) problems.push(`[${scheme}] set_port did not close 3000: ${JSON.stringify(moved)}`);
+  await p.locator('#ports-form').scrollIntoViewIfNeeded();
+  await shot(p, scheme, '09d-ports');
   await p.click('.tab[data-tab=overview]');
   await p.waitForTimeout(100);
   await shot(p, scheme, '05b-overview-compared');

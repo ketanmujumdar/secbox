@@ -16,7 +16,7 @@
 use std::time::{Duration, Instant};
 
 use engine::{
-    CreateSpec, ExecRequest, GuestPath, HostPort, NetworkPolicy, ResizeSpec, Resources, SandboxStatus, TlsMode,
+    CreateSpec, ExecRequest, GuestPath, NetworkPolicy, PortForward, ResizeSpec, Resources, SandboxStatus, TlsMode,
 };
 use proto::{
     text, ApiError, DownReport, PlanReport, RemoveReport, SandboxState, ServiceState, StatusReport, TlsPlan,
@@ -72,7 +72,7 @@ const GIB: u64 = 1 << 30;
 
 /// What the person is asked before a start: "start shop in its sandbox,
 /// with 2 secrets, able to reach 3 hosts, opening port 3000".
-fn start_reason(project: &Project, plan: &proto::PlanReport, ports: &[u16]) -> String {
+fn start_reason(project: &Project, plan: &proto::PlanReport, ports: &[PortForward]) -> String {
     let mut hosts: Vec<&str> = plan.network.build_hosts.iter().chain(&plan.network.run_hosts).map(String::as_str).collect();
     hosts.sort_unstable();
     hosts.dedup();
@@ -84,10 +84,11 @@ fn start_reason(project: &Project, plan: &proto::PlanReport, ports: &[u16]) -> S
         0 => "reaching no hosts".to_owned(),
         n => format!("able to reach {}", person::count(n, "host", "hosts")),
     };
-    let ports = match ports {
+    let named: Vec<String> = ports.iter().map(|p| crate::portset::describe(p, &plan.ports)).collect();
+    let ports = match named.as_slice() {
         [] => String::new(),
         [one] => format!(", opening port {one}"),
-        many => format!(", opening ports {}", many.iter().map(u16::to_string).collect::<Vec<_>>().join(" ")),
+        many => format!(", opening ports {}", many.join(" ")),
     };
     format!("start {} in its sandbox, {secrets}, {reach}{ports}", person::project_name(project))
 }
@@ -123,18 +124,20 @@ pub fn up(
     }
 
     let state = status_of(service, project)?;
-    let ports = approved_ports(service, project, &plan, args, state)?;
+    let approved = approved_ports(service, project, &plan, args, state)?;
+    let forwards = crate::portset::wanted(&plan.ports, &approved);
 
     // Everything that can refuse on its own has; now the person decides.
     // Starting delivers the secrets, so this is asked on every start.
-    service.ask_person(project, person::Act::Start, &start_reason(project, &plan, &ports), progress)?;
+    service.ask_person(project, person::Act::Start, &start_reason(project, &plan, &forwards), progress)?;
 
     progress.step("sandbox", None);
     let fresh = matches!(state, SandboxState::None);
     match state {
-        SandboxState::None => create(service, project, &plan, &ports, args, None)?,
+        SandboxState::None => create(service, project, &plan, &approved, args, None)?,
         SandboxState::Stopped => {
             apply_resources(service, project, &plan.resources)?;
+            crate::portset::apply(service, project, &forwards)?;
             service
                 .deps()
                 .engine()
@@ -185,7 +188,7 @@ pub fn up(
         project_id: project.id.as_str().to_owned(),
         sandbox: SandboxState::Running,
         services,
-        ports,
+        ports: forwards.iter().map(|p| p.host).collect(),
         seconds: started.elapsed().as_secs(),
         secrets: delivered
             .by_service
@@ -225,32 +228,20 @@ fn approved_ports(
         }
     }
     approved.sort_unstable();
-    // Ports are fixed when a sandbox is created, and the engine cannot add the
-    // rule that lets one in afterwards. Saying a port was forwarded when nothing
+    // A running sandbox keeps its ports, and one made before ports could
+    // change cannot open new ones. Saying a port was forwarded when nothing
     // changed would be worse than refusing.
-    if !matches!(state, SandboxState::None) {
-        if let Some(record) = SandboxRecord::load(&project.dir).map_err(internal)? {
-            let mut existing = record.ports.clone();
-            existing.sort_unstable();
-            if existing != approved {
-                let open = if existing.is_empty() {
-                    "no ports".to_owned()
-                } else {
-                    existing.iter().map(u16::to_string).collect::<Vec<_>>().join(", ")
-                };
-                return Err(wrong_state(format!(
-                    "this sandbox already exists with {open} forwarded, and ports can only be set when a sandbox is created. To change them, run: {} down --destroy, which deletes its data, then start it again",
-                    brand::CLI_BIN
-                )));
-            }
-        }
-    }
-    for port in &approved {
-        service.record(
-            audit::entry(service.deps().now_unix(), audit::Action::PortForwarded)
-                .project(project.id.as_str())
-                .subject(port.to_string()),
-        );
+    let forwards = crate::portset::wanted(&plan.ports, &approved);
+    crate::portset::check_start(project, state, &forwards, &plan.ports)?;
+    for forward in &forwards {
+        let entry = audit::entry(service.deps().now_unix(), audit::Action::PortForwarded)
+            .project(project.id.as_str())
+            .subject(forward.host.to_string());
+        service.record(if forward.host == forward.guest {
+            entry
+        } else {
+            entry.detail(format!("for port {}", forward.guest))
+        });
     }
     for planned in &plan.ports {
         if !approved.contains(&planned.host_port) {
@@ -264,6 +255,7 @@ fn approved_ports(
     }
     let mut saved = Approvals::load(&project.dir).map_err(internal)?;
     saved.ports = approved.clone();
+    saved.ports_chosen = true;
     saved.save(&project.dir).map_err(internal)?;
     Ok(approved)
 }
@@ -308,7 +300,9 @@ pub(crate) fn create(
         // Proxy-held secrets need TLS interception, which the plan refuses
         // while that question is open, so nothing is bound here yet.
         secrets: Vec::new(),
-        ports: ports.iter().map(|p| HostPort(*p)).collect(),
+        ports: crate::portset::wanted(&plan.ports, ports),
+        // Every port the plan lists, so any of them can be opened later.
+        ingress_ports: plan.ports.iter().map(|p| p.host_port).collect(),
         previous_disk,
     };
     service
@@ -327,6 +321,12 @@ pub(crate) fn create(
         build_memory_bytes: plan.resources.build_memory_bytes,
         ports: ports.to_vec(),
         plan_digest: args.plan_digest.clone(),
+        mac_ports: crate::portset::wanted(&plan.ports, ports)
+            .iter()
+            .filter(|p| p.host != p.guest)
+            .map(|p| (p.guest, p.host))
+            .collect(),
+        ingress_ports: Some(plan.ports.iter().map(|p| p.host_port).collect()),
         log_level: Some(crate::blocked::created_level()),
         reachable_hosts: Some(proto::reachable_while_running(&plan.network)),
         // Set once the snapshot is in, by the copy that makes it.
@@ -775,7 +775,10 @@ pub fn status(service: &Service, project: &Project) -> Result<StatusReport, ApiE
         project_path: text::escape_path(&project.root),
         sandbox: state,
         services,
-        ports: record.as_ref().map(|r| r.ports.clone()).unwrap_or_default(),
+        ports: record
+            .as_ref()
+            .map(|r| crate::portset::forwards_of(r).iter().map(|p| p.host).collect())
+            .unwrap_or_default(),
         resources: record.as_ref().map(|r| proto::ResourcePlan {
             memory_bytes: r.memory_bytes,
             millicpus: r.millicpus,

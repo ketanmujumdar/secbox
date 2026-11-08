@@ -43,6 +43,7 @@ secbox net check tests/fixtures/policy.yaml PUT https://registry.npmjs.org/left-
 | --- | --- |
 | `doctor` | Works. Checks the host, without needing Docker |
 | `remove [path]` | Works. Removes a project from this machine: its sandbox, its records and any imported copy. Never a folder of your own. Secrets stay in the keychain |
+| `ports [open PORT [--on N] \| close PORT]` | Built, run against a fake engine only. Shows each port a project publishes, and opens, closes or moves one to another number on this Mac, for when two projects publish the same port. Nothing changes until the next start, which asks you to confirm, naming the ports it opens; a running sandbox needs a restart. Ports stay on `127.0.0.1`. A sandbox made before this can close or move its ports but not open new ones. Also the Ports card on the desktop app's Settings tab |
 | `net allow <host> [--project PATH]` | Works on a real VM on a small project. Lets a sandbox reach one more exact hostname, by replacing it with its data kept and restarting its services. Also the Approve button in the desktop app and `a` in the terminal interface's Traffic panel, which have only been run against a fake engine |
 | `check [path]` | Works. Reads a project's Compose file as data and reports what it asks for. For a project with only a Dockerfile, reads its `EXPOSE` lines |
 | `open`, `checks` | Works. Editor safety checks, and the gate before launching an editor |
@@ -72,7 +73,7 @@ running they say so.
 Two kinds of project, and nothing else yet:
 
 - **A Compose project.** Its own Compose files are used as they are.
-- **A project with a `Dockerfile` at its root and no Compose file.** The daemon writes a one-service Compose file for it: a service named `app`, built from the project with that Dockerfile, with no volumes and no extra privileges. Ports come from the Dockerfile's `EXPOSE` lines in its last build stage, TCP only; variables, ranges, UDP and anything odd are listed in the plan and left out. Like any port, each is forwarded to the same number on `127.0.0.1` only if you approve it. The generated file is shown in the plan and covered by its approval. It lands at `/work/compose.yaml` in the sandbox, so a project that brings its own Compose file uses that instead.
+- **A project with a `Dockerfile` at its root and no Compose file.** The daemon writes a one-service Compose file for it: a service named `app`, built from the project with that Dockerfile, with no volumes and no extra privileges. Ports come from the Dockerfile's `EXPOSE` lines in its last build stage, TCP only; variables, ranges, UDP and anything odd are listed in the plan and left out. Like any port, each is forwarded to `127.0.0.1` only if you approve it, on the same number unless you choose another with `ports`. The generated file is shown in the plan and covered by its approval. It lands at `/work/compose.yaml` in the sandbox, so a project that brings its own Compose file uses that instead.
 
 Dev containers and package manifests are recognized by `check` but refused by `up`. This has not yet run on a real VM: see `docs/NEEDS_A_VM.md`.
 

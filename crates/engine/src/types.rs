@@ -161,10 +161,21 @@ pub struct SecretRule {
     pub hosts: Vec<String>,
 }
 
-/// A published port. There is deliberately no bind address field: every port is
-/// forwarded on 127.0.0.1 and keeps the same number on both sides.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HostPort(pub u16);
+/// A forward from the host's `127.0.0.1:host` to the guest's port `guest`.
+/// There is deliberately no bind address field: every port is forwarded on
+/// 127.0.0.1 only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PortForward {
+    pub host: u16,
+    pub guest: u16,
+}
+
+impl PortForward {
+    /// The same number on both sides.
+    pub fn same(port: u16) -> Self {
+        Self { host: port, guest: port }
+    }
+}
 
 /// Everything needed to create a sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,7 +185,12 @@ pub struct CreateSpec {
     pub resources: Resources,
     pub network: NetworkPolicy,
     pub secrets: Vec<SecretRule>,
-    pub ports: Vec<HostPort>,
+    pub ports: Vec<PortForward>,
+    /// Guest ports let in from the host's loopback, under a closed network.
+    /// Every forwarded guest port is let in whether listed or not. Listing the
+    /// others lets a port be forwarded later, since the engine cannot add this
+    /// rule to a sandbox that exists.
+    pub ingress_ports: Vec<u16>,
     /// A disk kept from an earlier sandbox, mounted at [`crate::argv::PREVIOUS_DISK`]
     /// so its data can be copied in. It must stay in place for the sandbox's life.
     pub previous_disk: Option<std::path::PathBuf>,

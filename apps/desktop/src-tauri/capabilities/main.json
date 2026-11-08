@@ -31,6 +31,8 @@
     "allow-open-in-vscode",
     "allow-problems",
     "allow-resource-choices",
-    "allow-set-resources"
+    "allow-set-resources",
+    "allow-port-choices",
+    "allow-set-port"
   ]
 }

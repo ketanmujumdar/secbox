@@ -153,6 +153,8 @@ mod tests {
             service: service.to_owned(),
             host_port,
             container_port,
+            mac_port: 0,
+            chosen: None,
             was_all_interfaces: false,
             dynamic: false,
         }

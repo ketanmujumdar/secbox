@@ -506,6 +506,26 @@ async fn set_resources(
     blocking(move || ops::set_resources(&state.client, &project, choice).map_err(message)).await
 }
 
+/// The ports this project publishes, and which are open on which number.
+#[tauri::command]
+async fn port_choices(project: String, state: State<'_, Arc<AppState>>) -> Result<proto::PortChoicesReport, String> {
+    let state = Arc::clone(&state);
+    blocking(move || ops::port_choices(&state.client, &project).map_err(message)).await
+}
+
+/// Keeps a person's choice for one port, for this project's next start.
+#[tauri::command]
+async fn set_port(
+    project: String,
+    port: u16,
+    open: bool,
+    mac_port: Option<u16>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<proto::PortChoicesReport, String> {
+    let state = Arc::clone(&state);
+    blocking(move || ops::set_port(&state.client, &project, port, open, mac_port).map_err(message)).await
+}
+
 /// The env files that could be used for this project's secrets.
 #[tauri::command]
 async fn secret_files(project: String, state: State<'_, Arc<AppState>>) -> Result<proto::SecretFilesReport, String> {
@@ -838,6 +858,8 @@ pub fn run() {
             problems,
             resource_choices,
             set_resources,
+            port_choices,
+            set_port,
         ])
         .build(tauri::generate_context!())
         .expect("the app could not start");

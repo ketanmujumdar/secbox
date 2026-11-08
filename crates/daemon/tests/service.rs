@@ -300,6 +300,7 @@ fn starting_follows_the_sequence_the_engine_spike_found_works() {
             FakeCall::KeepRootDisk(..) => "keep-disk",
             FakeCall::Status(_) => "status",
             FakeCall::Resize(..) => "resize",
+            FakeCall::SetPorts(..) => "set-ports",
             FakeCall::Metrics(_) => "metrics",
             FakeCall::Exec(..) => "exec",
             FakeCall::ExecStream(..) => "exec-stream",
@@ -319,7 +320,7 @@ fn starting_follows_the_sequence_the_engine_spike_found_works() {
     let FakeCall::Create(spec) = &calls[1] else {
         panic!("expected a create")
     };
-    assert_eq!(spec.ports, vec![engine::HostPort(3000)]);
+    assert_eq!(spec.ports, vec![engine::PortForward::same(3000)]);
     assert_eq!(spec.image, "docker:dind");
 }
 
@@ -410,19 +411,151 @@ fn an_approval_for_a_plan_that_has_since_changed_is_refused() {
     assert!(error.message.contains("changed"));
 }
 
-/// Ports are fixed at creation, so approving more later must not claim success.
+/// A running sandbox keeps its ports, so approving more must not claim success.
 #[test]
-fn changing_the_ports_of_an_existing_sandbox_is_refused_and_not_reported_as_done() {
+fn changing_the_ports_of_a_running_sandbox_is_refused_and_not_reported_as_done() {
     let f = fixture();
     f.up(vec![]).unwrap();
     let wanted = f.plan().ports[0].host_port;
     let error = f.up(vec![wanted]).unwrap_err();
     assert_eq!(error.code, ErrorCode::WrongState);
-    assert!(error.message.contains("down --destroy"), "{}", error.message);
+    assert!(error.message.contains("Stop it, then start it again"), "{}", error.message);
     let audit = std::fs::read_to_string(f.service.audit().path()).unwrap();
     assert!(!audit.contains("port_forwarded"), "{audit}");
     // The same ports again is an ordinary restart.
     f.up(vec![]).unwrap();
+}
+
+fn set_port(f: &Fixture, port: u16, open: bool, mac_port: Option<u16>) -> Result<proto::PortChoicesReport, proto::ApiError> {
+    match f.call(Request::SetPort(proto::SetPortArgs {
+        project: f.path(),
+        port,
+        open,
+        mac_port,
+    }))? {
+        Reply::SetPort(report) => Ok(report),
+        other => panic!("{other:?}"),
+    }
+}
+
+fn set_ports_calls(f: &Fixture) -> Vec<(Vec<engine::PortForward>, Vec<engine::PortForward>)> {
+    f.deps
+        .engine
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            FakeCall::SetPorts(_, remove, add) => Some((remove, add)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A number nothing on this Mac is listening on.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+fn record_path(f: &Fixture) -> std::path::PathBuf {
+    let projects = f._state.path().join(brand::STATE_DIR).join("projects");
+    std::fs::read_dir(projects).unwrap().flatten().next().unwrap().path().join("sandbox.json")
+}
+
+#[test]
+fn a_stopped_sandbox_opens_a_port_when_it_starts_again() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    stop(&f);
+    let report = f.up(vec![8080]).unwrap();
+    assert_eq!(report.ports, vec![8080]);
+    let calls = f.deps.engine.calls();
+    let set = calls.iter().position(|c| matches!(c, FakeCall::SetPorts(..))).unwrap();
+    let start = calls.iter().rposition(|c| matches!(c, FakeCall::Start(_))).unwrap();
+    assert!(set < start, "the ports have to change before it boots");
+    assert_eq!(set_ports_calls(&f), [(vec![], vec![engine::PortForward::same(8080)])]);
+    assert_eq!(status(&f).ports, vec![8080]);
+    let audit = audit_log(&f);
+    assert!(audit.contains("\"port_opened\""), "{audit}");
+
+    // Closing it again needs no new rule.
+    stop(&f);
+    f.up(vec![]).unwrap();
+    assert_eq!(set_ports_calls(&f)[1], (vec![engine::PortForward::same(8080)], vec![]));
+    assert!(audit_log(&f).contains("\"port_closed\""));
+}
+
+#[test]
+fn a_port_moved_to_another_number_is_forwarded_there_after_a_restart() {
+    let f = fixture_asking(true);
+    f.up(vec![3000]).unwrap();
+    let mac = free_port();
+
+    let report = set_port(&f, 3000, true, Some(mac)).unwrap();
+    assert!(set_ports_calls(&f).is_empty(), "choosing alone must change no sandbox");
+    assert!(report.restart_needed);
+    let web = report.ports.iter().find(|p| p.port == 3000).unwrap();
+    assert_eq!((web.mac_port, web.open, web.open_now), (mac, true, Some(3000)));
+
+    let plan = f.plan();
+    let shown = plan.ports.iter().find(|p| p.host_port == 3000).unwrap();
+    assert_eq!((shown.mac_port, shown.chosen), (mac, Some(true)));
+
+    stop(&f);
+    let up = f.up(vec![3000]).unwrap();
+    assert_eq!(up.ports, vec![mac]);
+    assert_eq!(
+        set_ports_calls(&f),
+        [(vec![engine::PortForward::same(3000)], vec![engine::PortForward { host: mac, guest: 3000 }])]
+    );
+    // The prompt names the new number and what it reaches.
+    let asked = f.deps.asked.lock().unwrap().last().cloned().unwrap();
+    assert!(asked.contains(&format!("opening port {mac} (web:3000)")), "{asked}");
+    assert_eq!(status(&f).ports, vec![mac]);
+    let audit = audit_log(&f);
+    assert!(audit.contains("\"port_chosen\"") && audit.contains("\"port_moved\""), "{audit}");
+}
+
+#[test]
+fn a_new_sandbox_lets_in_every_planned_port_so_any_can_open_later() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    let spec = create_spec(&f);
+    assert!(spec.ports.is_empty());
+    assert_eq!(spec.ingress_ports, vec![3000, 8080]);
+}
+
+#[test]
+fn a_sandbox_from_before_ports_could_change_cannot_open_new_ones() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    stop(&f);
+    // What a record written by an older version looks like.
+    let path = record_path(&f);
+    let mut record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    record.as_object_mut().unwrap().remove("ingress_ports");
+    std::fs::write(&path, record.to_string()).unwrap();
+
+    let error = f.up(vec![8080]).unwrap_err();
+    assert_eq!(error.code, ErrorCode::WrongState);
+    assert!(error.message.contains("down --destroy"), "{}", error.message);
+    assert!(set_ports_calls(&f).is_empty());
+    let error = set_port(&f, 8080, true, None).unwrap_err();
+    assert!(error.message.contains("made before ports could change"), "{}", error.message);
+}
+
+#[test]
+fn port_choices_refuse_what_cannot_be_used() {
+    let f = fixture();
+    let error = set_port(&f, 9999, true, None).unwrap_err();
+    assert!(error.message.contains("not one this project publishes"), "{}", error.message);
+    let error = set_port(&f, 3000, true, Some(80)).unwrap_err();
+    assert!(error.message.contains("below 1024"), "{}", error.message);
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let busy = held.local_addr().unwrap().port();
+    let error = set_port(&f, 3000, true, Some(busy)).unwrap_err();
+    assert!(error.message.contains("in use on this Mac"), "{}", error.message);
+    // Closing a port is always allowed.
+    let report = set_port(&f, 8080, false, None).unwrap();
+    assert!(!report.ports.iter().find(|p| p.port == 8080).unwrap().open);
 }
 
 fn choose(f: &Fixture, choice: proto::ResourceChoice) -> Result<proto::ResourceChoicesReport, proto::ApiError> {
@@ -2097,7 +2230,7 @@ fn a_dockerfile_project_starts_and_its_ports_need_approval() {
     let f = dockerfile_fixture();
     let report = f.up(vec![8080]).unwrap();
     assert_eq!(report.ports, vec![8080]);
-    assert_eq!(create_spec(&f).ports, vec![engine::HostPort(8080)]);
+    assert_eq!(create_spec(&f).ports, vec![engine::PortForward::same(8080)]);
 }
 
 #[test]
@@ -3306,7 +3439,7 @@ fn a_port_published_on_the_guests_loopback_is_republished_where_the_forward_arri
     assert_eq!(report.ports, vec![8080]);
     // The host side is unchanged: one port, which the engine binds on the
     // host's 127.0.0.1 only.
-    assert_eq!(create_spec(&f).ports, vec![engine::HostPort(8080)]);
+    assert_eq!(create_spec(&f).ports, vec![engine::PortForward::same(8080)]);
 
     // Inside the guest the port is published with no address, so on every
     // interface, including the one the forward reaches. The project's
@@ -3341,7 +3474,7 @@ fn a_port_that_was_not_approved_is_not_published_even_inside_the_guest() {
 fn only_the_approved_ports_of_a_dockerfile_project_are_published_inside_the_guest() {
     let f = dockerfile_fixture();
     f.up(vec![8080]).unwrap();
-    assert_eq!(create_spec(&f).ports, vec![engine::HostPort(8080)]);
+    assert_eq!(create_spec(&f).ports, vec![engine::PortForward::same(8080)]);
     let yaml = ports_override(&f).expect("the ports override was written");
     assert!(yaml.contains("\"app\":\n    ports: !override\n"), "{yaml}");
     assert!(yaml.contains("published: \"8080\""), "{yaml}");

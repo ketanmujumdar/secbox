@@ -11,7 +11,7 @@ use crate::process;
 use crate::redact::{Chain, LiteralRedactor, NoRedaction, Redactor};
 use crate::types::{
     CreateSpec, EngineLocation, ExecOutput, ExecRequest, GuestPath, LogOptions, OutputSink,
-    ResizeSpec, SandboxMetrics, SandboxName, SandboxStatus, StreamEnd,
+    PortForward, ResizeSpec, SandboxMetrics, SandboxName, SandboxStatus, StreamEnd,
 };
 use crate::Engine;
 
@@ -562,6 +562,14 @@ impl Engine for MsbEngine {
 
     fn resize(&self, name: &SandboxName, spec: &ResizeSpec) -> Result<()> {
         let done = self.run("msb modify", &argv::resize(name, spec), LIFECYCLE_TIMEOUT)?;
+        check_resize(&self.expect_success("msb modify", Some(name), done)?)
+    }
+
+    fn set_ports(&self, name: &SandboxName, remove: &[PortForward], add: &[PortForward]) -> Result<()> {
+        if remove.is_empty() && add.is_empty() {
+            return Ok(());
+        }
+        let done = self.run("msb modify", &argv::set_ports(name, remove, add)?, LIFECYCLE_TIMEOUT)?;
         check_resize(&self.expect_success("msb modify", Some(name), done)?)
     }
 
@@ -1241,6 +1249,7 @@ mod tests {
             network: NetworkPolicy::DenyAll,
             secrets: vec![],
             ports: vec![],
+            ingress_ports: vec![],
             previous_disk: None,
         }
     }

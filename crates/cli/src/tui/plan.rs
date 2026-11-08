@@ -50,7 +50,7 @@ pub fn start_lines(plan: &PlanReport) -> Vec<Line> {
             };
             lines.push(Line::plain(format!(
                 "  127.0.0.1:{}  {}{guess}",
-                port.host_port,
+                port.on_mac(),
                 esc(&port.service)
             )));
         }
@@ -207,6 +207,8 @@ mod tests {
                 service: "web".to_owned(),
                 host_port: 3000,
                 container_port: 3000,
+                mac_port: 3000,
+                chosen: None,
                 was_all_interfaces: true,
                 dynamic: false,
             }],

@@ -5,8 +5,8 @@
 use std::path::Path;
 
 use crate::error::{EngineError, Result};
-use crate::types::{ResizeSpec, 
-    CreateSpec, ExecRequest, GuestPath, LogOptions, NetworkPolicy, SandboxName, TlsMode,
+use crate::types::{
+    CreateSpec, ExecRequest, GuestPath, LogOptions, NetworkPolicy, PortForward, ResizeSpec, SandboxName, TlsMode,
 };
 
 fn strings<const N: usize>(items: [&str; N]) -> Vec<String> {
@@ -160,19 +160,24 @@ pub fn create(spec: &CreateSpec) -> Result<Vec<String>> {
         args.push(format!("{disk}:{PREVIOUS_DISK}"));
     }
     for port in &spec.ports {
-        if port.0 == 0 {
-            return Err(EngineError::InvalidInput {
-                field: "port",
-                reason: "must not be zero".to_owned(),
-            });
-        }
+        validate_forward(port)?;
         args.push("--port".to_owned());
-        args.push(format!("127.0.0.1:{0}:{0}", port.0));
-        // --no-net denies inbound traffic too, which resets connections to a
-        // published port. Open only that port, and only from the host's loopback.
-        if !matches!(spec.network, NetworkPolicy::PublicInternet) {
+        args.push(forward(port));
+    }
+    // --no-net denies inbound traffic too, which resets connections to a
+    // published port. Open only those ports, and only from the host's loopback.
+    // A guest port with no forward cannot be reached from the host at all: the
+    // guest's network is not routed from the host's.
+    if !matches!(spec.network, NetworkPolicy::PublicInternet) {
+        let mut ingress: Vec<u16> = spec.ports.iter().map(|p| p.guest).chain(spec.ingress_ports.iter().copied()).collect();
+        ingress.sort_unstable();
+        ingress.dedup();
+        for port in ingress {
+            if port == 0 {
+                return Err(zero_port());
+            }
             args.push("--net-rule".to_owned());
-            args.push(format!("allow:ingress@127.0.0.1/32:tcp:{}", port.0));
+            args.push(format!("allow:ingress@127.0.0.1/32:tcp:{port}"));
         }
     }
     args.push(spec.image.clone());
@@ -204,6 +209,41 @@ pub fn resize(name: &SandboxName, spec: &ResizeSpec) -> Vec<String> {
     }
     args.extend(["--format".to_owned(), "json".to_owned()]);
     args
+}
+
+fn zero_port() -> EngineError {
+    EngineError::InvalidInput {
+        field: "port",
+        reason: "must not be zero".to_owned(),
+    }
+}
+
+fn validate_forward(port: &PortForward) -> Result<()> {
+    if port.host == 0 || port.guest == 0 {
+        return Err(zero_port());
+    }
+    Ok(())
+}
+
+fn forward(port: &PortForward) -> String {
+    format!("127.0.0.1:{}:{}", port.host, port.guest)
+}
+
+/// Removes and adds port forwards on a stopped sandbox, for its next start.
+pub fn set_ports(name: &SandboxName, remove: &[PortForward], add: &[PortForward]) -> Result<Vec<String>> {
+    let mut args = vec!["modify".to_owned(), name.as_str().to_owned()];
+    for port in remove {
+        validate_forward(port)?;
+        args.push("--port-rm".to_owned());
+        args.push(format!("127.0.0.1:{}", port.host));
+    }
+    for port in add {
+        validate_forward(port)?;
+        args.push("--port".to_owned());
+        args.push(forward(port));
+    }
+    args.extend(["--format".to_owned(), "json".to_owned()]);
+    Ok(args)
 }
 
 pub fn metrics(name: &SandboxName) -> Vec<String> {
@@ -342,7 +382,7 @@ pub fn logs(name: &SandboxName, options: &LogOptions) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{HostPort, Resources, SecretRule};
+    use crate::types::{Resources, SecretRule};
     use std::time::Duration;
 
     fn name() -> SandboxName {
@@ -356,7 +396,8 @@ mod tests {
             resources: Resources::new(6144, 4, 30).unwrap(),
             network: NetworkPolicy::DenyAll,
             secrets: vec![],
-            ports: vec![HostPort(3000)],
+            ports: vec![PortForward::same(3000)],
+            ingress_ports: vec![],
             previous_disk: None,
         }
     }
@@ -473,7 +514,7 @@ mod tests {
     #[test]
     fn a_published_port_is_opened_only_from_loopback_under_a_closed_network() {
         let mut s = spec();
-        s.ports = vec![HostPort(3000)];
+        s.ports = vec![PortForward::same(3000)];
         for network in [
             NetworkPolicy::DenyAll,
             NetworkPolicy::AllowHosts {
@@ -607,8 +648,41 @@ mod tests {
     #[test]
     fn create_rejects_port_zero() {
         let mut s = spec();
-        s.ports = vec![HostPort(0)];
+        s.ports = vec![PortForward::same(0)];
         assert!(create(&s).is_err());
+        s.ports = vec![PortForward { host: 3000, guest: 0 }];
+        assert!(create(&s).is_err());
+        s.ports = vec![];
+        s.ingress_ports = vec![0];
+        assert!(create(&s).is_err());
+    }
+
+    #[test]
+    fn a_moved_port_forwards_the_new_host_number_to_the_same_guest_port() {
+        let mut s = spec();
+        s.ports = vec![PortForward { host: 3001, guest: 3000 }];
+        s.ingress_ports = vec![3000, 8080];
+        let args = create(&s).unwrap();
+        assert!(args.windows(2).any(|w| w[0] == "--port" && w[1] == "127.0.0.1:3001:3000"));
+        // The rule names the guest's port, once, and the unforwarded one too.
+        let rules: Vec<&String> = args.iter().filter(|a| a.starts_with("allow:ingress")).collect();
+        assert_eq!(rules, ["allow:ingress@127.0.0.1/32:tcp:3000", "allow:ingress@127.0.0.1/32:tcp:8080"]);
+        assert!(!args.iter().any(|a| a.contains("0.0.0.0")));
+    }
+
+    #[test]
+    fn set_ports_removes_by_host_number_and_adds_on_loopback() {
+        let args = set_ports(
+            &name(),
+            &[PortForward::same(3000)],
+            &[PortForward { host: 3001, guest: 3000 }],
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            ["modify", "demo", "--port-rm", "127.0.0.1:3000", "--port", "127.0.0.1:3001:3000", "--format", "json"]
+        );
+        assert!(set_ports(&name(), &[], &[PortForward { host: 0, guest: 80 }]).is_err());
     }
 
     #[test]

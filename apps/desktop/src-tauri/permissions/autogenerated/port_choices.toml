@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-port-choices"
+description = "Enables the port_choices command without any pre-configured scope."
+commands.allow = ["port_choices"]
+
+[[permission]]
+identifier = "deny-port-choices"
+description = "Denies the port_choices command without any pre-configured scope."
+commands.deny = ["port_choices"]

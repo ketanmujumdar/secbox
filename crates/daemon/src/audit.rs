@@ -35,6 +35,16 @@ pub enum Action {
     PortForwarded,
     /// A port the project asked for was not forwarded.
     PortRefused,
+    /// A person chose to open or close a port, or another number for it on
+    /// this Mac. Nothing changed in a sandbox yet.
+    PortChosen,
+    /// A stopped sandbox was given a port forward, from a start a person
+    /// approved.
+    PortOpened,
+    /// A stopped sandbox's port forward was removed.
+    PortClosed,
+    /// A stopped sandbox's port forward was moved to another number on this Mac.
+    PortMoved,
     /// A secret's value was stored from a client, and the services it goes
     /// to chosen. The name only.
     SecretStored,

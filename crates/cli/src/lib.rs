@@ -14,6 +14,7 @@ pub mod host;
 mod mcp;
 mod net;
 mod new_cmd;
+mod ports_cmd;
 mod resources;
 mod review;
 mod secret_cmd;
@@ -113,6 +114,8 @@ enum Command {
     Remove(vm::RemoveArgsCli),
     /// Show a project's sandbox
     Status(vm::StatusArgsCli),
+    /// Show a project's ports, open or close one, or move it to another number on this Mac
+    Ports(ports_cmd::PortsArgs),
     /// Show what a project's services have logged, with control codes removed
     Logs(debug::LogsArgsCli),
     /// Open a shell inside a running sandbox
@@ -206,6 +209,7 @@ where
         Command::Down(args) => vm::down(&args, deps),
         Command::Remove(args) => vm::remove(&args, deps),
         Command::Status(args) => vm::status(&args, deps),
+        Command::Ports(args) => ports_cmd::run(&args, deps),
         Command::Logs(args) => debug::logs(&args, deps),
         Command::Shell(args) => debug::shell(&args, deps),
         Command::Exec(args) => debug::exec(&args, deps),

@@ -28,6 +28,12 @@
 
   const resources = { memory: '6 GB', cpus: '4', disk: '30 GB', build_memory: '8 GB', clamped: false };
   let limitChoice = { memory_bytes: null, millicpus: null, disk_bytes: null };
+  // The ports a person chose, by the number the project publishes.
+  const portChoice = {
+    3000: { open: true, mac: 3001 },
+    8080: { open: true, mac: 8080 },
+    5432: { open: false, mac: 5432 },
+  };
 
   function status(path) {
     const row = projects.find((p) => p.path === path) || { state: 'none', label: 'No sandbox' };
@@ -76,9 +82,9 @@
     services: ['web', 'api', 'worker', 'postgres'],
     commit: '4f2c1a9e0b7d5c3a2f1e0d9c8b7a6f5e4d3c2b1a',
     ports: [
-      { service: 'web', host_port: 3000, container_port: 3000, note: 'Asked for every interface; forwarded on 127.0.0.1 only.' },
-      { service: 'api', host_port: 8080, container_port: 8080, note: null },
-      { service: 'postgres', host_port: 5432, container_port: 5432, note: null },
+      { service: 'web', host_port: 3000, mac_port: 3001, container_port: 3000, chosen: true, note: 'Asked for every interface; forwarded on 127.0.0.1 only.' },
+      { service: 'api', host_port: 8080, mac_port: 8080, container_port: 8080, chosen: true, note: null },
+      { service: 'postgres', host_port: 5432, mac_port: 5432, container_port: 5432, chosen: false, note: null },
     ],
     build_hosts: ['registry.npmjs.org', 'deb.debian.org', 'pypi.org'],
     run_hosts: ['api.stripe.com'],
@@ -329,6 +335,33 @@
           restart_needed: row.state === 'running' && differs,
           max_memory_bytes: 30 * GIB, max_millicpus: 11000, max_disk_bytes: 400 * GIB,
         };
+      }
+      case 'port_choices':
+      case 'set_port': {
+        if (args.port !== undefined) {
+          if (args.macPort !== null && args.macPort !== undefined && args.macPort < 1024) {
+            throw 'port ' + args.macPort + ' is below 1024, and those are kept for the system. Choose 1024 or above.';
+          }
+          const c = portChoice[args.port];
+          c.open = args.open;
+          if (args.macPort) c.mac = args.macPort;
+        }
+        const row = projects.find((p) => p.path === args.project) || { state: 'none' };
+        const running = row.state === 'running';
+        const nowOpen = { 3000: 3000, 8080: 8080 };
+        const ports = [
+          { service: 'web', container_port: 3000, port: 3000 },
+          { service: 'api', container_port: 8080, port: 8080 },
+          { service: 'postgres', container_port: 5432, port: 5432 },
+        ].map((p) => ({
+          ...p,
+          mac_port: portChoice[p.port].mac,
+          open: portChoice[p.port].open,
+          open_now: running ? (nowOpen[p.port] || null) : null,
+          cannot_open: null,
+        }));
+        const restart = running && ports.some((p) => (p.open ? p.mac_port : null) !== p.open_now);
+        return { project_id: 'p', ports, problem: null, restart_needed: restart };
       }
       case 'secrets':
         return { rows: JSON.parse(JSON.stringify(secretRows)), services: secretServices.slice(), note: null };
