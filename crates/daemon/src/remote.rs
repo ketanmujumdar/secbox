@@ -77,7 +77,37 @@ pub fn fetch(service: &Service, args: &FetchArgs, progress: &mut dyn Progress) -
     let remote_dir = service.state_dir().join("remote");
     hoststate::ensure_private_dir(&remote_dir).map_err(internal)?;
     let base = remote_dir.join(folder_key(&args.url));
+    let made_here = fs::symlink_metadata(&base).is_err();
     hoststate::ensure_private_dir(&base).map_err(internal)?;
+    let result = fetch_into(service, args, &git_ref, agent.as_deref(), &base, progress);
+    if let Err(error) = &result {
+        // A folder this fetch made, and nothing else, is taken away again, so
+        // a failed first fetch leaves no empty mirror behind. One that was
+        // here before may hold a project and its sandbox's record.
+        if made_here {
+            let _ = fs::remove_dir_all(&base);
+        }
+        // Asking about a remote that was never fetched is not a failure.
+        if error.code != proto::ErrorCode::NotFound {
+            service.record(
+                audit::entry(service.deps().now_unix(), audit::Action::RemoteFetchFailed)
+                    .subject(&args.url)
+                    .detail(hint(&error.message, &args.url).unwrap_or_else(|| error.message.clone())),
+            );
+        }
+    }
+    result
+}
+
+fn fetch_into(
+    service: &Service,
+    args: &FetchArgs,
+    git_ref: &str,
+    agent: Option<&Path>,
+    base: &Path,
+    progress: &mut dyn Progress,
+) -> Result<FetchReport, ApiError> {
+    let git_ref = git_ref.to_owned();
     let root = base.join(repo_name(&args.url));
     let mirror = base.join(MIRROR);
 
@@ -108,8 +138,8 @@ pub fn fetch(service: &Service, args: &FetchArgs, progress: &mut dyn Progress) -
     progress.step("fetch", Some(&format!("{} {}", args.url, git_ref)));
     let commit = service
         .deps()
-        .fetch_remote(&mirror, &args.url, &git_ref, agent.as_deref())
-        .map_err(|reason| refused(explain(&reason)))?;
+        .fetch_remote(&mirror, &args.url, &git_ref, agent)
+        .map_err(|reason| refused(explain(&reason, &args.url)))?;
     if !gitref::is_commit_id(&commit) {
         return Err(internal("the fetch did not name a commit"));
     }
@@ -263,39 +293,76 @@ fn repo_name(url: &str) -> String {
     }
 }
 
-/// `ssh`'s own words plus what to do, for a relay.
-pub fn explain_ssh(reason: &str) -> String {
-    explain(reason).trim_start_matches("the fetch failed: ").to_owned()
+/// `ssh`'s own words plus what to do, for a relay to `url`.
+pub fn explain_ssh(reason: &str, url: &str) -> String {
+    match hint(reason, url) {
+        Some(hint) => format!("{}\n{hint}", reason.trim_end()),
+        None => reason.to_owned(),
+    }
 }
 
 /// Adds what to do about the failures people actually hit. `ssh`'s own words
-/// stay first, already escaped by the broker.
-fn explain(reason: &str) -> String {
-    let mut text = format!("the fetch failed: {reason}");
-    let hint = if reason.contains("Host key verification failed") {
-        Some(
-            "The host's key is not in your known_hosts. Check it and add it by connecting once yourself, for example: ssh -T git@github.com",
-        )
-    } else if reason.contains("agent refused") || reason.contains("sign_and_send_pubkey") {
-        Some(
-            "Your SSH agent did not sign. If it asks for approval, as 1Password does, approve the request and try again.",
-        )
-    } else if reason.contains("Permission denied") || reason.contains("publickey") {
-        Some(
-            "No key was accepted. Load yours into your SSH agent with ssh-add, or unlock 1Password, then try again. A key with a passphrase works only through an agent, because nothing can ask for it.",
-        )
-    } else if reason.contains("Could not resolve hostname") || reason.contains("Connection timed out") {
-        Some("The host could not be reached from this machine.")
-    } else if reason.contains("not our ref") || reason.contains("couldn't find remote ref") {
-        Some("The remote has no branch, tag or commit by that name.")
-    } else {
-        None
-    };
-    if let Some(hint) = hint {
-        text.push('\n');
-        text.push_str(hint);
+/// stay first, already escaped by the broker and on one line, and the hint
+/// follows on the same line, because a client escapes a line break in an
+/// error rather than starting a new line.
+fn explain(reason: &str, url: &str) -> String {
+    // "git fetch failed (exit code 128): " says nothing the start does not.
+    let words = reason
+        .strip_prefix("git fetch failed")
+        .and_then(|rest| rest.split_once(": "))
+        .map_or(reason, |(_, words)| words)
+        .trim_end();
+    let mut text = format!("the fetch failed: {words}");
+    if let Some(hint) = hint(reason, url) {
+        if !text.ends_with('.') {
+            text.push('.');
+        }
+        text.push(' ');
+        text.push_str(&hint);
     }
     text
+}
+
+/// What to do about a failure people actually hit, if it is one of those.
+fn hint(reason: &str, url: &str) -> Option<String> {
+    if reason.contains("Host key verification failed") || reason.contains("host key is known") {
+        return Some(format!(
+            "The host's key is not in your known_hosts. Check it and add it by connecting once yourself: ssh -T {}",
+            ssh_target(url)
+        ));
+    }
+    let hint = if reason.contains("agent refused") || reason.contains("sign_and_send_pubkey") {
+        "Your SSH agent did not sign. If it asks for approval, as 1Password does, approve the request and try again."
+    } else if reason.contains("Permission denied") || reason.contains("publickey") {
+        "No key was accepted. Load yours into your SSH agent with ssh-add, or unlock 1Password, then try again. A key with a passphrase works only through an agent, because nothing can ask for it."
+    } else if reason.contains("Could not resolve hostname") || reason.contains("Connection timed out") {
+        "The host could not be reached from this machine."
+    } else if reason.contains("not our ref") || reason.contains("couldn't find remote ref") {
+        "The remote has no branch, tag or commit by that name."
+    } else {
+        return None;
+    };
+    Some(hint.to_owned())
+}
+
+/// What to give `ssh` to reach a remote's host as its user: `git@codeberg.org`,
+/// or `-p 2222 git@host.example` for an `ssh://` URL with a port.
+fn ssh_target(url: &str) -> String {
+    let rest = url.strip_prefix("ssh://").unwrap_or(url);
+    let authority = if url.starts_with("ssh://") {
+        rest.split('/').next().unwrap_or("")
+    } else {
+        rest.split(':').next().unwrap_or("")
+    };
+    let (user_host, port) = match authority.rsplit_once(':') {
+        Some((user_host, port)) if url.starts_with("ssh://") => (user_host, Some(port)),
+        _ => (authority, None),
+    };
+    let shown = proto::text::escape_short(user_host, 200);
+    match port {
+        Some(port) => format!("-p {} {shown}", proto::text::escape_short(port, 5)),
+        None => shown,
+    }
 }
 
 #[cfg(test)]
@@ -323,9 +390,30 @@ mod tests {
 
     #[test]
     fn common_failures_say_what_to_do() {
-        assert!(explain("Host key verification failed.").contains("known_hosts"));
-        assert!(explain("git@github.com: Permission denied (publickey).").contains("ssh-add"));
-        assert!(!explain("something else").contains('\n'));
+        let url = "git@github.com:org/repo.git";
+        assert!(explain("Host key verification failed.", url).contains("known_hosts"));
+        assert!(explain("git@github.com: Permission denied (publickey).", url).contains("ssh-add"));
+        assert!(!explain("something else", url).contains('\n'));
+    }
+
+    /// As seen on a Mac with a host missing from known_hosts: one plain line,
+    /// no Rust formatting, and the example names the host that was asked for.
+    #[test]
+    fn an_unknown_host_reads_as_one_line_naming_that_host() {
+        let reason = "git fetch failed (exit code 128): No ED25519 host key is known for codeberg.org and you have requested strict checking. Host key verification failed. fatal: Could not read from remote repository.";
+        let text = explain(reason, "git@codeberg.org:acme/does-not-exist.git");
+        assert!(text.starts_with("the fetch failed: No ED25519 host key"), "{text}");
+        assert!(text.ends_with("ssh -T git@codeberg.org"), "{text}");
+        assert!(!text.contains('\n') && !text.contains("Some(") && !text.contains("exit code"), "{text}");
+        assert!(!text.contains("github"), "{text}");
+    }
+
+    #[test]
+    fn the_ssh_example_keeps_the_user_and_port() {
+        assert_eq!(ssh_target("git@codeberg.org:org/repo.git"), "git@codeberg.org");
+        assert_eq!(ssh_target("ssh://git@host.example:2222/srv/x.git"), "-p 2222 git@host.example");
+        assert_eq!(ssh_target("ssh://host.example/srv/x.git"), "host.example");
+        assert_eq!(ssh_target("host:repo"), "host");
     }
 
     #[test]

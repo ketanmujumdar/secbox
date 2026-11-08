@@ -66,6 +66,12 @@ pub fn build(
 ) -> Result<PlanReport, ApiError> {
     let detection = detect(&project.root)
         .map_err(|e| bad(format!("cannot read the project: {}", text::escape(&e.to_string()))))?;
+    // A plan that could never be snapshotted is not shown, so nothing is
+    // asked about it first.
+    service
+        .deps()
+        .check_source(&project.root, source)
+        .map_err(|reason| bad(text::escape(&reason)))?;
 
     let mut blockers: Vec<String> = Vec::new();
     let files = match &detection.kind {

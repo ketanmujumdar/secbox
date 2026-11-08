@@ -30,6 +30,9 @@ pub const MARKER_FILE: &str = ".state-dir-marker";
 pub const ENGINE_DIR: &str = "msb";
 const META_FILE: &str = "secrets.json";
 const AUDIT_FILE: &str = "audit.jsonl";
+/// The daemon's own record of what it did and refused, one JSON entry a line.
+/// The daemon writes it; a client on this machine may read it.
+pub const DAEMON_AUDIT_FILE: &str = "daemon-audit.jsonl";
 const PROJECTS_DIR: &str = "projects";
 const MAX_META_BYTES: u64 = 1024 * 1024;
 const META_VERSION: u32 = 1;
@@ -81,6 +84,10 @@ impl StatePaths {
 
     pub fn project(&self, id: &ProjectId) -> PathBuf {
         self.projects().join(id.as_str())
+    }
+
+    pub fn daemon_audit(&self) -> PathBuf {
+        self.state.join(DAEMON_AUDIT_FILE)
     }
 }
 

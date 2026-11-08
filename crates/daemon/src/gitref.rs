@@ -20,7 +20,7 @@ const MAX_PACKED_REFS: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RefError {
-    #[error("this project is not a git repository, so there is no commit to snapshot")]
+    #[error("this folder is not the top folder of a Git repository, so there is no commit to snapshot. Start the repository's top folder, or copy this folder into a repository of its own and commit")]
     NotARepository,
     #[error("this repository has no commits yet")]
     NoCommits,
@@ -84,6 +84,25 @@ pub fn head_commit(root: &Path) -> Result<String, RefError> {
         return Err(RefError::Unsupported);
     };
     resolve_ref(&dir, name)
+}
+
+/// Whether a snapshot of `source` can be taken from `root` at all, checked
+/// when the plan is made, so `up` stops there and not after a prompt. Only a
+/// repository's top folder has a `.git`, so a folder inside one is refused.
+pub fn check_source(root: &Path, source: &proto::Source) -> Result<(), String> {
+    match source {
+        proto::Source::Commit { revision } if revision == "HEAD" => {
+            head_commit(root).map(drop).map_err(|e| e.to_string())
+        }
+        proto::Source::Commit { revision } if is_commit_id(revision) => match git_dir(root) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        },
+        proto::Source::Commit { .. } => Err("name a commit by its full id, or use HEAD".to_owned()),
+        proto::Source::WorkingTree => Err(
+            "including uncommitted changes is not built yet: commit first, or start from HEAD".to_owned(),
+        ),
+    }
 }
 
 /// Follows one ref name to a commit id: its own file first, then the packed
@@ -225,6 +244,23 @@ mod tests {
     fn a_project_with_no_repository_says_so() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(head_commit(dir.path()), Err(RefError::NotARepository));
+    }
+
+    /// `up tests/fixtures/x` from inside a clone used to ask about ports and
+    /// for Touch ID before this came up.
+    #[test]
+    fn a_folder_inside_a_repository_is_refused_at_the_plan() {
+        let dir = repo();
+        std::fs::write(dir.path().join(".git/HEAD"), format!("{ID}\n")).unwrap();
+        let inner = dir.path().join("tests/fixture");
+        std::fs::create_dir_all(&inner).unwrap();
+        let head = proto::Source::Commit { revision: "HEAD".to_owned() };
+        assert_eq!(check_source(dir.path(), &head), Ok(()));
+        let refused = check_source(&inner, &head).unwrap_err();
+        assert!(refused.contains("top folder of a Git repository"), "{refused}");
+        let by_id = proto::Source::Commit { revision: ID.to_owned() };
+        assert!(check_source(&inner, &by_id).is_err());
+        assert_eq!(check_source(dir.path(), &by_id), Ok(()));
     }
 
     #[test]
