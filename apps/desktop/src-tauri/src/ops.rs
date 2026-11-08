@@ -862,6 +862,8 @@ pub struct BlockedRow {
     pub time: String,
     pub count: u64,
     pub domain: String,
+    /// Approved since, so the sandbox as it is now may reach it.
+    pub allowed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -950,6 +952,7 @@ pub fn blocked_view(report: &BlockedReport) -> BlockedView {
                     time: text::escape(&short_time(&e.time)),
                     count: e.count,
                     domain: text::escape(&e.domain),
+                    allowed: e.allowed,
                 })
                 .collect()
         } else {

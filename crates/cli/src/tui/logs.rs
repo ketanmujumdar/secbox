@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use proto::text::{self, TerminalFilter};
-use proto::{check_service_name, LogsArgs, ProjectArgs, Reply, Request, SandboxState, StatusReport};
+use proto::{check_service_name, LogsArgs, PortChoicesReport, ProjectArgs, Reply, Request, SandboxState, StatusReport};
 
 use super::screen::cut;
 use super::style::Style;
@@ -30,6 +30,23 @@ const KEPT_LINE_CHARS: usize = 1000;
 /// fast as it can still leaves the interface time to read a key.
 const TAKEN_PER_TURN: usize = 64;
 const TAB: &str = "    ";
+
+/// The ports a project publishes, and which are open now and from the next start.
+pub fn port_choices(client: &dyn DaemonClient, path: &str) -> Result<PortChoicesReport, CallError> {
+    match client.stream(
+        Request::PortChoices(ProjectArgs {
+            project: path.to_owned(),
+        }),
+        &mut |_, _| true,
+        Some(STATUS_LIMIT),
+    ) {
+        Ok(Reply::PortChoices(report)) => Ok(report),
+        Ok(_) => Err(CallError::Transport(
+            "the daemon answered something else".to_owned(),
+        )),
+        Err(error) => Err(error),
+    }
+}
 
 pub fn status(client: &dyn DaemonClient, path: &str) -> Result<StatusReport, CallError> {
     match client.stream(

@@ -144,17 +144,22 @@ mod platform {
 
     fn describe(error: &NSError) -> String {
         let code = error.code();
+        // Known codes are said in words only. The number is kept for the rest,
+        // where the system's own text may not be enough to look it up.
         let words = match code {
-            -1 => "the fingerprint or password was not accepted".to_owned(),
-            -2 => "you cancelled".to_owned(),
-            -4 => "the system cancelled the prompt".to_owned(),
-            -5 => "this Mac has no login password set".to_owned(),
-            -8 => "Touch ID is locked: unlock the Mac with its password first".to_owned(),
-            -9 | -10 => "the prompt was withdrawn".to_owned(),
-            -1004 => "there is no screen to ask on, such as over SSH".to_owned(),
-            _ => error.localizedDescription().to_string(),
+            -1 => "the fingerprint or password was not accepted",
+            -2 => "you cancelled",
+            -4 => "the system cancelled the prompt",
+            -5 => "this Mac has no login password set",
+            -8 => "Touch ID is locked: unlock the Mac with its password first",
+            -9 | -10 => "the prompt was withdrawn",
+            -1004 => "there is no screen to ask on, such as over SSH",
+            _ => {
+                let system = error.localizedDescription().to_string();
+                return super::clean_reason(&format!("{system} (LocalAuthentication {code})"));
+            }
         };
-        super::clean_reason(&format!("{words} (LocalAuthentication {code})"))
+        super::clean_reason(words)
     }
 }
 

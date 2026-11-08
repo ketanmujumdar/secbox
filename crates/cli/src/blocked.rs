@@ -123,10 +123,11 @@ pub(crate) fn unlisted_note(count: u64) -> String {
 /// One event as a line of text, the same everywhere it is shown.
 pub(crate) fn row(event: &BlockedEvent) -> String {
     format!(
-        "{}  {:>7}  {}",
+        "{}  {:>7}  {}{}",
         esc(&short_time(&event.time)),
         event.count,
-        esc(&event.domain)
+        esc(&event.domain),
+        if event.allowed { "  (approved since)" } else { "" }
     )
 }
 
@@ -372,9 +373,22 @@ mod tests {
             time: "2026-11-05T07:50:52.406636Z".to_owned(),
             domain: "a\u{1b}[2J.example.net".to_owned(),
             count: 12,
+            allowed: false,
         });
         assert!(line.starts_with("2026-11-05 07:50:52 "), "{line}");
         assert!(line.contains("  12  "), "{line}");
         assert!(!line.contains('\u{1b}'), "{line}");
+        assert!(!line.contains("approved"), "{line}");
+    }
+
+    #[test]
+    fn a_name_approved_since_says_so() {
+        let line = row(&BlockedEvent {
+            time: "2026-11-05T07:50:52.406636Z".to_owned(),
+            domain: "example.com".to_owned(),
+            count: 2,
+            allowed: true,
+        });
+        assert!(line.ends_with("example.com  (approved since)"), "{line}");
     }
 }

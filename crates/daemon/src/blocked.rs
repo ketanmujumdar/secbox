@@ -214,6 +214,7 @@ impl Groups {
                 time,
                 domain: text::escape(&domain),
                 count,
+                allowed: false,
             })
             .collect();
         events.sort_by(|a, b| a.time.cmp(&b.time).then_with(|| a.domain.cmp(&b.domain)));
@@ -885,6 +886,13 @@ pub fn watch(service: Arc<Service>) {
 
 /// Whether a level means the engine writes these lines. Measured: `debug` does,
 /// and the default writes none of them.
+/// Whether the sandbox as it is now may reach a name it was refused before,
+/// compared as hostnames are stored: lowercase, with no trailing dot.
+fn now_allowed(domain: &str, reachable: &[String]) -> bool {
+    let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+    reachable.contains(&domain)
+}
+
 fn level_records(level: &str) -> bool {
     matches!(level, "debug" | "trace")
 }
@@ -964,7 +972,12 @@ pub fn report(
     // A thief can put a secret in the name it looks up, so the names are
     // masked like log text before they leave the daemon.
     let masker = crate::mask::Masker::for_project(service, project)?;
+    let reachable = SandboxRecord::load(&project.dir)
+        .map_err(internal)?
+        .and_then(|record| record.reachable_hosts)
+        .unwrap_or_default();
     for event in &mut events {
+        event.allowed = now_allowed(&event.domain, &reachable);
         event.domain = masker.mask_hostname(&event.domain);
     }
     Ok(BlockedReport {
@@ -1570,9 +1583,20 @@ mod tests {
             time: TIME.to_owned(),
             domain: "\\".repeat(MAX_DOMAIN_BYTES),
             count: u64::MAX,
+            allowed: true,
         };
         let bytes = serde_json::to_vec(&vec![row; MAX_EVENTS]).unwrap();
         assert!(bytes.len() < proto::MAX_FRAME_BYTES, "{}", bytes.len());
+    }
+
+    #[test]
+    fn a_name_approved_since_is_marked_allowed() {
+        let reachable = vec!["example.com".to_owned(), "registry.npmjs.org".to_owned()];
+        assert!(now_allowed("example.com", &reachable));
+        assert!(now_allowed("Example.COM.", &reachable));
+        assert!(!now_allowed("evil.example.com", &reachable));
+        assert!(!now_allowed("example.com.evil.net", &reachable));
+        assert!(!now_allowed("example.com", &[]));
     }
 
     #[test]

@@ -237,6 +237,9 @@ pub struct Overview {
     /// and something was. Shown on the Network tab. `None` is never drawn as
     /// zero, because zero would claim nothing was tried.
     pub blocked_hosts: Option<u64>,
+    /// Each port the project publishes and what it is now and from the next
+    /// start, for the Settings tab. Escaped.
+    pub port_choices: Vec<String>,
 }
 
 /// The steps of a start so far, shown in a box while it runs.
@@ -2069,6 +2072,16 @@ fn settings_body(model: &Model, row: &Row, screen: &mut Screen, at: Rect) {
     }
     say(screen, "Changes apply on the next start.", Style::WindowDim);
     say(screen, "", Style::Window);
+    say(screen, "PORTS", Style::WindowDim);
+    let ports = model.overview.as_ref().map_or(&[][..], |o| o.port_choices.as_slice());
+    if ports.is_empty() {
+        say(screen, "None published.", Style::WindowDim);
+    }
+    for line in ports {
+        say(screen, line, Style::Window);
+    }
+    say(screen, &format!("Change with: {} ports", brand::CLI_BIN), Style::WindowDim);
+    say(screen, "", Style::Window);
     say(screen, "REMOVE", Style::WindowDim);
     for line in wrap("x destroys the sandbox and everything in it. The project stays in the list.", at.w) {
         say(screen, &line, Style::Window);
@@ -3057,6 +3070,7 @@ mod tests {
         m.overview = Some(Overview {
             path: "/p/demo_shop".to_owned(),
             problem: None,
+            port_choices: vec!["3000 web    open on 127.0.0.1:3000".to_owned()],
             services: ["postgres", "api", "worker", "web"]
                 .iter()
                 .map(|name| Entry::new(*name, "healthy", Style::WindowGood))

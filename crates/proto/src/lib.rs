@@ -829,6 +829,10 @@ pub struct BlockedEvent {
     /// chose it, so it is a thing that was asked for and proves nothing else.
     pub domain: String,
     pub count: u64,
+    /// The sandbox as it is now may reach this name, because it was approved
+    /// after these refusals. They are history.
+    #[serde(default)]
+    pub allowed: bool,
 }
 
 /// Blocked hostnames only: most blocked traffic leaves no record at all.
@@ -1682,6 +1686,7 @@ mod tests {
                     time: "2026-11-05T07:50:52.406636Z".to_owned(),
                     domain: "a.example.net".to_owned(),
                     count: 2,
+                    allowed: false,
                 }],
                 total: 2,
                 cut_off: true,

@@ -157,6 +157,20 @@ fn change(
     exit::OK
 }
 
+/// What a port is now and from the next start, in that order, said once when
+/// the two are the same.
+pub(crate) fn port_state(next: Option<u16>, now: Option<u16>) -> String {
+    let at = |port: Option<u16>| port.map_or_else(|| "closed".to_owned(), |p| format!("open on 127.0.0.1:{p}"));
+    if next == now {
+        return at(next);
+    }
+    let next = match (next, now) {
+        (Some(p), Some(_)) => format!("on 127.0.0.1:{p}"),
+        _ => at(next),
+    };
+    format!("{} now, {next} from the next start", at(now))
+}
+
 fn print(report: &PortChoicesReport, deps: &mut Deps) {
     if let Some(problem) = &report.problem {
         say!(deps, "Cannot read the ports: {}", esc(problem));
@@ -174,23 +188,9 @@ fn print(report: &PortChoicesReport, deps: &mut Deps) {
             esc(&port.service),
             port.container_port
         );
-        let next = if port.open {
-            paint(
-                deps.color,
-                Tone::Good,
-                &format!("open on 127.0.0.1:{}", port.mac_port),
-            )
-        } else {
-            paint(deps.color, Tone::Dim, "closed")
-        };
-        let now = match port.open_now {
-            Some(now) if !(port.open && now == port.mac_port) => {
-                format!(", now open on 127.0.0.1:{now}")
-            }
-            None if port.open => ", now closed".to_owned(),
-            _ => String::new(),
-        };
-        say!(deps, "  {name:<24} {next}{now}");
+        let state = port_state(port.open.then_some(port.mac_port), port.open_now);
+        let tone = if port.open { Tone::Good } else { Tone::Dim };
+        say!(deps, "  {name:<24} {}", paint(deps.color, tone, &state));
         if let Some(why) = &port.cannot_open {
             say!(
                 deps,
@@ -239,5 +239,23 @@ mod tests {
         assert!(find(&ports, "web:3000").is_none());
         assert!(find(&ports, "9999").is_none());
         assert!(find(&ports, "nonsense").is_none());
+    }
+
+    #[test]
+    fn a_port_says_what_it_is_now_and_from_the_next_start() {
+        assert_eq!(port_state(Some(3000), Some(3000)), "open on 127.0.0.1:3000");
+        assert_eq!(port_state(None, None), "closed");
+        assert_eq!(
+            port_state(None, Some(3001)),
+            "open on 127.0.0.1:3001 now, closed from the next start"
+        );
+        assert_eq!(
+            port_state(Some(3000), None),
+            "closed now, open on 127.0.0.1:3000 from the next start"
+        );
+        assert_eq!(
+            port_state(Some(3001), Some(3000)),
+            "open on 127.0.0.1:3000 now, on 127.0.0.1:3001 from the next start"
+        );
     }
 }

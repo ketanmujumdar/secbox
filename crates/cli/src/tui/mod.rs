@@ -1053,6 +1053,24 @@ fn show_selected(deps: &mut Deps, model: &mut Model) {
             ..view::Overview::default()
         },
     });
+    if let (Some(overview), Ok(report)) = (model.overview.as_mut(), logs::port_choices(deps.daemon, &row.path)) {
+        overview.port_choices = port_lines(&report);
+    }
+}
+
+/// One line per port for the Settings tab, or why they could not be read.
+fn port_lines(report: &proto::PortChoicesReport) -> Vec<String> {
+    if let Some(problem) = &report.problem {
+        return vec![format!("Cannot read them: {}", crate::ui::esc(problem))];
+    }
+    report
+        .ports
+        .iter()
+        .map(|port| {
+            let state = crate::ports_cmd::port_state(port.open.then_some(port.mac_port), port.open_now);
+            format!("{:<11} {state}", format!("{} {}", port.port, crate::ui::esc(&port.service)))
+        })
+        .collect()
 }
 
 /// How long to wait for the daemon's say-so before a shell. The sandbox has
@@ -1686,5 +1704,32 @@ mod import_tests {
         assert_eq!(model.prompt.as_ref().unwrap().shown.chars().count(), value.len());
         show_typing(&mut model, None);
         assert!(model.prompt.is_none() && model.picker.is_none());
+    }
+}
+
+#[cfg(test)]
+mod port_line_tests {
+    use super::*;
+
+    #[test]
+    fn settings_say_each_port_now_and_from_the_next_start_within_sixty_columns() {
+        let report = proto::PortChoicesReport {
+            project_id: "p".to_owned(),
+            ports: vec![proto::PortChoice {
+                service: "web".to_owned(),
+                container_port: 80,
+                port: 3000,
+                mac_port: 3000,
+                open: false,
+                open_now: Some(3001),
+                cannot_open: None,
+            }],
+            problem: None,
+            restart_needed: true,
+        };
+        let lines = port_lines(&report);
+        assert_eq!(lines, vec!["3000 web    open on 127.0.0.1:3001 now, closed from the next start"]);
+        let failed = proto::PortChoicesReport { problem: Some("no compose file".to_owned()), ..report };
+        assert_eq!(port_lines(&failed), vec!["Cannot read them: no compose file"]);
     }
 }

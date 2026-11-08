@@ -584,6 +584,7 @@ fn blocked_answer(domain: Option<&str>, offset: u64) -> Result<Reply, CallError>
                 time: "2026-11-05T07:50:52.406636Z".to_owned(),
                 domain: domain.to_owned(),
                 count: 1,
+                allowed: false,
             })
             .into_iter()
             .collect(),
@@ -706,7 +707,10 @@ fn a_port_moved_with_ports_is_used_by_the_next_start() {
     assert_eq!(saved.code, 0, "{}", saved.all());
     let text = saved.all();
     assert!(text.contains("Saved. Nothing changes until it next starts"), "{text}");
-    assert!(text.contains(&format!("open on 127.0.0.1:{mac}, now open on 127.0.0.1:3000")), "{text}");
+    assert!(
+        text.contains(&format!("open on 127.0.0.1:3000 now, on 127.0.0.1:{mac} from the next start")),
+        "{text}"
+    );
     assert!(text.contains("Restart it to apply them"), "{text}");
 
     let unknown = h.run(&["ports", "close", "9999"], "");

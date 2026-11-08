@@ -124,7 +124,7 @@
     rows: [
       { time: '2026-11-06 14:06:09', count: 28, domain: 'telemetry.example-cdn.com' },
       { time: '2026-11-06 14:05:51', count: 9, domain: 'sentry.io' },
-      { time: '2026-11-06 14:02:12', count: 4, domain: 'fonts.googleapis.com' },
+      { time: '2026-11-06 14:02:12', count: 4, domain: 'fonts.googleapis.com', allowed: true },
     ],
     notes: [
       { weight: 'warn', text: "This shows blocked hostnames only. Raw IP, metadata and UDP attempts are blocked but not recorded, so an empty list doesn't mean nothing was tried." },

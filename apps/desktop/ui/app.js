@@ -1634,10 +1634,15 @@
       tr.appendChild(el('td', event.count, 'num'));
       tr.appendChild(el('td', event.domain, 'mono'));
       const cell = el('td', '', 'num');
-      const approve = el('button', 'Approve', 'small');
-      approve.disabled = state.busy;
-      approve.addEventListener('click', () => approveHost(event.domain));
-      cell.appendChild(approve);
+      if (event.allowed) {
+        // Approved since these refusals: the sandbox as it is now may reach it.
+        cell.appendChild(el('span', 'Approved', 'muted'));
+      } else {
+        const approve = el('button', 'Approve', 'small');
+        approve.disabled = state.busy;
+        approve.addEventListener('click', () => approveHost(event.domain));
+        cell.appendChild(approve);
+      }
       tr.appendChild(cell);
       rows.appendChild(tr);
     }

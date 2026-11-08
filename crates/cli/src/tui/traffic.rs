@@ -141,11 +141,13 @@ mod tests {
                     time: "2026-11-05T07:50:01.000000Z".to_owned(),
                     domain: "old.example.net".to_owned(),
                     count: 2,
+                    allowed: false,
                 },
                 BlockedEvent {
                     time: "2026-11-05T07:50:02.000000Z".to_owned(),
                     domain: "new.example.net".to_owned(),
                     count: 1,
+                    allowed: false,
                 },
             ];
             Ok(Reply::Blocked(r))

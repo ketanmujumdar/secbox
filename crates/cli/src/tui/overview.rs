@@ -21,6 +21,7 @@ pub fn build(report: &StatusReport) -> Overview {
     Overview {
         path: esc(&report.project_path),
         problem: None,
+        port_choices: Vec::new(),
         services: report
             .services
             .iter()
