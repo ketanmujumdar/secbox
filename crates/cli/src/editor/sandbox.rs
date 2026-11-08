@@ -471,6 +471,10 @@ fn profile_settings(binary: &Path) -> Value {
         "workbench.enableExperiments": false,
         "workbench.startupEditor": "none",
         "window.restoreWindows": "none",
+        // Both keep copies of the sandbox's files in this machine's profile:
+        // local history on every save, hot exit for unsaved edits.
+        "workbench.localHistory.enabled": false,
+        "files.hotExit": "off",
         "task.allowAutomaticTasks": "off",
         "security.workspace.trust.enabled": true,
         "git.enabled": false,
@@ -509,6 +513,15 @@ fn prepare_profile(root: &Path, binary: &Path) -> Result<(PathBuf, PathBuf), Str
     let make = |path: &Path| {
         std::fs::create_dir_all(path).map_err(|e| format!("cannot make {}: {}", esc(&path.display().to_string()), e.kind()))
     };
+    // Copies of project files an earlier editor kept before these settings
+    // existed, or that a user turned back on.
+    for kept in [data.join("User/History"), data.join("Backups")] {
+        if let Err(e) = std::fs::remove_dir_all(&kept) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(format!("cannot remove {}: {}", esc(&kept.display().to_string()), e.kind()));
+            }
+        }
+    }
     make(&data.join("User"))?;
     make(&extensions)?;
     let settings = serde_json::to_string_pretty(&profile_settings(binary)).map_err(|e| e.to_string())?;
@@ -818,6 +831,22 @@ mod tests {
         assert_eq!(settings["task.allowAutomaticTasks"], "off");
         assert_eq!(settings["typescript.disableAutomaticTypeAcquisition"], true);
         assert_eq!(settings["terminal.integrated.defaultProfile.osx"], shell_profile().as_str());
+        assert_eq!(settings["workbench.localHistory.enabled"], false);
+        assert_eq!(settings["files.hotExit"], "off");
+    }
+
+    #[test]
+    fn the_profile_drops_copies_of_files_kept_by_an_earlier_editor() {
+        let dir = tempfile::tempdir().unwrap();
+        let history = dir.path().join("data/User/History/-b2169e0");
+        let backups = dir.path().join("data/Backups/x");
+        std::fs::create_dir_all(&history).unwrap();
+        std::fs::create_dir_all(&backups).unwrap();
+        std::fs::write(history.join("mRPP.txt"), "TOKEN=fake").unwrap();
+        prepare_profile(dir.path(), Path::new("/bin/the-cli")).unwrap();
+        assert!(!dir.path().join("data/User/History").exists());
+        assert!(!dir.path().join("data/Backups").exists());
+        assert!(dir.path().join("data/User/settings.json").is_file());
     }
 
     #[test]
