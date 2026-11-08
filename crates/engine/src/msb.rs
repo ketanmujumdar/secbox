@@ -233,6 +233,41 @@ impl MsbEngine {
         })
     }
 
+    /// Applies [`seal_capture_logs`] to a sandbox, if the engine has made its
+    /// folder, making the logs folder in it if that is missing. A sandbox with
+    /// no folder has nothing to seal, and the engine's own answer to the
+    /// command that follows says why.
+    fn seal(&self, name: &SandboxName) -> Result<()> {
+        let dirs = EngineLocation {
+            binary: self.binary.clone(),
+            home: self.home.clone(),
+        }
+        .sandbox_log_dirs(name);
+        let failed = |e: std::io::Error| EngineError::Spawn {
+            operation: "keep the sandbox's output off the host".to_owned(),
+            reason: e.kind().to_string(),
+        };
+        // Nothing on the way may be a link: the guest's own shares are siblings.
+        let (logs, above) = dirs.split_last().expect("the list ends with the logs folder");
+        for dir in above.iter().chain([logs]) {
+            match std::fs::symlink_metadata(dir) {
+                Ok(meta) if meta.is_dir() => {}
+                Ok(_) => {
+                    return Err(failed(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "not a plain folder",
+                    )))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && dir == logs => {
+                    std::fs::create_dir(logs).map_err(failed)?;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(failed(e)),
+            }
+        }
+        seal_capture_logs(logs).map_err(failed)
+    }
+
     /// The CLI's `exec` boots a stopped sandbox for that one command, as seen on
     /// v0.7.13, and `copy` tries to. This refuses instead, so nothing boots unasked.
     fn require_running(&self, name: &SandboxName) -> Result<()> {
@@ -246,6 +281,76 @@ impl MsbEngine {
                 reason: format!("is not running ({other:?})"),
             }),
         }
+    }
+}
+
+/// Where the engine copies every byte any `exec` prints, as JSON lines.
+pub const EXEC_LOG: &str = "exec.log";
+/// Where the engine copies the guest's console, which root in the guest can
+/// write anything to.
+pub const KERNEL_LOG: &str = "kernel.log";
+
+/// Stops the engine keeping, on the host, text the guest chooses.
+///
+/// Measured on v0.7.13: the engine writes every `exec`'s output to
+/// `logs/exec.log`, so a secret a service prints, or that `logs` shows masked,
+/// was kept there in plain text. It has no option to turn that off, but when
+/// it cannot open the file it logs "capture disabled" and carries on, and
+/// `exec` itself is unchanged. So a folder is put at that name. The console log
+/// is opened at boot, and the start fails if it cannot be, so that one is
+/// pointed at `/dev/null`.
+///
+/// Whatever was already in either file is cleared first. A running engine
+/// keeps writing to the file it opened at boot until it stops, but that file
+/// no longer has a name, so nothing can open it, and it is gone when the
+/// engine closes it.
+pub fn seal_capture_logs(logs: &Path) -> std::io::Result<()> {
+    use std::fs;
+    use std::io::ErrorKind;
+    let exec = logs.join(EXEC_LOG);
+    match fs::symlink_metadata(&exec) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(meta) => {
+            empty_and_remove(&exec, &meta)?;
+            make_private_dir(&exec)?;
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => make_private_dir(&exec)?,
+        Err(e) => return Err(e),
+    }
+    let kernel = logs.join(KERNEL_LOG);
+    let null = Path::new("/dev/null");
+    match fs::symlink_metadata(&kernel) {
+        Ok(meta) if meta.file_type().is_symlink() && fs::read_link(&kernel)? == null => {}
+        Ok(meta) => {
+            empty_and_remove(&kernel, &meta)?;
+            std::os::unix::fs::symlink(null, &kernel)?;
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => std::os::unix::fs::symlink(null, &kernel)?,
+        Err(e) => return Err(e),
+    }
+    Ok(())
+}
+
+fn make_private_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().mode(0o700).create(path)
+}
+
+/// Empties a plain file with one name before removing it, so its content does
+/// not live on in a file the engine still has open. Anything else is removed.
+fn empty_and_remove(path: &Path, meta: &std::fs::Metadata) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    if meta.is_file() && meta.nlink() == 1 {
+        let file = std::fs::OpenOptions::new().write(true).open(path)?;
+        // The same file that was looked at, and not something put in its place.
+        if file.metadata()?.ino() == meta.ino() {
+            file.set_len(0)?;
+        }
+    }
+    if meta.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
     }
 }
 
@@ -347,10 +452,19 @@ impl Engine for MsbEngine {
                 name: spec.name.to_string(),
             });
         }
-        self.expect_success("msb create", None, done).map(|_| ())
+        self.expect_success("msb create", None, done)?;
+        // `create` also boots it, so this comes as soon as it can. Nothing the
+        // project runs has run yet. A sandbox that cannot be sealed is removed
+        // rather than left to keep what its services print.
+        if let Err(error) = self.seal(&spec.name) {
+            let _ = self.destroy(&spec.name);
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn start(&self, name: &SandboxName) -> Result<()> {
+        self.seal(name)?;
         let done = self.run("msb start", &argv::start(name), LIFECYCLE_TIMEOUT)?;
         self.expect_success("msb start", Some(name), done)
             .map(|_| ())
@@ -670,6 +784,68 @@ mod tests {
         );
         assert!(check_home_length(&home(54), true).is_err());
         assert!(check_home_length(&home(70), false).is_ok());
+    }
+
+    /// A sandbox folder as engine v0.7.13 leaves it after printing a secret.
+    fn engine_logs(root: &Path) -> PathBuf {
+        let logs = root.join("sandboxes").join("demo").join("logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join(EXEC_LOG), "{\"s\":\"stdout\",\"d\":\"token: fake-token-1234\\n\"}\n").unwrap();
+        fs::write(logs.join(KERNEL_LOG), "consoletoken1234\n").unwrap();
+        fs::write(logs.join("runtime.log"), "kept\n").unwrap();
+        logs
+    }
+
+    #[test]
+    fn sealing_clears_the_captured_output_and_leaves_nothing_to_write_it_to() {
+        let dir = Stub::new("exit 0");
+        let logs = engine_logs(&dir.dir);
+        // The engine holds the file open while it runs.
+        let held = fs::File::open(logs.join(EXEC_LOG)).unwrap();
+        seal_capture_logs(&logs).unwrap();
+        assert_eq!(held.metadata().unwrap().len(), 0, "what was captured is cleared");
+        let exec = fs::symlink_metadata(logs.join(EXEC_LOG)).unwrap();
+        assert!(exec.is_dir());
+        assert_eq!(fs::read_dir(logs.join(EXEC_LOG)).unwrap().count(), 0);
+        assert_eq!(fs::read_link(logs.join(KERNEL_LOG)).unwrap(), Path::new("/dev/null"));
+        assert_eq!(fs::read_to_string(logs.join("runtime.log")).unwrap(), "kept\n");
+        // Twice is the same as once.
+        seal_capture_logs(&logs).unwrap();
+        assert!(fs::symlink_metadata(logs.join(EXEC_LOG)).unwrap().is_dir());
+        assert_eq!(fs::read_link(logs.join(KERNEL_LOG)).unwrap(), Path::new("/dev/null"));
+    }
+
+    #[test]
+    fn a_link_put_at_either_name_is_replaced_and_its_target_is_untouched() {
+        let dir = Stub::new("exit 0");
+        let logs = engine_logs(&dir.dir);
+        let target = dir.dir.join("target");
+        fs::write(&target, "mine\n").unwrap();
+        for name in [EXEC_LOG, KERNEL_LOG] {
+            fs::remove_file(logs.join(name)).unwrap();
+            std::os::unix::fs::symlink(&target, logs.join(name)).unwrap();
+        }
+        seal_capture_logs(&logs).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "mine\n");
+        assert!(fs::symlink_metadata(logs.join(EXEC_LOG)).unwrap().is_dir());
+        assert_eq!(fs::read_link(logs.join(KERNEL_LOG)).unwrap(), Path::new("/dev/null"));
+    }
+
+    #[test]
+    fn start_seals_the_logs_before_the_engine_runs() {
+        let dir = Stub::new("exit 0");
+        let logs = engine_logs(&dir.dir);
+        let stub = Stub::new(&format!(
+            "test -d '{}' || exit 9\necho started",
+            logs.join(EXEC_LOG).display()
+        ));
+        let engine = MsbEngine::new(MsbLocation::Explicit {
+            binary: stub.binary.clone(),
+            home: dir.dir.clone(),
+        })
+        .unwrap();
+        engine.start(&name()).unwrap();
+        assert!(fs::symlink_metadata(logs.join(EXEC_LOG)).unwrap().is_dir());
     }
 
     #[test]

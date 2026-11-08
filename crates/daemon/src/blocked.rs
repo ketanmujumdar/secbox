@@ -18,12 +18,20 @@
 //! without following a link, and the file is opened so that a link or a pipe put
 //! in its place fails rather than being read.
 //!
-//! Because the log holds only about an hour even on an idle sandbox, what it says
-//! is collected into a file of the daemon's own, every [`WATCH_GAP`] and on every
-//! read, and the list is answered from that. So a name stays listed until it is
-//! approved or the sandbox is destroyed. The file is owner-only and holds names as
-//! they were looked up, because masking needs the keychain, which a background
-//! thread must not be asking for. They are masked as they leave the daemon.
+//! A name is chosen by the guest, so it can hold a secret in any encoding, and
+//! masking only catches the encodings it knows. So no name is kept on the disk:
+//!
+//! - Every [`WATCH_GAP`], and on every read, what the log says is collected into
+//!   the daemon's memory, and the part of the engine's file that was read is
+//!   overwritten with zeros. The engine writes in append mode, measured on
+//!   0.7.13, so this does not disturb it.
+//! - The daemon's own file, [`SEEN_FILE`], holds counts and the position in the
+//!   log, and never a name.
+//! - A name stays listed until it is approved, the sandbox is destroyed, or the
+//!   daemon stops. After a restart the list says how many names it can no
+//!   longer show.
+//!
+//! Names are masked as they leave the daemon.
 
 use std::collections::BTreeMap;
 use std::fs::{File, Metadata, OpenOptions};
@@ -59,9 +67,10 @@ const LOG_FILE: &str = "runtime.log";
 const SEEN_FILE: &str = "blocked-seen.json";
 /// A record larger than any this writes is not one it wrote.
 const MAX_SEEN_FILE_BYTES: u64 = 8 * 1024 * 1024;
-/// A quarter of what an idle sandbox's log holds, so that a pause of the daemon or
-/// a noisy spell still leaves room to catch up.
-const WATCH_GAP: Duration = Duration::from_secs(30);
+/// How long a name the guest looked up stays in the engine's file at most while
+/// the daemon runs, since each pass clears what it read. Well inside what an
+/// idle sandbox's log holds, so a pause of the daemon still leaves room.
+const WATCH_GAP: Duration = Duration::from_secs(5);
 /// Only one collection at a time, or two would count the same lines.
 static COLLECTING: Mutex<()> = Mutex::new(());
 
@@ -220,6 +229,25 @@ struct LogRead {
     cut_off: bool,
     next: Option<BlockedCursor>,
     trust: Option<String>,
+    /// Every log file found, newest first, and how far this read went in it.
+    files: Vec<ReadFile>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Span {
+    /// Read in this pass, up to its end or to `next`.
+    Read,
+    /// Older than the bound reached, so never read. What it held is lost.
+    Skipped,
+    /// Older than where the last pass stopped, so read before.
+    Earlier,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ReadFile {
+    id: u64,
+    size: u64,
+    span: Span,
 }
 
 struct LogFile {
@@ -397,6 +425,16 @@ fn read_log(
             break;
         }
     }
+    let rest = if read.cut_off { Span::Skipped } else { Span::Earlier };
+    read.files = files
+        .iter()
+        .enumerate()
+        .map(|(index, log)| ReadFile {
+            id: log.id,
+            size: log.size,
+            span: if index < parts.len() { Span::Read } else { rest },
+        })
+        .collect();
     match after {
         Some(_) if !found => read.cut_off = true,
         None if files.len() > ENGINE_KEEPS_RENAMED => read.cut_off = true,
@@ -433,12 +471,12 @@ struct SeenHost {
     count: u64,
 }
 
-/// What the log has said so far, kept after the log itself has moved on.
+/// What the log has said so far, kept on disk after the log itself has moved
+/// on. It holds counts and positions only. A name is chosen by the guest, which
+/// can put a secret in it in any encoding, so no name is ever written here.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Seen {
-    /// By name in lowercase, as the engine wrote it. Escaped only on the way out.
-    hosts: BTreeMap<String, SeenHost>,
     total: u64,
     rejected: u64,
     /// How many of the oldest names were dropped to keep to [`MAX_EVENTS`].
@@ -446,6 +484,21 @@ struct Seen {
     cut_off: bool,
     /// How far the log has been read.
     cursor: Option<BlockedCursor>,
+    /// How far the log has been overwritten with zeros, in the file `cursor`
+    /// was in when it was done.
+    #[serde(default)]
+    scrubbed: Option<BlockedCursor>,
+    /// Names counted by an earlier run of the daemon. Their text was never kept,
+    /// so they cannot be listed.
+    #[serde(default)]
+    unlisted: u64,
+    /// How many names this run of the daemon holds in memory. A run that finds
+    /// none there moves this to `unlisted`.
+    #[serde(default)]
+    listed: u64,
+    /// Names as an older version wrote them. Read only to count and drop them.
+    #[serde(default, skip_serializing, rename = "hosts")]
+    legacy_hosts: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 impl Seen {
@@ -458,27 +511,87 @@ impl Seen {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
             _ => return Self { cut_off: true, ..Self::default() },
         }
-        std::fs::read(&path)
+        let mut seen: Self = std::fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_else(|| Self { cut_off: true, ..Self::default() })
+            .unwrap_or_else(|| Self { cut_off: true, ..Self::default() });
+        if let Some(hosts) = seen.legacy_hosts.take() {
+            seen.unlisted += hosts.len() as u64;
+            // Saved straight away, so the names an older version kept are gone
+            // from the disk before anything else happens.
+            let _ = seen.save(project);
+        }
+        seen
     }
 
     fn save(&self, project: &Project) -> Result<(), String> {
         let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
         hoststate::write_private(&project.dir.join(SEEN_FILE), &bytes)
     }
+}
 
-    fn take_in(&mut self, read: LogRead) {
-        self.total += read.groups.total;
-        self.rejected += read.groups.rejected;
-        self.cut_off |= read.cut_off;
-        self.cursor = read.next;
-        for (domain, (time, count)) in read.groups.by_domain {
-            let host = self.hosts.entry(domain).or_default();
+/// The names themselves, kept in this process only, by project folder.
+struct Names {
+    /// Tells this record apart from any earlier one, in a follower's position.
+    run: u64,
+    hosts: BTreeMap<String, SeenHost>,
+    /// What each pass added, for someone following. Oldest first.
+    batches: std::collections::VecDeque<Batch>,
+    /// The number the next batch gets. Starts at 1, so 0 means "from the start".
+    next_batch: u64,
+}
+
+struct Batch {
+    number: u64,
+    events: Vec<BlockedEvent>,
+    total: u64,
+    rejected: u64,
+    cut_off: bool,
+}
+
+/// How many passes a follower can fall behind before it is told it missed some.
+const MAX_BATCHES: usize = 256;
+
+static NAMES: Mutex<BTreeMap<PathBuf, Names>> = Mutex::new(BTreeMap::new());
+
+/// A number for each new record of names, unlike any an earlier run of the
+/// daemon gave, so a follower that outlived a restart is told it may have
+/// missed something.
+fn new_run() -> u64 {
+    static START: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let start = *START.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        nanos ^ u64::from(std::process::id()) << 32
+    });
+    // Steps of two, so that setting the lowest bit cannot make two the same.
+    start.wrapping_add(COUNT.fetch_add(2, std::sync::atomic::Ordering::Relaxed)) | 1
+}
+
+impl Default for Names {
+    fn default() -> Self {
+        Self {
+            run: new_run(),
+            hosts: BTreeMap::new(),
+            batches: std::collections::VecDeque::new(),
+            next_batch: 0,
+        }
+    }
+}
+
+fn names() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, Names>> {
+    NAMES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl Names {
+    fn take_in(&mut self, seen: &mut Seen, read: &LogRead) {
+        for (domain, (time, count)) in &read.groups.by_domain {
+            let host = self.hosts.entry(domain.clone()).or_default();
             host.count += count;
-            if time > host.time {
-                host.time = time;
+            if *time > host.time {
+                host.time.clone_from(time);
             }
         }
         if self.hosts.len() > MAX_EVENTS {
@@ -488,8 +601,27 @@ impl Seen {
             let extra = by_age.len() - MAX_EVENTS;
             for (_, name) in by_age.into_iter().take(extra) {
                 self.hosts.remove(&name);
-                self.omitted += 1;
+                seen.omitted += 1;
             }
+        }
+        if read.groups.total == 0 && read.groups.rejected == 0 && !read.cut_off {
+            return;
+        }
+        self.next_batch = self.next_batch.max(1);
+        let groups = Groups {
+            by_domain: read.groups.by_domain.clone(),
+            ..Groups::default()
+        };
+        self.batches.push_back(Batch {
+            number: self.next_batch,
+            events: groups.into_events(MAX_EVENTS).0,
+            total: read.groups.total,
+            rejected: read.groups.rejected,
+            cut_off: read.cut_off,
+        });
+        self.next_batch += 1;
+        while self.batches.len() > MAX_BATCHES {
+            self.batches.pop_front();
         }
     }
 
@@ -504,16 +636,181 @@ impl Seen {
         };
         groups.into_events(MAX_EVENTS).0
     }
+
+    /// Where a follower should ask from next.
+    fn position(&self) -> BlockedCursor {
+        BlockedCursor {
+            file: self.run,
+            offset: self.next_batch.saturating_sub(1),
+        }
+    }
+
+    /// Everything added after `after`, grouped by name, with whether some of
+    /// it may be missing.
+    fn since(&self, after: BlockedCursor) -> Since {
+        let restarted = after.file != self.run;
+        let from = if restarted { 0 } else { after.offset };
+        let mut groups = Groups::default();
+        let mut since = Since {
+            cut_off: restarted,
+            ..Since::default()
+        };
+        let oldest = self.batches.front().map_or(self.next_batch, |b| b.number);
+        if from + 1 < oldest {
+            since.cut_off = true;
+        }
+        for batch in self.batches.iter().filter(|b| b.number > from) {
+            since.total += batch.total;
+            since.rejected += batch.rejected;
+            since.cut_off |= batch.cut_off;
+            for event in &batch.events {
+                let entry = groups
+                    .by_domain
+                    .entry(event.domain.clone())
+                    .or_insert_with(|| (String::new(), 0));
+                entry.1 += event.count;
+                if event.time > entry.0 {
+                    entry.0.clone_from(&event.time);
+                }
+            }
+        }
+        let (events, omitted) = groups.into_events(MAX_EVENTS);
+        since.events = events;
+        since.omitted = omitted;
+        since
+    }
 }
 
-/// Reads whatever the log has that the record does not, and returns the record.
+#[derive(Default)]
+struct Since {
+    events: Vec<BlockedEvent>,
+    total: u64,
+    rejected: u64,
+    omitted: u64,
+    cut_off: bool,
+}
+
+/// Overwrites with zeros what has been read from the engine's log, so a name
+/// the guest looked up stays on the disk only until the next pass.
+///
+/// Only the parts read are touched, located by the file's identity rather than
+/// its name, since the engine renames the files as it goes. The current file is
+/// left alone from the byte before the cursor on, so that the line the cursor
+/// starts is still seen to start a line, and the engine can keep appending.
+/// Measured on engine 0.7.13: it writes the log in append mode, so a write
+/// here never moves where its next line goes.
+fn scrub(dirs: &[PathBuf], read: &LogRead, seen: &mut Seen) -> Result<(), String> {
+    let first_pass = seen.scrubbed.is_none();
+    let mut ranges: Vec<(u64, u64, u64)> = Vec::new();
+    for file in &read.files {
+        let end = match (read.next, file.span) {
+            (Some(next), _) if next.file == file.id => next.offset.saturating_sub(1).min(file.size),
+            (_, Span::Read | Span::Skipped) => file.size,
+            (_, Span::Earlier) if first_pass => file.size,
+            (_, Span::Earlier) => continue,
+        };
+        let from = match seen.scrubbed {
+            Some(done) if done.file == file.id => done.offset,
+            _ => 0,
+        };
+        if end > from {
+            ranges.push((file.id, from, end));
+        }
+    }
+    if !ranges.is_empty() {
+        zero_ranges(dirs, &ranges)?;
+    }
+    seen.scrubbed = Some(match read.next {
+        Some(next) => BlockedCursor {
+            file: next.file,
+            offset: next.offset.saturating_sub(1),
+        },
+        None => BlockedCursor { file: 0, offset: 0 },
+    });
+    Ok(())
+}
+
+/// Writes zeros over `(file, from, to)` in each log file found, checking each
+/// one as [`open_log`] does, and leaves the files readable by their owner only.
+fn zero_ranges(dirs: &[PathBuf], ranges: &[(u64, u64, u64)]) -> Result<(), String> {
+    let me = nix::unistd::Uid::current().as_raw();
+    let Some(_) = check_dirs(dirs, me)? else {
+        return Ok(());
+    };
+    let logs = dirs.last().ok_or("no log folder was named")?;
+    let zeros = vec![0u8; 64 * 1024];
+    for index in 0..=MAX_RENAMED {
+        let name = if index == 0 {
+            LOG_FILE.to_owned()
+        } else {
+            format!("{LOG_FILE}.{index}")
+        };
+        let file = match OpenOptions::new()
+            .write(true)
+            .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+            .open(logs.join(&name))
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("cannot clear {name}: {}", e.kind())),
+        };
+        let meta = file
+            .metadata()
+            .map_err(|e| format!("cannot inspect {name}: {}", e.kind()))?;
+        if !meta.is_file() || meta.uid() != me || meta.nlink() != 1 {
+            continue;
+        }
+        for &(_, from, to) in ranges.iter().filter(|range| range.0 == meta.ino()) {
+            let to = to.min(meta.len());
+            let mut at = from;
+            while at < to {
+                let step = (to - at).min(zeros.len() as u64) as usize;
+                file.write_all_at(&zeros[..step], at)
+                    .map_err(|e| format!("cannot clear {name}: {}", e.kind()))?;
+                at += step as u64;
+            }
+        }
+        // The engine was seen making these 0666. The folder above is
+        // owner-only, but the file need not rely on that.
+        let _ = file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    }
+    Ok(())
+}
+
+/// Reads whatever the log has that the record does not, clears what it read
+/// from the engine's file, and returns the record.
 fn collect(project: &Project, dirs: &[PathBuf]) -> Result<(Seen, Option<String>), String> {
     let _one_at_a_time = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
     let mut seen = Seen::load(project);
-    let read = read_log(dirs, seen.cursor, MAX_READ_BYTES)?;
+    let read = read_log(dirs, seen.cursor, MAX_READ_BYTES)
+        .map_err(|reason| format!("the engine's log was not read: {reason}"))?;
     let trust = read.trust.clone();
     let before = seen.clone();
-    seen.take_in(read);
+    seen.total += read.groups.total;
+    seen.rejected += read.groups.rejected;
+    seen.cut_off |= read.cut_off;
+    seen.cursor = read.next;
+    {
+        let mut all = names();
+        let fresh = !all.contains_key(&project.dir);
+        let held = all.entry(project.dir.clone()).or_default();
+        if fresh {
+            seen.unlisted += std::mem::take(&mut seen.listed);
+        }
+        held.take_in(&mut seen, &read);
+        seen.listed = held.hosts.len() as u64;
+    }
+    // A failure to clear is not a failure to read. The next pass clears every
+    // file it finds from the start, as a first pass does.
+    if let Err(reason) = scrub(dirs, &read, &mut seen) {
+        seen.scrubbed = None;
+        if seen != before {
+            seen.save(project)?;
+        }
+        return Err(format!(
+            "the engine's log was read, but the names in it could not be cleared from the disk: {reason}"
+        ));
+    }
     if seen != before {
         seen.save(project)?;
     }
@@ -534,6 +831,7 @@ pub(crate) fn new_log(project: &Project) {
     if project.dir.join(SEEN_FILE).exists() {
         let mut seen = Seen::load(project);
         seen.cursor = None;
+        seen.scrubbed = None;
         seen.cut_off = false;
         let _ = seen.save(project);
     }
@@ -542,16 +840,24 @@ pub(crate) fn new_log(project: &Project) {
 /// Takes one name off the list, once a person has approved it.
 pub(crate) fn forget_host(project: &Project, host: &str) {
     let _one_at_a_time = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
-    let mut seen = Seen::load(project);
-    if seen.hosts.remove(host).is_some() {
-        let _ = seen.save(project);
+    if let Some(names) = names().get_mut(&project.dir) {
+        names.hosts.remove(host);
     }
 }
 
 /// Removes the record, when the sandbox it describes is destroyed.
 pub(crate) fn forget_all(project: &Project) {
     let _one_at_a_time = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+    names().remove(&project.dir);
     let _ = std::fs::remove_file(project.dir.join(SEEN_FILE));
+}
+
+/// Forgets the names held in memory for the project whose state folder is
+/// `project_dir`, as a restart of the daemon does. For tests.
+#[doc(hidden)]
+pub fn forget_names_in_memory(project_dir: &Path) {
+    let _one_at_a_time = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+    names().remove(project_dir);
 }
 
 /// One pass over every sandbox that records anything. A problem with one is left
@@ -627,23 +933,33 @@ pub fn report(
             cut_off: false,
             omitted_domains: 0,
             rejected_lines: 0,
+            unlisted_domains: 0,
             trust: LogTrust::NotRead,
             next: None,
         });
     }
     let dirs = log_dirs(service, &project.sandbox)?;
-    let not_read = |reason| refused(format!("the engine's log was not read: {reason}"));
-    let (seen, trust) = collect(project, &dirs).map_err(not_read)?;
-    // Following asks for what is new since last time. Anything else gets the list.
-    let (mut events, total, cut_off, omitted_domains, rejected_lines, trust, next) = match args.after {
-        Some(after) => {
-            let read = read_log(&dirs, Some(after), MAX_READ_BYTES).map_err(not_read)?;
-            let (total, rejected, cut_off, trust, next) =
-                (read.groups.total, read.groups.rejected, read.cut_off, read.trust, read.next);
-            let (events, omitted) = read.groups.into_events(MAX_EVENTS);
-            (events, total, cut_off, omitted, rejected, trust, next)
+    let (seen, trust) = collect(project, &dirs).map_err(refused)?;
+    let (mut events, total, cut_off, omitted_domains, rejected_lines, next) = {
+        let all = names();
+        let held = all.get(&project.dir);
+        let next = held.map(Names::position);
+        // Following asks for what is new since last time. Anything else gets the list.
+        match (args.after, held) {
+            (Some(after), Some(held)) => {
+                let since = held.since(after);
+                (since.events, since.total, since.cut_off, since.omitted, since.rejected, next)
+            }
+            (Some(_), None) => (Vec::new(), 0, true, 0, 0, next),
+            (None, held) => (
+                held.map(Names::events).unwrap_or_default(),
+                seen.total,
+                seen.cut_off,
+                seen.omitted,
+                seen.rejected,
+                next,
+            ),
         }
-        None => (seen.events(), seen.total, seen.cut_off, seen.omitted, seen.rejected, trust, seen.cursor),
     };
     // A thief can put a secret in the name it looks up, so the names are
     // masked like log text before they leave the daemon.
@@ -659,6 +975,7 @@ pub fn report(
         cut_off,
         omitted_domains,
         rejected_lines,
+        unlisted_domains: if args.after.is_some() { 0 } else { seen.unlisted },
         trust: trust.map_or(LogTrust::HostOnly, LogTrust::Doubtful),
         next,
     })
@@ -694,8 +1011,9 @@ pub(crate) fn summary(service: &Service, project: &Project, state: SandboxState)
     };
     match collect(project, &dirs) {
         Ok((seen, trust)) => {
+            let listed = names().get(&project.dir).map_or(0, |held| held.hosts.len() as u64);
             summary.total = seen.total;
-            summary.domains = seen.hosts.len() as u64 + seen.omitted;
+            summary.domains = listed + seen.omitted + seen.unlisted;
             summary.cut_off = seen.cut_off;
             summary.trust = trust.map_or(LogTrust::HostOnly, LogTrust::Doubtful);
         }

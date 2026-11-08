@@ -183,6 +183,10 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> Result<(), String> {
+    // What this makes, and what the engine it starts makes with default modes,
+    // is for this user only. The engine's renamed logs were seen at 0666 under
+    // any umask; the blocked-name pass makes those 0600 as it reads them.
+    nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
     let env = |key: &str| std::env::var_os(key);
     let paths = StatePaths::locate(&env)?;
     hoststate::ensure_state(&paths)?;

@@ -2737,6 +2737,98 @@ fn a_damaged_record_is_not_a_failure_and_says_something_may_be_missing() {
     assert_eq!(report.events.len(), 2, "it reads the log again from what is left");
 }
 
+/// Every byte under a folder, for checking that a name is not on the disk.
+fn all_bytes_under(dir: &std::path::Path) -> Vec<u8> {
+    let mut all = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let meta = std::fs::symlink_metadata(entry.path()).unwrap();
+        if meta.is_dir() {
+            all.extend(all_bytes_under(&entry.path()));
+        } else if meta.is_file() {
+            all.extend(std::fs::read(entry.path()).unwrap());
+        }
+    }
+    all
+}
+
+fn holds(haystack: &[u8], needle: &str) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle.as_bytes())
+}
+
+/// Seen on a real Mac: a service cut its token into a name it looked up, and
+/// the name stayed in the engine's log and in the host's own record. The guest
+/// chooses every byte of a name, so masking cannot be relied on to find it.
+#[test]
+fn a_name_the_guest_looked_up_is_listed_but_kept_on_no_disk() {
+    let (f, home, name) = recording_fixture();
+    f.deps.engine.deny_lookup(&name, "faketoken1234.dns-exfil.example.net").unwrap();
+    // One the engine has already renamed, as it does at about 10 MB.
+    let logs = f.deps.engine.logs_dir(&name).unwrap();
+    std::fs::rename(logs.join("runtime.log"), logs.join("runtime.log.1")).unwrap();
+    f.deps.engine.deny_lookup(&name, "rotatedtoken99.dns-exfil.example.net").unwrap();
+
+    let names = listed(&f);
+    assert!(names.iter().any(|(n, _)| n == "faketoken1234.dns-exfil.example.net"), "{names:?}");
+    assert!(names.iter().any(|(n, _)| n == "rotatedtoken99.dns-exfil.example.net"), "{names:?}");
+    for secret in ["faketoken1234", "rotatedtoken99"] {
+        assert!(!holds(&all_bytes_under(home.path()), secret), "{secret} is in the engine's files");
+        assert!(!holds(&all_bytes_under(f._state.path()), secret), "{secret} is in the host's state");
+    }
+
+    // The log keeps working: a later name is read, and only once.
+    f.deps.engine.deny_lookup(&name, "later.example.net").unwrap();
+    assert!(listed(&f).contains(&("later.example.net".to_owned(), 1)));
+    assert!(listed(&f).contains(&("later.example.net".to_owned(), 1)));
+    assert_eq!(blocked(&f).unwrap().total, 3);
+}
+
+/// Names live in the daemon's memory only, so a new run of it cannot list the
+/// old ones. It has to say how many there were, not show an empty list.
+#[test]
+fn after_a_restart_the_names_no_longer_shown_are_counted() {
+    let (f, _home, name) = recording_fixture();
+    f.deps.engine.deny_lookup(&name, "a.example.net").unwrap();
+    f.deps.engine.deny_lookup(&name, "b.example.net").unwrap();
+    let first = blocked(&f).unwrap();
+    assert_eq!(first.events.len(), 2);
+    daemon::blocked::forget_names_in_memory(&project_state(&f));
+
+    let report = blocked(&f).unwrap();
+    assert!(report.events.is_empty());
+    assert_eq!(report.unlisted_domains, 2);
+    assert_eq!(report.total, 2);
+    let Reply::Status(status) = f.call(Request::Status(proto::ProjectArgs { project: f.path() })).unwrap() else {
+        panic!("expected a status")
+    };
+    assert_eq!(status.blocked.unwrap().domains, 2);
+
+    // A follower from before the restart is told it may have missed something.
+    let Reply::Blocked(followed) = f
+        .call(Request::Blocked(proto::BlockedArgs { project: f.path(), after: first.next }))
+        .unwrap()
+    else {
+        panic!("expected a blocked report")
+    };
+    assert!(followed.cut_off);
+}
+
+/// An older version kept the names themselves. They are dropped, and counted,
+/// the first time the record is read.
+#[test]
+fn a_record_from_an_older_version_loses_its_names() {
+    let (f, _home, _name) = recording_fixture();
+    std::fs::write(
+        project_state(&f).join("blocked-seen.json"),
+        r#"{"hosts":{"faketoken1234.dns-exfil.example.net":{"time":"2026-11-05T07:50:00.000001Z","count":1}},"total":1,"rejected":0,"omitted":0,"cut_off":false,"cursor":null}"#,
+    )
+    .unwrap();
+    let report = blocked(&f).unwrap();
+    assert_eq!(report.unlisted_domains, 1);
+    assert!(!report.cut_off);
+    let kept = std::fs::read(project_state(&f).join("blocked-seen.json")).unwrap();
+    assert!(!holds(&kept, "faketoken1234"), "{}", String::from_utf8_lossy(&kept));
+}
+
 fn fixture_asking(answer: bool) -> Fixture {
     let project = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("compose.yaml"), COMPOSE).unwrap();

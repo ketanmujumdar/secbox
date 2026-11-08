@@ -101,6 +101,7 @@ mod tests {
             cut_off: false,
             omitted_domains: 0,
             rejected_lines: 0,
+            unlisted_domains: 0,
             trust: LogTrust::NotRead,
             next: None,
         }

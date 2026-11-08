@@ -591,6 +591,7 @@ fn blocked_answer(domain: Option<&str>, offset: u64) -> Result<Reply, CallError>
         cut_off: false,
         omitted_domains: 0,
         rejected_lines: 0,
+        unlisted_domains: 0,
         trust: proto::LogTrust::HostOnly,
         next: Some(proto::BlockedCursor { file: 1, offset }),
     }))

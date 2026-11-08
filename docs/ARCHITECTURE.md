@@ -83,7 +83,7 @@ The tool can't judge whether code is safe. It keeps a compromise contained until
 
 ### Seeing what happens
 
-**Built today: blocked hostnames, and nothing else.** `secbox net blocked [-f]`, the Traffic panel and a count in `secbox status` show the name lookups the engine refused. The daemon reads them from a file the engine writes on the host, `<engine home>/sandboxes/<name>/logs/runtime.log`, and from its renamed copies.
+**Built today: blocked hostnames, and nothing else.** `secbox net blocked [-f]`, the Traffic panel and a count in `secbox status` show the name lookups the engine refused. The daemon reads them from a file the engine writes on the host, `<engine home>/sandboxes/<name>/logs/runtime.log`, and from its renamed copies, and then clears what it read.
 
 Measured on engine 0.7.13:
 
@@ -99,7 +99,11 @@ The daemon decides whether a sandbox is recording from `log_level` in its own `s
 
 The daemon checks each folder from the engine home down without following a link, and refuses a link, a pipe or a hard-linked file at the log. It reads at most 64 MB, and reads nothing under `guest-state`. If a folder on the way can be written by other accounts, every view says the record is not trustworthy.
 
-The renamed log files are mode `0666`, set by the engine. Only the owner-only state folder above them keeps other accounts out.
+The renamed log files are mode `0666`, set by the engine. The daemon makes each one `0600` as it reads it, and the owner-only state folder above them keeps other accounts out.
+
+The guest chooses every byte of a name it looks up, so it can hide a secret in one in an encoding masking does not know. So the daemon reads the log every 5 seconds, keeps the names in its own memory only, and writes zeros over what it read, renamed files included. Its own record, `blocked-seen.json`, holds counts and the position in the log, never a name. After a restart of the daemon the list says how many names it can no longer show.
+
+The engine also copies every `exec`'s output to `logs/exec.log`, and the guest's console to `logs/kernel.log`. It has no setting to stop either. Before each start, and right after `create`, the daemon puts an empty folder at `exec.log`, which the engine then cannot open, so it captures nothing, and a link to `/dev/null` at `kernel.log`, which it must be able to open to boot. See `docs/PROTECTIONS.md` for what is still kept on the disk, the VM's own disk image above all.
 
 The guest chooses every name it looks up, so a name shows what was asked for and proves nothing else.
 

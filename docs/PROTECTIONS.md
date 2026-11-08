@@ -16,9 +16,11 @@ has to run on real hardware.
 
 ## The short version
 
-- **Your keys never touch disk, git or a command line.** They live in the OS
-  keychain, travel into the sandbox over a pipe, sit in RAM only, and go only
-  to the services you name.
+- **Your keys stay out of git and command lines.** They live in the OS
+  keychain, travel into the sandbox over a pipe, and go only to the services
+  you name. They do reach a disk: Docker in the VM writes a service's
+  environment, and whatever it prints, to the VM's own disk, which is a file
+  on your machine. See "Secret values on the host's disk" below.
 - **One hostile container cannot take another's keys.** A project with
   secrets will not start if any service could reach outside its container.
 - **You can see exactly where a key could go.** Every plan and `status` list
@@ -39,7 +41,7 @@ attack in plain Docker for comparison, where seven of them succeeded.
 | Install script reads tokens from the environment and posts them out | Shai-Hulud (2025), Keyv / ChainDrop (Aug 2026) | Network deny-by-default; the key only reaches the hosts listed under "Where secrets could go" | Denied hosts over HTTP and HTTPS were blocked on a real VM, from nested containers too (spike 0001). With secbox delivering the secret: **tested in code** |
 | Sweep the disk for tokens (TruffleHog) | Shai-Hulud | Keys are never in the project or its snapshot; `.env` files are left out of the snapshot | **Tested in code** |
 | Ask the cloud metadata service for credentials | LiteLLM on PyPI (Mar 2026) | Metadata addresses are blocked by the engine | The gateway denied `169.254.169.254` on a real VM (spike 0001). There was no real metadata service to prove the opposite, so that is the evidence |
-| Send the key inside a DNS lookup | Common exfiltration | DNS is answered only for allowed names; refused names are recorded, with the key masked | Refusal: ran on a real VM (spike 0001). Recording: ran on a real VM. Masking: **tested in code** |
+| Send the key inside a DNS lookup | Common exfiltration | DNS is answered only for allowed names; refused names are listed with the key masked, and kept in the daemon's memory only | Refusal: ran on a real VM (spike 0001). Recording: ran on a real VM. Masking, and keeping names off the disk: **tested in code** |
 | Post the key to a raw IP | Common exfiltration | Raw IPs are blocked by the engine | A raw UDP address (`1.1.1.1`) was blocked on a real VM. Raw TCP to a public IP has not been tested: **not yet proven** |
 | Plant a hook for Claude, Cursor or VS Code to run later | s1ngularity / Nx (2025), testmetest (Oct 2026) | The VM gets a copy of the project and can't write to yours; `.claude/`, `.vscode/`, `CLAUDE.md`, workflows and install scripts are flagged on review | Copy: by design. `secbox diff` flags the hook first, and exits 5: **tested in code** |
 | A sidecar reads another container's env via the Docker socket | Container escape | Refused at plan time when the project has secrets | **Tested in code** |
@@ -57,7 +59,7 @@ attack in plain Docker for comparison, where seven of them succeeded.
 | --- | --- | --- |
 | Values are stored only in macOS Keychain or Linux Secret Service, never in secbox's files | `crates/secrets`, `crates/cli/tests` (`set_stores_the_value_and_never_shows_or_writes_it`) | Tested in code; Keychain on a real Mac |
 | A value never appears in any command line, on the host or in the VM | `a_secret_reaches_the_sandbox_over_standard_input_and_never_in_an_argument` | Tested in code |
-| In the VM, values live on a RAM-only `tmpfs`; if it can't be made, the start is refused | `delivery_stops_when_there_is_nowhere_safe_to_put_a_secret` | Tested in code |
+| In the VM, values are delivered to a RAM-only `tmpfs`; if it can't be made, the start is refused | `delivery_stops_when_there_is_nowhere_safe_to_put_a_secret` | Tested in code. Docker then copies an environment secret onto the VM's disk: see "Secret values on the host's disk" |
 | Each service gets only the secrets assigned to it | `an_environment_secret_is_written_as_one_line_for_the_named_service_only`, `the_runnable_demo_starts_and_its_secret_goes_only_to_api_over_standard_input` | Tested in code |
 | The audit log and every plan name secrets, never values | `the_host_records_which_secret_went_where_by_name_only`, `a_plan_names_a_secret_and_its_route_but_never_its_value` | Tested in code |
 | A project with only a Dockerfile gets its secrets the same way | `a_dockerfile_projects_secret_reaches_its_one_service` | Tested in code |
@@ -93,6 +95,26 @@ attack in plain Docker for comparison, where seven of them succeeded.
 | Secret values are masked in logs, raw, base64 at any alignment, URL-encoded and hex, even split across reads | `crates/daemon/src/mask.rs` tests, `a_secret_printed_by_a_service_is_masked_in_logs_even_split_or_encoded` | Tested in code |
 | A key cut into a hostname label is masked in `net blocked` | `a_token_cut_into_a_hostname_label_is_hidden` | Tested in code |
 
+### Secret values on the host's disk
+
+On Nov 8, 2026, after the hostile demo ran on a real Mac with the fake token
+`fake-token-1234`, the token was found in three files under the state folder:
+the engine's record of every `exec`'s output, the engine's debug log (cut
+into a refused DNS name), and the daemon's own list of refused names. A
+sandbox chooses every byte of what it prints and looks up, so masking known
+encodings cannot be relied on there. These are the changes:
+
+| Claim | Proof | Status |
+| --- | --- | --- |
+| The engine keeps no copy of what `exec` prints. Engine 0.7.13 has no setting for this, so a folder is put where its file would be; it then writes nothing and `exec` works as before. Whatever the file held is cleared at the next start | `sealing_clears_the_captured_output_and_leaves_nothing_to_write_it_to`, `start_seals_the_logs_before_the_engine_runs` | Tested in code. The engine's side ran on a real VM by hand, with the engine alone and not through the daemon: `exec`, `exec --stream` with input, stop and start, and `remove` all worked, and its log said "capture disabled" |
+| The engine keeps no copy of the guest's console, which root in the guest can write to. It points at `/dev/null`; a folder there stops the VM booting | the same tests | Tested in code. Ran on a real VM by hand, as above |
+| Refused names are read from the engine's debug log every 5 seconds, and what was read is overwritten with zeros, renamed copies included | `a_name_the_guest_looked_up_is_listed_but_kept_on_no_disk` | Tested in code. Overwriting a live log ran on a real VM by hand: the engine writes in append mode and carried on after the zeros |
+| The daemon's own record, `blocked-seen.json`, holds counts and positions, never a name. Names are kept in its memory, so a restart loses them, and the list then says how many it can no longer show. A record from an older version has its names dropped the first time it is read | `after_a_restart_the_names_no_longer_shown_are_counted`, `a_record_from_an_older_version_loses_its_names` | Tested in code |
+| The engine's log files are made readable by their owner only as they are read, and the daemon starts the engine with a umask of `077` | `zero_ranges` in `crates/daemon/src/blocked.rs`, `crates/daemon/src/main.rs` | Not tested on its own. On a real VM the engine made its renamed logs `0666` whatever the umask |
+
+What this does not cover is listed under "What it does not protect against
+yet".
+
 ### Reviewing what a sandbox changed
 
 | Claim | Proof | Status |
@@ -100,6 +122,8 @@ attack in plain Docker for comparison, where seven of them succeeded.
 | `secbox diff`, the Review panel and the desktop Git review page show every file a sandbox changed, compared with a baseline commit the host made before anything ran | `crates/daemon/tests/diff.rs` | Tested in code |
 | A hook planted for Claude or Cursor is flagged first, as code that would run on your machine; workflows, git hooks, editor settings and install scripts are flagged too, including case and Unicode lookalikes | `crates/daemon/tests/diff.rs`, `crates/gitbroker/tests/hostile.rs` | Tested in code |
 | What comes out of the sandbox is hostile data: git on the host never runs in a folder the VM wrote, nothing from it is run or checked out, and a malformed, oversized or tricked bundle is refused | `crates/daemon/tests/diff.rs`, `crates/gitbroker/tests/hostile.rs` | Tested in code |
+| Two paths that differ only in case, such as `.claude/settings.json` and `.CLAUDE/Settings.json`, are both bundled and both flagged. A snapshot made on a Mac used to tell git in the guest to ignore case, and then the bundle failed and nothing was reviewed | `paths_that_differ_only_in_case_are_bundled_whatever_the_repository_says`, `two_settings_files_that_differ_only_in_case_are_both_flagged`, `the_repository_given_to_the_guest_does_not_ignore_case` | The failure was seen on a real VM. The fix is tested in code, with real git on a case-sensitive folder. Not yet run on a real VM |
+| If the bundle cannot be made or read, for any reason, `diff` says "the review could not run, so treat everything the sandbox changed as unreviewed" and exits 1 | `a_bundle_the_guest_cannot_make_is_reported_as_not_reviewed` | Tested in code |
 
 ### Host safety
 
@@ -163,6 +187,28 @@ first. Once code runs as you on your machine, secbox does not stop it:
 - **A service can read its own secrets.** Masking stops accidental leaks into
   logs, not a thief inside that service. The network rules are what limit
   where a stolen key can go.
+- **The VM's own disk holds secret values.** Docker in the VM writes each
+  service's environment into its container config, and what the service
+  prints into its log, on the VM's disk. That disk is `rootfs.raw` in the
+  engine's folder on the host, and a copy is kept as `previous-root.raw` while
+  a host is being approved. Seen on a real Mac on Nov 8, 2026: the hostile
+  demo's fake token was in `rootfs.raw` nine times, as `DEMO_TOKEN=...` in
+  container configs and as a printed line in a container log. The disk is in
+  the owner-only state folder and is deleted by `down --destroy`. A fix would
+  keep Docker's container state on a `tmpfs` in the VM. Status: **not yet**.
+- **A refused name is on the disk for up to 5 seconds** while the daemon runs,
+  and for as long as the daemon is not running, since the engine needs debug
+  logging to record it at all. Zeros are written over it; the disk blocks it
+  used are not wiped, so disk encryption (FileVault) is what covers those.
+- **The first start of a new sandbox** writes `exec` output to the engine's
+  capture file until that sandbox stops. The file loses its name the moment
+  `create` returns, before anything from the project runs, so nothing can open
+  it, and it is gone when the engine closes it.
+- **Sandboxes made before this change** keep their old `exec` capture until
+  they are next started, and their old log files until the daemon's next pass.
+- **The engine's job folders** (`jobs-v1`, owner-only) keep the output of
+  `dockerd`, which runs at its default level. Whether a service can get text
+  of its choosing into that has not been checked.
 - **`shell` and `exec` output is not masked**, because it goes straight to
   your terminal.
 - **Export and approval by fingerprint** are Milestone 3. `diff` shows and flags changes; nothing takes them out of the sandbox yet. Status: **not yet**.

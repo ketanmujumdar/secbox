@@ -106,7 +106,18 @@ pub(crate) fn notes(report: &BlockedReport) -> Vec<(Weight, String)> {
             ),
         ));
     }
+    if report.unlisted_domains > 0 {
+        notes.push((Weight::Warn, unlisted_note(report.unlisted_domains)));
+    }
     notes
+}
+
+/// The sandbox chooses each name it looks up and can hide a secret in one, so
+/// the daemon keeps names in memory only.
+pub(crate) fn unlisted_note(count: u64) -> String {
+    format!(
+        "{count} names seen before the daemon last started are not listed. A sandbox chooses the names it looks up and can hide a secret in one, so names are never written to disk."
+    )
 }
 
 /// One event as a line of text, the same everywhere it is shown.
@@ -289,6 +300,7 @@ mod tests {
             cut_off: false,
             omitted_domains: 0,
             rejected_lines: 0,
+            unlisted_domains: 0,
             trust: LogTrust::NotRead,
             next: None,
         }
@@ -346,10 +358,12 @@ mod tests {
         r.cut_off = true;
         r.omitted_domains = 3;
         r.rejected_lines = 2;
+        r.unlisted_domains = 4;
         let text = all(&r);
         assert!(text.contains("cut off"), "{text}");
         assert!(text.contains("3 older names"), "{text}");
         assert!(text.contains("2 log lines"), "{text}");
+        assert!(text.contains("4 names seen before the daemon last started"), "{text}");
     }
 
     #[test]

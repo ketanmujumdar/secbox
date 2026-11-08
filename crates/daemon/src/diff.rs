@@ -80,6 +80,13 @@ const NO_NEWLINE: &str = "  (no newline at end of file)";
 /// say in what the host trusts: the host checks everything it sends.
 ///
 /// - `safe.directory`: the copied files may belong to another user in the guest.
+/// - `core.ignorecase=false` and `core.precomposeunicode=false`: a snapshot made
+///   on a Mac carried `core.ignorecase=true`, and then two paths that differ
+///   only in case, such as `.claude/settings.json` and `.CLAUDE/Settings.json`,
+///   stopped `add` with "will not add file alias". The guest's disk tells case
+///   apart, so git must too. Given on the command line, they win over anything
+///   the guest put in `/work/.git/config`, and the system and global config
+///   files are not read.
 /// - A temporary index, so the guest's own staged state is not touched.
 /// - `add --all` follows the project's ignore files, as a commit would, so an
 ///   ignored file is neither shown nor in anything an export would carry.
@@ -90,8 +97,10 @@ base="$1"
 cd /work
 t=$(mktemp -d)
 trap 'rm -rf "$t"' EXIT
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 g() {
   git -c safe.directory=/work -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+      -c core.ignorecase=false -c core.precomposeunicode=false \
       -c commit.gpgSign=false -c user.name=sandbox -c user.email=sandbox@localhost.invalid "$@"
 }
 if ! g rev-parse --verify --quiet 'HEAD^{commit}' >/dev/null; then
@@ -108,7 +117,7 @@ if g cat-file -e "$base^{commit}" 2>/dev/null; then
 else
   g bundle create -q "$t/out.bundle" refs/heads/sandbox-review
 fi
-base64 "$t/out.bundle"
+base64 <"$t/out.bundle"
 "#;
 
 /// Makes the baseline in the host's snapshot copy, just before it is copied
@@ -170,6 +179,17 @@ pub(crate) fn forget_baseline(project: &Project) {
     }
 }
 
+/// What every failure to get or read the sandbox's changes starts with. Code in
+/// the sandbox can make the review fail on purpose, so a failure must never
+/// read as "nothing to see".
+pub const NOT_REVIEWED: &str =
+    "the review could not run, so treat everything the sandbox changed as unreviewed";
+
+fn not_reviewed(mut error: ApiError) -> ApiError {
+    error.message = format!("{NOT_REVIEWED}: {}", error.message);
+    error
+}
+
 fn no_baseline() -> ApiError {
     wrong_state(format!(
         "there is no record of what this sandbox started from, so its changes cannot be compared. It was created before this was kept, or the record could not be made. To compare, recreate it with {bin} down --destroy, then {bin} up, which deletes its data.",
@@ -218,14 +238,15 @@ pub fn diff(
     let staging = tempdir_in_state(service)?;
     let bundle = staging.path().join("from-sandbox.bundle");
     progress.step("bundling inside the sandbox", None);
-    fetch_bundle(service, project, &baseline, &bundle, &*progress)?;
+    fetch_bundle(service, project, &baseline, &bundle, &*progress).map_err(not_reviewed)?;
     progress.step("reviewing on the host", None);
     let (quarantine, review) = review_bundle(
         &store,
         &baseline,
         &bundle,
         &staging.path().join("quarantine.git"),
-    )?;
+    )
+    .map_err(not_reviewed)?;
     let mut report = report(project, &baseline, &review);
     progress.step("reading the changed lines", None);
     // A keychain that cannot be read means values cannot be looked for. The
@@ -856,6 +877,102 @@ mod tests {
         ];
         let first = kinds.iter().min_by_key(|k| rank(**k)).unwrap();
         assert_eq!(*first, FlagKind::AgentHook);
+    }
+
+    /// Plain git for setting up a stand-in for the guest's `/work`, never with
+    /// the user's own config.
+    fn plain_git(dir: &Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .env_clear()
+            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .env("HOME", dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap()
+    }
+
+    /// Runs a guest script for real on this machine, with `work` standing in
+    /// for `/work`.
+    fn run_guest(script: &str, work: &Path, base: &str) -> std::process::Output {
+        let script = script.replace("/work", work.to_str().unwrap());
+        std::process::Command::new("sh")
+            .env_clear()
+            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .env("HOME", work)
+            .args(["-c", &script, "sh", base])
+            .current_dir(work)
+            .output()
+            .unwrap()
+    }
+
+    /// Seen on a real VM: a snapshot made on a Mac carried `core.ignorecase=true`
+    /// into the guest, and a second copy of `.claude/settings.json` that differed
+    /// only in case stopped the bundle, so nothing was reviewed at all. This needs
+    /// a folder that tells case apart, as the guest's disk does. A Mac's usual
+    /// disk does not, so there it says so and checks nothing; run it with
+    /// `TMPDIR` on a case-sensitive volume to see it on a Mac.
+    #[test]
+    fn paths_that_differ_only_in_case_are_bundled_whatever_the_repository_says() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().canonicalize().unwrap().join("work");
+        std::fs::create_dir(&work).unwrap();
+        std::fs::write(work.join("case"), "").unwrap();
+        if work.join("CASE").exists() {
+            eprintln!("skipped: {} does not tell case apart", work.display());
+            return;
+        }
+        std::fs::remove_file(work.join("case")).unwrap();
+        let ok = |out: std::process::Output| {
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8(out.stdout).unwrap()
+        };
+        ok(plain_git(&work, &["init", "-q", "-b", "main"]));
+        ok(plain_git(&work, &["config", "core.ignorecase", "true"]));
+        std::fs::write(work.join("app.js"), "1\n").unwrap();
+        ok(plain_git(&work, &["add", "--all"]));
+        ok(plain_git(&work, &["commit", "-q", "-m", "base"]));
+        let base = ok(plain_git(&work, &["rev-parse", "HEAD"])).trim().to_owned();
+        for (dir, file) in [(".claude", "settings.json"), (".CLAUDE", "Settings.json")] {
+            std::fs::create_dir(work.join(dir)).unwrap();
+            std::fs::write(work.join(dir).join(file), "{\"hooks\":{}}\n").unwrap();
+        }
+
+        // The script as it was fails just as it did on the real VM.
+        let before = GUEST_SCRIPT.replace(
+            " \\\n      -c core.ignorecase=false -c core.precomposeunicode=false",
+            "",
+        );
+        assert_ne!(before, GUEST_SCRIPT);
+        let failed = run_guest(&before, &work, &base);
+        assert!(!failed.status.success());
+        assert!(
+            String::from_utf8_lossy(&failed.stderr).contains("will not add file alias"),
+            "{}",
+            String::from_utf8_lossy(&failed.stderr)
+        );
+
+        let sent = run_guest(GUEST_SCRIPT, &work, &base);
+        assert!(sent.status.success(), "{}", String::from_utf8_lossy(&sent.stderr));
+        let mut bundle = Vec::new();
+        let mut decoder = Base64::default();
+        decoder.feed(&sent.stdout, &mut bundle).unwrap();
+        assert!(decoder.complete());
+        let file = temp.path().join("out.bundle");
+        std::fs::write(&file, bundle).unwrap();
+        let into = temp.path().canonicalize().unwrap().join("check");
+        std::fs::create_dir(&into).unwrap();
+        ok(plain_git(&into, &["init", "-q"]));
+        ok(plain_git(&into, &["fetch", "-q", work.to_str().unwrap(), &base]));
+        ok(plain_git(&into, &["fetch", "-q", file.to_str().unwrap(), &format!("{TIP_REF}:{TIP_REF}")]));
+        let files = ok(plain_git(&into, &["ls-tree", "-r", "--name-only", TIP_REF]));
+        assert_eq!(
+            files.lines().collect::<Vec<_>>(),
+            [".CLAUDE/Settings.json", ".claude/settings.json", "app.js"]
+        );
     }
 
     #[test]
