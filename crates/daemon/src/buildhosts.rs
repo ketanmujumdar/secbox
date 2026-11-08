@@ -140,7 +140,8 @@ fn look_at(path: &Path, name: &str, found: &mut Found) {
     let is_source = [".js", ".jsx", ".ts", ".tsx", ".mjs", ".css", ".scss"]
         .iter()
         .any(|ext| lower.ends_with(ext));
-    if !is_dockerfile && !(is_source && !found.fonts) {
+    let fonts_to_look_for = is_source && !found.fonts;
+    if !is_dockerfile && !fonts_to_look_for {
         return;
     }
     let Some(text) = read_small(path) else { return };
