@@ -42,11 +42,23 @@ export P=~/code/secbox-test                   # the folder
 
 The cases everything else depends on. Each secret value is made up: use `fake-token-1234`.
 
+`up` starts from a commit, so a project must be the top folder of a Git repository. A fixture inside this checkout is not one, and `up` refuses it at the plan. Copy each fixture into a repository of its own first:
+
+```sh
+fixture() {   # fixture NAME: copies tests/fixtures/NAME to ~/code/NAME and commits it
+  cp -R "tests/fixtures/$1" ~/code/"$1"
+  git -C ~/code/"$1" init -q -b main
+  git -C ~/code/"$1" add .
+  git -C ~/code/"$1" -c commit.gpgsign=false commit -qm fixture
+}
+fixture hostile-demo; fixture hostile-demo-run; fixture clean; fixture dockerfile-only
+```
+
 ### Refused before starting
 
 ```sh
-secbox secrets set DEMO_TOKEN --service api --project tests/fixtures/hostile-demo
-secbox up tests/fixtures/hostile-demo
+secbox secrets set DEMO_TOKEN --service api --project ~/code/hostile-demo
+secbox up ~/code/hostile-demo
 ```
 
 | # | Pass when | Result |
@@ -56,7 +68,7 @@ secbox up tests/fixtures/hostile-demo
 ### Hostile project, running
 
 ```sh
-H=tests/fixtures/hostile-demo-run
+H=~/code/hostile-demo-run
 secbox secrets set DEMO_TOKEN --service api --project $H
 secbox up $H
 secbox logs api --project $H
@@ -67,13 +79,13 @@ secbox diff $H; echo "exit $?"
 
 | # | Pass when | Result |
 | --- | --- | --- |
-| 1.2 | Every probe prints `BLOCKED`: HTTPS to a denied host, raw IP, metadata, token in DNS, and reading the secret folder | |
-| 1.3 | The hook probe says `LEAKED`, which is expected because the write inside the sandbox succeeds. The file is not in this checkout: `git status tests/fixtures` is clean | |
+| 1.2 | Every probe prints `BLOCKED`: HTTPS to a denied host, raw IP, metadata, token in DNS, and the disk sweep. `BLOCKED` alone is weak, because those targets would not answer anyway. So also run the control: `secbox exec --service api --project $H -- wget -q -T 5 -O /dev/null https://example.com` and the same for `http://1.1.1.1/` both fail from the sandbox, while `curl -sI https://example.com` and `curl -sI http://1.1.1.1/` succeed from the Mac | |
+| 1.3 | The hook probe says `LEAKED`, which is expected because the write inside the sandbox succeeds. The file is not on the Mac: `git -C $H status` is clean | |
 | 1.4 | `diff` lists `.claude/settings.json` first as a `FLAG`, and exits 5 | |
 | 1.5 | `net blocked` lists `exfil.example.net` and `build-exfil.example.net` | |
 | 1.6 | `logs` shows `[DEMO_TOKEN]`, never `fake-token-1234`, including in the base64 the probe sends | |
 | 1.7 | `status` lists the secret and every host it could reach under "Where secrets could go" | |
-| 1.8 | `grep -rl fake-token-1234 ~/.secbox` finds nothing | |
+| 1.8 | `grep -rl fake-token-1234 ~/.secbox` and `grep -rl faketoken1234 ~/.secbox` find nothing. The second is the form the DNS probe sends, with the hyphens stripped | |
 
 ```sh
 secbox down --destroy $H
@@ -189,7 +201,7 @@ Only one real confirmation so far.
 ## 6. Lifecycle and ports
 
 ```sh
-C=tests/fixtures/clean
+C=~/code/clean
 secbox up $C --port 8080
 curl -sI http://127.0.0.1:8080 | head -1
 lsof -nP -iTCP:8080 -sTCP:LISTEN
@@ -202,7 +214,7 @@ secbox status $C
 | 6.2 | `secbox exec --project $C -- touch /work/marker`, then `down` and `up` | The marker survives, the stack returns, and the sandbox isn't recreated | |
 | 6.3 | `down`, then `logs`, `exec` and `shell` | Each refuses, says how to start it, and starts nothing | |
 | 6.4 | Port after `down` | Gone | |
-| 6.5 | `secbox up tests/fixtures/dockerfile-only --port 3000` | Builds, including the heredoc. 3000 answers, and unapproved 8080 is **closed** | |
+| 6.5 | `secbox up ~/code/dockerfile-only --port 3000` | Builds, including the heredoc. 3000 answers, and unapproved 8080 is **closed** | |
 | 6.6 | On that project: `logs`, `shell app`, `exec --service app`, then `down` and `up` | Each finds the generated Compose file | |
 | 6.7 | `secbox down --destroy $C` | Gone, and `status` says no sandbox | |
 | 6.8 | `secbox remove $C` | The project leaves the list, and the folder stays | |
@@ -266,8 +278,8 @@ c=collections.Counter(json.loads(l).get('action') for l in open(os.path.expandus
 for k,v in c.most_common(): print(v,k)"
 secbox down --destroy "$P"; secbox down --destroy "$R"
 secbox secrets rm FAKE_WEB_ONLY --project "$P"
-secbox secrets rm DEMO_TOKEN --project tests/fixtures/hostile-demo
-secbox secrets rm DEMO_TOKEN --project tests/fixtures/hostile-demo-run
+secbox secrets rm DEMO_TOKEN --project ~/code/hostile-demo
+secbox secrets rm DEMO_TOKEN --project ~/code/hostile-demo-run
 rm -rf /tmp/agent-test
 ```
 

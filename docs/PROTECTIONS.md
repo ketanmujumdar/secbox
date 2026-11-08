@@ -40,7 +40,7 @@ attack in plain Docker for comparison, where seven of them succeeded.
 | Sweep the disk for tokens (TruffleHog) | Shai-Hulud | Keys are never in the project or its snapshot; `.env` files are left out of the snapshot | **Tested in code** |
 | Ask the cloud metadata service for credentials | LiteLLM on PyPI (Mar 2026) | Metadata addresses are blocked by the engine | The gateway denied `169.254.169.254` on a real VM (spike 0001). There was no real metadata service to prove the opposite, so that is the evidence |
 | Send the key inside a DNS lookup | Common exfiltration | DNS is answered only for allowed names; refused names are recorded, with the key masked | Refusal: ran on a real VM (spike 0001). Recording: ran on a real VM. Masking: **tested in code** |
-| Post the key to a raw IP | Common exfiltration | Raw IPs are blocked by the engine | A raw UDP address (`1.1.1.1`) was blocked on a real VM. Raw TCP to a public IP has not been tested: **not yet proven** |
+| Post the key to a raw IP | Common exfiltration | Raw IPs are blocked by the engine | A raw UDP address (`1.1.1.1`) was blocked on a real VM. Raw TCP to public IPs was tried by hand on a real Mac with engine 0.7.13: ports 22, 25, 443, 853 and 8000 were refused. HTTP on port 80, and TCP on 53, does connect, but to the engine's own network layer, which answers 403 or nothing; it does not reach the address. Not a repeatable test yet: **not yet proven** |
 | Plant a hook for Claude, Cursor or VS Code to run later | s1ngularity / Nx (2025), testmetest (Oct 2026) | The VM gets a copy of the project and can't write to yours; `.claude/`, `.vscode/`, `CLAUDE.md`, workflows and install scripts are flagged on review | Copy: by design. `secbox diff` flags the hook first, and exits 5: **tested in code** |
 | A sidecar reads another container's env via the Docker socket | Container escape | Refused at plan time when the project has secrets | **Tested in code** |
 | A sidecar reads `/proc` with `pid: host`, or goes `privileged` | Container escape | Refused at plan time when the project has secrets | **Tested in code** |
@@ -169,3 +169,8 @@ first. Once code runs as you on your machine, secbox does not stop it:
 - **`diff` needs `git` inside the VM image**, which has not been checked on a real VM.
 - **Blocked raw IP, metadata and UDP attempts are blocked but not recorded**,
   so an empty `net blocked` list proves nothing.
+- **A raw-IP connection on port 80 or TCP 53 succeeds inside the sandbox.** It
+  reaches the engine's own network layer, not the address, and gets a 403 or
+  no answer. A probe that only checks whether it connected would call this a
+  leak. Other ports tried (22, 25, 443, 853, 8000) were refused, on a real Mac
+  with engine 0.7.13.

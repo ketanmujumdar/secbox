@@ -86,7 +86,7 @@ performed it. Each line is a separate thing to confirm.
 Built on Nov 5, 2026 and tested only against `FakeEngine`, with `tests/fixtures/dockerfile-only`. **Never run on a real VM.** The tests show the plan, the approval and the generated file reaching the engine's copy; they say nothing about Compose or Docker accepting it.
 
 - [ ] Compose v5.7.0 in the guest accepting the generated `compose.yaml` and building `app` from `/work` with `/work/Dockerfile`.
-- [ ] The long-syntax ports (`target`, `published` as a string, `protocol: tcp`) publishing as expected, and an approved port reaching the app on `127.0.0.1` with its number unchanged. `tests/fixtures/dockerfile-only` answers on 3000 and 8080.
+- [ ] The long-syntax ports (`target`, `published` as a string, `protocol: tcp`) publishing as expected, and an approved port reaching the app on `127.0.0.1` with its number unchanged. `tests/fixtures/dockerfile-only` answers on 3000 and 8080. Copy it into a repository of its own first, as `docs/TEST_PLAN.md` section 1 shows: `up` refuses a folder that is not the top folder of a Git repository.
 - [ ] `ps`, `logs`, `shell app`, `exec --service app` and `down` finding the generated file by name in `/work`.
 - [ ] Restart: `down` then `up` reusing the file already in the guest.
 - [ ] The heredoc in the fixture building, which needs BuildKit's Dockerfile 1.4 syntax in the guest's Docker.
@@ -183,7 +183,7 @@ Not run, or not known:
 
 ## The hostile demo
 
-`tests/fixtures/hostile-demo-run` holds a secret in `api` and tries to send it out. On a real VM, run it as in `tests/fixtures/hostile-demo/README.md` and record what each probe printed. Until then, these are claims:
+`tests/fixtures/hostile-demo-run` holds a secret in `api` and tries to send it out. On a real VM, run it as in `tests/fixtures/hostile-demo/README.md`, which first copies it into a repository of its own, because `up` refuses a folder inside this one. Record what each probe printed, and the control there: BLOCKED alone is weak, because the probes' targets would not answer anyway. Until then, these are claims:
 
 - every probe prints BLOCKED, including the raw IP, metadata and token-in-DNS ones;
 - `net blocked` lists `exfil.example.net` and `build-exfil.example.net`;
