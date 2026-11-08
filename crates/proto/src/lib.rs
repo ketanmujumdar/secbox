@@ -463,8 +463,8 @@ pub struct BlockedArgs {
     pub after: Option<BlockedCursor>,
 }
 
-/// A place in the log. It names the file as well as the offset, because the
-/// engine renames the file when it grows.
+/// A place in the daemon's record of blocked names, for following it. Opaque to
+/// clients: the daemon that gave it is the only thing that can read it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlockedCursor {
@@ -796,8 +796,13 @@ pub struct BlockedReport {
     pub omitted_domains: u64,
     /// Lines in the place of an event that failed the check, so were not used.
     pub rejected_lines: u64,
+    /// Names counted before the daemon last started. The guest chooses a name,
+    /// so its text is held in memory only and these can no longer be shown.
+    #[serde(default)]
+    pub unlisted_domains: u64,
     pub trust: LogTrust,
-    /// Where to ask from next, to get only what is new.
+    /// Where to ask from next, to get only what is new. It means nothing
+    /// outside the daemon that gave it.
     pub next: Option<BlockedCursor>,
 }
 
@@ -1610,6 +1615,7 @@ mod tests {
                 cut_off: true,
                 omitted_domains: 1,
                 rejected_lines: 1,
+                unlisted_domains: 0,
                 trust: LogTrust::Doubtful("why".to_owned()),
                 next: Some(BlockedCursor { file: 1, offset: 2 }),
             }),

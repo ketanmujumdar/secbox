@@ -119,6 +119,8 @@ Built on Nov 5, 2026 and tested only against `FakeEngine`, which plays the guest
 - [ ] **The bundle leaving the guest as base64 on `msb exec` output**, through the engine adapter's streamed exec. It is line-buffered and passed through the secret redactor: a delivered secret's value appearing in the base64 text would be masked and the bundle refused, and how the real engine handles a stream of this size is unmeasured. The 128 MB cap is enforced on the bytes as they arrive.
 - [ ] Time to bundle and review a project the size of `demo_shop`, against the 10-minute limit in the daemon and the 3-minute limit in the full-screen interface and the desktop app. `secbox diff` itself waits as long as the daemon does.
 - [ ] The hostile demo's planted `.claude/settings.json` appearing in `/work` through the `api` container's mount, and `diff` flagging it. See `tests/fixtures/hostile-demo/README.md`.
+- [ ] `.claude/settings.json` and `.CLAUDE/Settings.json` both in `/work`: `diff` bundles both and flags both. On Nov 8, 2026 this failed on a real VM with "will not add file alias", because the snapshot made on a Mac carried `core.ignorecase=true`. The guest script now overrides that, and the baseline no longer sets it. The fix ran with real git on a case-sensitive folder on a Mac, not in a VM.
+- [ ] A bundle that fails for any other reason: `diff` says the review could not run and that everything is unreviewed, and exits 1.
 
 There is deliberately no copy-out step: the engine has none, and one would have the engine write guest-shaped files on the host.
 
@@ -171,7 +173,7 @@ Ran on a real VM, on engine 0.7.13 on macOS, in throwaway sandboxes:
 - Crafted DNS queries sent by hand, with a newline, a space, ` domain=`, an escape code and a NUL in the name. The engine escaped each one.
 - A flood of file activity that pushed all earlier events out in about 12 seconds. `-f` still showed the event after it.
 - Attempts on the logs folder from inside the guest as root: through both file shares, and through a symlink. All failed.
-- An `--env` value and a value on standard input were sent through `exec`, and neither appeared in `runtime.log` at debug. An `--env` value printed by the guest did appear in `exec.log`, as all exec output does, at any level.
+- An `--env` value and a value on standard input were sent through `exec`, and neither appeared in `runtime.log` at debug. An `--env` value printed by the guest did appear in `exec.log`, as all exec output does, at any level. Since Nov 8, 2026 the daemon stops that file being written: see "Secret values on the host's disk".
 
 Not run, or not known:
 
@@ -180,6 +182,41 @@ Not run, or not known:
 - Crafted requests to the file share from a modified guest kernel. The kernel appears to have no module support, but the guest has `/dev/mem`.
 - `demo_shop` at debug. How fast its build fills the 50 MB is unmeasured. One small Compose start wrote about 5 MB.
 - The cost of debug logging. One tight file-activity loop ran about 9% slower than at the default level, from one run of each.
+
+## Secret values on the host's disk
+
+Found on Nov 8, 2026 on a real Mac, after the hostile demo ran with the fake
+token `fake-token-1234`: the token was in the engine's `exec.log` (mode 644),
+cut into a refused name in its `runtime.log` and renamed copies (mode 666),
+and in the daemon's `blocked-seen.json`. It was also in the VM's disk image,
+`rootfs.raw`, nine times: twice as `DEMO_TOKEN=...` in Docker's container
+configs, once in the OCI runtime config, and as a printed line in Docker's
+container log. `~/.secbox` itself is `0700`.
+
+Ran by hand on a real VM the same day, on engine 0.7.13 with an `alpine`
+sandbox in a separate engine home, not through the daemon:
+
+- With a folder at `logs/exec.log`, `exec` and `exec --stream` with input worked, the runtime log said `exec_log: open failed, capture disabled`, and the output was in no file. Stop, start and `remove` worked.
+- With a folder at `logs/kernel.log` the VM did not boot (`OpenConsoleFile`). With a link to `/dev/null` it did, and a line written to `/dev/console` was in no file.
+- Replacing either file while the sandbox ran: the engine went on writing to the file it had open, which had no name any more.
+- Truncating `runtime.log`, and writing zeros over the part already read, while it ran: the engine's next lines went after the old end, with no gap and no lost line. It writes in append mode.
+- After all of that, the only files in the engine home holding a test token were `runtime.log` and a renamed copy, which is what the daemon now clears.
+- When the engine renamed `runtime.log`, the new files were mode `0666` even with a umask of `022`.
+
+Not run on a real VM:
+
+- [ ] The whole thing through the daemon: `secbox up` on `tests/fixtures/hostile-demo-run`, `secbox logs`, `secbox exec`, `secbox diff`, `net blocked`, then wait 10 seconds and `grep -r -l -E 'fake-token-1234|faketoken1234' ~/.secbox`. Expected: only `rootfs.raw` (and `previous-root.raw` if a host was approved).
+- [ ] `exec.log` a folder and `kernel.log` a link right after `create` on `docker:dind`, and the start sequence (dockerd, Compose, secret delivery) unaffected.
+- [ ] A sandbox made by an older version: its `exec.log` cleared and replaced at the next `up`.
+- [ ] `net blocked` and `net blocked -f` still listing names, and `runtime.log` holding zeros where they were, within 5 seconds.
+- [ ] After restarting the daemon, `net blocked` saying how many names it can no longer show.
+- [ ] Renamed `runtime.log.N` files made `0600` by the daemon's pass.
+- [ ] Whether a service can get text of its choosing into `jobs-v1/*/output.jsonl`, which holds `dockerd`'s output.
+
+Still exposed, and not fixed by this: `rootfs.raw`. Docker in the VM keeps
+container configs and logs on the VM's disk. Keeping
+`/var/lib/docker/containers` and containerd's state on a `tmpfs` in the VM
+might fix it, at a memory cost; it has not been tried.
 
 ## The hostile demo
 

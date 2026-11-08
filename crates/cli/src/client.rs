@@ -100,6 +100,8 @@ pub trait DaemonClient {
 }
 
 /// Something a background call has to say.
+// One `Done` is sent per call, so its size costs nothing worth boxing for.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Event {
     Output(OutputStream, String),

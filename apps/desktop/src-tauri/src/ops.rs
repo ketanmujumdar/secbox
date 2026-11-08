@@ -880,6 +880,15 @@ pub fn blocked_view(report: &BlockedReport) -> BlockedView {
             ),
         ));
     }
+    if report.unlisted_domains > 0 {
+        notes.push(note(
+            Weight::Warn,
+            format!(
+                "{} names seen before the daemon last started are not listed. A sandbox chooses the names it looks up and can hide a secret in one, so names are never written to disk.",
+                report.unlisted_domains
+            ),
+        ));
+    }
     let recording = report.recording == BlockedRecording::Recording;
     if recording && report.events.is_empty() {
         notes.push(note(Weight::Plain, "No blocked hostnames are recorded so far.".to_owned()));
@@ -1282,11 +1291,35 @@ mod tests {
             cut_off: false,
             omitted_domains: 0,
             rejected_lines: 0,
+            unlisted_domains: 0,
             trust: LogTrust::NotRead,
             next: None,
         });
         assert!(view.notes.iter().any(|n| n.text == HOSTNAMES_ONLY));
         assert!(view.notes.iter().any(|n| n.text.contains("No blocked hostnames")));
+        assert!(!view.notes.iter().any(|n| n.text.contains("not listed")));
+    }
+
+    /// Names are kept in the daemon's memory only, so after a restart the
+    /// window has to say some are missing rather than look empty.
+    #[test]
+    fn names_from_before_a_restart_are_said_to_be_missing() {
+        let view = blocked_view(&BlockedReport {
+            recording: BlockedRecording::Recording,
+            log_level: None,
+            events: vec![],
+            total: 3,
+            cut_off: false,
+            omitted_domains: 0,
+            rejected_lines: 0,
+            unlisted_domains: 3,
+            trust: LogTrust::HostOnly,
+            next: None,
+        });
+        assert!(view
+            .notes
+            .iter()
+            .any(|n| n.text.starts_with("3 names seen before the daemon last started are not listed")));
     }
 
     #[test]
