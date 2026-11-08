@@ -270,6 +270,7 @@ cd /tmp/agent-test && claude
 | 9.8 | `secbox` in a terminal: each tab, `u`, `S`, `e`, and resize to 60 by 14 | Keys match the bottom bar, nothing breaks the frame, and the shell returns cleanly | |
 | 9.9 | Settings, Ports: move a port to another number (3001), Save, then Restart to apply | Touch ID names "opening port 3001 (…)". 3001 answers, the old number is closed, and `port_moved` is in the audit log | |
 | 9.10 | `secbox ports close 3001`, then `down` and `up` | No Touch ID mention of the port, it is closed, `port_closed` in the audit log | |
+| 9.11 | Network tab, Allowed hosts: Block again on an approved host | No Touch ID. Data kept, the host is refused again, its blocked row offers Approve again, and `host_revoked` is in the audit log | |
 
 ## 10. Finish
 

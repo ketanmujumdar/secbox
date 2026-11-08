@@ -121,6 +121,10 @@ pub struct Approvals {
     /// True once a person chose which ports open, at a start or on their own.
     #[serde(default)]
     pub ports_chosen: bool,
+    /// When each of `run_hosts` was approved. A host approved before this was
+    /// recorded has none.
+    #[serde(default)]
+    pub run_hosts_approved_unix: BTreeMap<String, u64>,
 }
 
 impl Approvals {
@@ -135,6 +139,8 @@ impl Approvals {
         copy.ports.dedup();
         copy.run_hosts.sort();
         copy.run_hosts.dedup();
+        let hosts = copy.run_hosts.clone();
+        copy.run_hosts_approved_unix.retain(|host, _| hosts.contains(host));
         write_json(&project_dir.join(APPROVALS_FILE), &copy)
     }
 
@@ -289,11 +295,14 @@ mod tests {
             resources: proto::ResourceChoice::default(),
             mac_ports: BTreeMap::from([(3000, 3001)]),
             ports_chosen: true,
+            run_hosts_approved_unix: BTreeMap::from([("a.example.com".into(), 7), ("gone.example.com".into(), 8)]),
         };
         approvals.save(dir.path()).unwrap();
         let back = Approvals::load(dir.path()).unwrap();
         assert_eq!(back.ports, vec![3000, 8080]);
         assert_eq!(back.run_hosts, vec!["a.example.com", "b.example.com"]);
+        // A time is kept only for a host that is still approved.
+        assert_eq!(back.run_hosts_approved_unix, BTreeMap::from([("a.example.com".into(), 7)]));
         assert!(back.allows_port(3000));
         assert!(!back.allows_port(5432));
     }

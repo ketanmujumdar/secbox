@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use crate::blocked::{self, Weight};
-use crate::client::DaemonClient;
+use crate::client::{CallError, DaemonClient};
 
 use super::logs::failure;
 use super::style::Style;
@@ -31,7 +31,14 @@ pub fn refresh(client: &dyn DaemonClient, panel: &mut TrafficPanel, path: &str) 
     panel.rows.clear();
     panel.hosts.clear();
     panel.notes.clear();
+    panel.allowed.clear();
     panel.scroll = 0;
+    panel.allowed = match ask_hosts(client, path) {
+        Ok(report) => allowed_lines(&report),
+        // A daemon older than this list, or one that did not answer: the
+        // blocked list below still stands.
+        Err(_) => vec![Line::styled("The allowed hosts could not be read.".to_owned(), Style::WindowDim)],
+    };
     match blocked::ask(client, path, None, READ_LIMIT) {
         Ok(report) => {
             panel.notes = blocked::notes(&report)
@@ -54,10 +61,56 @@ pub fn refresh(client: &dyn DaemonClient, panel: &mut TrafficPanel, path: &str) 
     }
 }
 
+fn ask_hosts(client: &dyn DaemonClient, path: &str) -> Result<proto::HostsReport, CallError> {
+    match client.stream(
+        proto::Request::Hosts(proto::ProjectArgs { project: path.to_owned() }),
+        &mut |_, _| true,
+        Some(READ_LIMIT),
+    ) {
+        Ok(proto::Reply::Hosts(report)) => Ok(report),
+        Ok(_) => Err(CallError::Transport("the daemon answered something else".to_owned())),
+        Err(error) => Err(error),
+    }
+}
+
+/// What the sandbox may reach, kept short: the plan's hosts are counted, not
+/// listed, so the blocked list keeps its room.
+fn allowed_lines(report: &proto::HostsReport) -> Vec<Line> {
+    let esc = crate::ui::esc;
+    let mut out = vec![Line::styled("APPROVED BY YOU".to_owned(), Style::WindowDim)];
+    if report.approved.is_empty() {
+        out.push(Line::styled("None.".to_owned(), Style::WindowDim));
+    }
+    for host in &report.approved {
+        let state = if host.in_effect { "reachable now" } else { "from the next start" };
+        out.push(Line::styled(format!("{}  {state}", esc(&host.host)), Style::Window));
+    }
+    for host in &report.leaving {
+        out.push(Line::styled(format!("{}  blocked again, until it is replaced", esc(host)), Style::WindowWarn));
+    }
+    let plan = match report.plan_hosts.len() {
+        0 => "From the plan: none.".to_owned(),
+        1 => "From the plan: 1 build host".to_owned(),
+        n => format!("From the plan: {n} build hosts"),
+    };
+    let plan = if report.plan_hosts_while_running && !report.plan_hosts.is_empty() {
+        format!("{plan}, reachable while it runs too.")
+    } else if report.plan_hosts.is_empty() {
+        plan
+    } else {
+        format!("{plan}.")
+    };
+    out.push(Line::styled(plan, Style::WindowDim));
+    out.push(Line::styled(
+        format!("Block one again with: {} net block NAME", brand::CLI_BIN),
+        Style::WindowDim,
+    ));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::CallError;
     use proto::{
         ApiError, BlockedEvent, BlockedRecording, BlockedReport, ErrorCode, LogTrust, OutputStream,
         Reply, Request,
@@ -86,6 +139,21 @@ mod tests {
             _output: &mut dyn FnMut(OutputStream, &str) -> bool,
             limit: Option<Duration>,
         ) -> Result<Reply, CallError> {
+            if matches!(request, Request::Hosts(_)) {
+                assert!(limit.is_some(), "the panel must always set a time limit");
+                return Ok(Reply::Hosts(proto::HostsReport {
+                    sandbox: proto::SandboxState::Running,
+                    plan_hosts: vec!["registry-1.docker.io".into(), "auth.docker.io".into()],
+                    plan_hosts_while_running: true,
+                    plan_note: None,
+                    approved: vec![proto::ApprovedHost {
+                        host: "example.com".into(),
+                        approved_unix: Some(1),
+                        in_effect: true,
+                    }],
+                    leaving: vec!["old.example.org".into()],
+                }));
+            }
             assert!(matches!(request, Request::Blocked(_)));
             self.limited.set(limit.is_some());
             (self.answer)()
@@ -208,5 +276,18 @@ mod tests {
             )))
         });
         assert!(notes_of(&panel).contains("symbolic link"));
+    }
+
+    #[test]
+    fn the_allowed_hosts_come_before_the_blocked_list_and_say_how_to_change_them() {
+        let panel = filled(|| Ok(Reply::Blocked(base(BlockedRecording::Recording))));
+        let text: Vec<&str> = panel.allowed.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(text[0], "APPROVED BY YOU");
+        assert_eq!(text[1], "example.com  reachable now");
+        assert_eq!(text[2], "old.example.org  blocked again, until it is replaced");
+        // Wrapped by the panel at any width; these fit 60 columns whole.
+        assert_eq!(text[3], "From the plan: 2 build hosts, reachable while it runs too.");
+        assert!(text[4].contains("net block NAME"));
+        assert!(text.iter().all(|t| t.chars().count() <= 60), "{text:?}");
     }
 }

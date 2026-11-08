@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-block-host"
+description = "Enables the block_host command without any pre-configured scope."
+commands.allow = ["block_host"]
+
+[[permission]]
+identifier = "deny-block-host"
+description = "Denies the block_host command without any pre-configured scope."
+commands.deny = ["block_host"]

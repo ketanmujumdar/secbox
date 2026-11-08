@@ -491,6 +491,8 @@ pub struct TrafficPanel {
     pub rows: Vec<String>,
     /// The hostname on each row, unformatted, for approving one.
     pub hosts: Vec<String>,
+    /// What the sandbox may reach: approved hosts and the plan's, escaped.
+    pub allowed: Vec<Line>,
     /// How many rows back from the newest the view has been scrolled.
     pub scroll: usize,
 }
@@ -2174,6 +2176,9 @@ fn traffic_body(model: &Model, screen: &mut Screen, at: Rect) {
     );
     for note in panel.notes.iter().filter(|n| n.style != Style::WindowAlert) {
         say(screen, &mut row, &note.text, note.style);
+    }
+    for line in &panel.allowed {
+        say(screen, &mut row, &line.text, line.style);
     }
     if row + 2 > bottom {
         return;

@@ -22,6 +22,8 @@
     "allow-diff",
     "allow-remove-project",
     "allow-approve-host",
+    "allow-allowed-hosts",
+    "allow-block-host",
     "allow-secrets",
     "allow-set-secret",
     "allow-secret-files",

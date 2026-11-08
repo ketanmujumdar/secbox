@@ -15,6 +15,8 @@ const COMMANDS: &[&str] = &[
     "destroy",
     "remove_project",
     "approve_host",
+    "allowed_hosts",
+    "block_host",
     "connect_agent",
     "open_in_vscode",
     "logs",

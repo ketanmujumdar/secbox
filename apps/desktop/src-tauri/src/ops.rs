@@ -213,6 +213,50 @@ pub fn resource_choices(client: &Client, path: &str) -> Result<proto::ResourceCh
     Ok(*report)
 }
 
+/// The hostnames a project's sandbox may reach: approved by the person, and
+/// from its plan.
+pub fn allowed_hosts(client: &Client, path: &str) -> Result<proto::HostsReport, CallError> {
+    let reply = client.call(
+        Request::Hosts(ProjectArgs { project: path.to_owned() }),
+        Some(STATUS_LIMIT),
+    )?;
+    let Reply::Hosts(report) = reply else {
+        return Err(wrong_reply());
+    };
+    Ok(report)
+}
+
+/// Takes back an approval. Nobody is asked: it only narrows what the sandbox
+/// can reach. A sandbox that exists is replaced, with its data kept.
+pub fn block_host(
+    client: &Client,
+    path: &str,
+    host: &str,
+    progress: &mut dyn FnMut(&str, Option<&str>),
+) -> Result<String, CallError> {
+    let reply = client.exchange(
+        Request::BlockHost(proto::ApproveHostArgs {
+            project: path.to_owned(),
+            host: host.to_owned(),
+        }),
+        progress,
+        &mut |_, _| true,
+        None,
+        None,
+    )?;
+    let Reply::BlockHost(report) = reply else {
+        return Err(wrong_reply());
+    };
+    let host = text::escape(&report.host);
+    Ok(if !report.was_approved {
+        format!("{host} was not approved. Nothing changed.")
+    } else if report.applied {
+        format!("{host} is blocked again. Its data was kept, and its services restarted in {}s.", report.seconds)
+    } else {
+        format!("{host} is no longer approved. The next start leaves it out.")
+    })
+}
+
 /// The ports a project publishes, and which are open on which number of this Mac.
 pub fn port_choices(client: &Client, path: &str) -> Result<proto::PortChoicesReport, CallError> {
     let reply = client.call(

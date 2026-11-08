@@ -3044,6 +3044,113 @@ fn without_a_way_to_ask_the_client_is_told_and_the_log_says_so() {
     assert!(audit_log(&f).contains("person_unchecked"));
 }
 
+fn block_host(f: &Fixture, host: &str) -> Result<proto::BlockHostReport, proto::ApiError> {
+    match f.call(Request::BlockHost(proto::ApproveHostArgs {
+        project: f.path(),
+        host: host.to_owned(),
+    }))? {
+        Reply::BlockHost(report) => Ok(report),
+        other => panic!("expected a block, got {other:?}"),
+    }
+}
+
+fn hosts(f: &Fixture) -> proto::HostsReport {
+    match f.call(Request::Hosts(proto::ProjectArgs { project: f.path() })).unwrap() {
+        Reply::Hosts(report) => report,
+        other => panic!("expected hosts, got {other:?}"),
+    }
+}
+
+#[test]
+fn approved_hosts_are_listed_apart_from_the_plans() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    approve(&f, "api.example.com").unwrap();
+    let report = hosts(&f);
+    assert_eq!(report.sandbox, SandboxState::Running);
+    assert_eq!(report.approved.len(), 1);
+    assert_eq!(report.approved[0].host, "api.example.com");
+    assert!(report.approved[0].in_effect);
+    assert!(report.approved[0].approved_unix.is_some());
+    assert!(!report.plan_hosts.contains(&"api.example.com".to_owned()));
+    assert!(report.leaving.is_empty());
+}
+
+#[test]
+fn blocking_an_approved_host_again_replaces_the_sandbox_without_it_and_asks_nobody() {
+    let f = fixture_asking(true);
+    f.up(vec![3000]).unwrap();
+    approve(&f, "api.example.com").unwrap();
+    let asked_before = f.deps.asked.lock().unwrap().len();
+    let before = f.deps.engine.calls().len();
+
+    let report = block_host(&f, "API.example.com").unwrap();
+    assert_eq!(report.host, "api.example.com");
+    assert!(report.was_approved);
+    assert!(report.applied);
+    assert_eq!(report.sandbox, SandboxState::Running);
+    assert_eq!(f.deps.asked.lock().unwrap().len(), asked_before, "narrowing asks nobody");
+    assert!(plan_hosts(&f).is_empty());
+
+    let calls = f.deps.engine.calls();
+    let after = &calls[before..];
+    let at = |test: &dyn Fn(&FakeCall) -> bool| after.iter().position(test).unwrap();
+    let keep = at(&|c| matches!(c, FakeCall::KeepRootDisk(..)));
+    let create = at(&|c| matches!(c, FakeCall::Create(_)));
+    let copy = at(&|c| matches!(c, FakeCall::Exec(_, r) if r.command.iter().any(|w| w == "copy-data")));
+    assert!(keep < create && create < copy, "the data is kept: {after:?}");
+    let FakeCall::Create(spec) = &after[create] else { unreachable!() };
+    assert_eq!(spec.ports.len(), 1, "the approved port is kept");
+    let engine::NetworkPolicy::AllowHosts { hosts: allowed, .. } = &spec.network else {
+        panic!("the sandbox must stay deny by default: {:?}", spec.network)
+    };
+    assert!(!allowed.iter().any(|h| h == "api.example.com"), "{allowed:?}");
+
+    let listed = hosts(&f);
+    assert!(listed.approved.is_empty());
+    assert!(listed.leaving.is_empty());
+    assert!(audit_log(&f).contains("host_revoked"));
+}
+
+#[test]
+fn blocking_a_host_that_was_not_approved_changes_nothing() {
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    let before = f.deps.engine.calls().len();
+    let report = block_host(&f, "api.example.com").unwrap();
+    assert!(!report.was_approved);
+    assert!(!report.applied);
+    let calls = f.deps.engine.calls();
+    assert!(!calls[before..].iter().any(|c| matches!(c, FakeCall::Destroy(_) | FakeCall::Create(_) | FakeCall::Stop(_))));
+    assert!(!audit_log(&f).contains("host_revoked"));
+}
+
+#[test]
+fn blocking_with_no_sandbox_only_saves_it_for_the_next_start() {
+    let f = fixture();
+    approve(&f, "api.example.com").unwrap();
+    let report = block_host(&f, "api.example.com").unwrap();
+    assert!(report.was_approved);
+    assert!(!report.applied);
+    assert_eq!(report.sandbox, SandboxState::None);
+    assert!(plan_hosts(&f).is_empty());
+    assert!(!f.deps.engine.calls().iter().any(|c| matches!(c, FakeCall::Create(_))));
+}
+
+#[test]
+fn a_stopped_sandbox_is_replaced_without_the_host_and_stays_stopped() {
+    // Starting a stopped sandbox keeps the rules it was created with, so only
+    // saving the change would leave the host reachable after the next start.
+    let f = fixture();
+    f.up(vec![]).unwrap();
+    approve(&f, "api.example.com").unwrap();
+    f.call(Request::Down(DownArgs { project: f.path(), destroy: false })).unwrap();
+    let report = block_host(&f, "api.example.com").unwrap();
+    assert!(report.applied);
+    assert_eq!(report.sandbox, SandboxState::Stopped);
+    assert!(hosts(&f).approved.is_empty());
+}
+
 // Secrets from a client such as the desktop window: listed by name, and
 // stored write-only.
 

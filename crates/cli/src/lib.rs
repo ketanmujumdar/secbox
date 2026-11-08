@@ -10,6 +10,7 @@ mod debug;
 mod doctor;
 mod editor;
 mod git_cmd;
+mod hosts_cmd;
 pub mod host;
 mod mcp;
 mod net;

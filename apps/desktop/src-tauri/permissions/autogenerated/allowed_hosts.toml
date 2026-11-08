@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-allowed-hosts"
+description = "Enables the allowed_hosts command without any pre-configured scope."
+commands.allow = ["allowed_hosts"]
+
+[[permission]]
+identifier = "deny-allowed-hosts"
+description = "Denies the allowed_hosts command without any pre-configured scope."
+commands.deny = ["allowed_hosts"]

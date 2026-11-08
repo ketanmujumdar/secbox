@@ -306,6 +306,17 @@
           <section class="panel hidden" data-panel="network">
             <div class="card">
               <div class="card-head">
+                <h2>Allowed hosts</h2>
+              </div>
+              <p class="hint">Everything else is refused. Blocking one again restarts its services; its data is kept.</p>
+              <ul class="notes" id="allowed-notes"></ul>
+              <table class="table">
+                <thead><tr><th>Hostname</th><th>Why</th><th></th></tr></thead>
+                <tbody id="allowed-rows"></tbody>
+              </table>
+            </div>
+            <div class="card">
+              <div class="card-head">
                 <h2>Blocked hostnames</h2>
                 <span class="buttons"><span class="muted small-text" id="traffic-total"></span><button class="small" id="traffic-read">Read again</button></span>
               </div>

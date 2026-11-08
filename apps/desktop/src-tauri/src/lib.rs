@@ -459,6 +459,31 @@ async fn approve_host(
     result
 }
 
+/// The hostnames a project's sandbox may reach, for the Network tab.
+#[tauri::command]
+async fn allowed_hosts(project: String, state: State<'_, Arc<AppState>>) -> Result<proto::HostsReport, String> {
+    let state = Arc::clone(&state);
+    blocking(move || ops::allowed_hosts(&state.client, &project).map_err(message)).await
+}
+
+/// Blocks again a host the person approved. No Touch ID: it only narrows.
+#[tauri::command]
+async fn block_host(
+    app: AppHandle,
+    project: String,
+    host: String,
+    on_progress: Channel<ProgressEvent>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let state = Arc::clone(&state);
+    let result = blocking(move || {
+        ops::block_host(&state.client, &project, &host, &mut forward(&on_progress)).map_err(message)
+    })
+    .await;
+    refresh_tray(&app);
+    result
+}
+
 #[tauri::command]
 async fn remove_project(app: AppHandle, project: String, state: State<'_, Arc<AppState>>) -> Result<String, String> {
     let state = Arc::clone(&state);
@@ -842,6 +867,8 @@ pub fn run() {
             destroy,
             remove_project,
             approve_host,
+            allowed_hosts,
+            block_host,
             connect_agent,
             open_in_vscode,
             logs,

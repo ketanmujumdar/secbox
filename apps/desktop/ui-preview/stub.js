@@ -27,6 +27,7 @@
   const daemonRunning = scene !== 'nodaemon';
 
   const resources = { memory: '6 GB', cpus: '4', disk: '30 GB', build_memory: '8 GB', clamped: false };
+  let approvedHosts = ['example.com'];
   let limitChoice = { memory_bytes: null, millicpus: null, disk_bytes: null };
   // The ports a person chose, by the number the project publishes.
   const portChoice = {
@@ -312,6 +313,18 @@
         return null;
       case 'blocked':
         return blocked;
+      case 'allowed_hosts':
+        return {
+          sandbox: 'running',
+          plan_hosts: ['auth.docker.io', 'registry-1.docker.io'],
+          plan_hosts_while_running: true,
+          plan_note: null,
+          approved: approvedHosts.map((host) => ({ host, approved_unix: 1794113048, in_effect: true })),
+          leaving: [],
+        };
+      case 'block_host':
+        approvedHosts = approvedHosts.filter((h) => h !== args.host);
+        return args.host + ' is blocked again. Its data was kept, and its services restarted in 35s.';
       case 'problems': {
         const rows = args.project ? problemRows.filter((r) => r.project_path === args.project) : problemRows;
         return { rows, notes: rows.length ? [] : [{ weight: 'plain', text: 'Nothing has been refused recently.' }] };
@@ -403,6 +416,7 @@
       case 'connect_agent':
         return { folder: '~/secbox-agents/shop', command: 'cd ~/secbox-agents/shop && claude', opened: true };
       case 'approve_host':
+        if (!approvedHosts.includes(args.host)) approvedHosts.push(args.host);
         return args.host + ' is allowed now. Its data was kept, and its services restarted in 37s.';
       case 'diff':
         await later(100);

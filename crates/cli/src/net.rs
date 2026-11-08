@@ -26,6 +26,10 @@ enum NetCommand {
     Blocked(crate::blocked::BlockedArgsCli),
     /// Let a project's sandbox reach one more hostname. Its data is kept, and its services restart
     Allow(crate::vm::AllowArgsCli),
+    /// Show the hostnames a project's sandbox may reach: approved by you, and from its plan
+    Hosts(crate::hosts_cmd::HostsArgsCli),
+    /// Block again a hostname you approved. Its data is kept, and its services restart
+    Block(crate::hosts_cmd::BlockArgsCli),
 }
 
 #[derive(Args)]
@@ -43,6 +47,8 @@ pub fn run(args: &NetArgs, deps: &mut Deps) -> i32 {
         NetCommand::Check(args) => check(args, deps),
         NetCommand::Blocked(args) => crate::blocked::run(args, deps),
         NetCommand::Allow(args) => crate::vm::allow(args, deps),
+        NetCommand::Hosts(args) => crate::hosts_cmd::hosts(args, deps),
+        NetCommand::Block(args) => crate::hosts_cmd::block(args, deps),
     }
 }
 

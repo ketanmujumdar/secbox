@@ -265,6 +265,14 @@ impl Service {
                 let project = self.open(&args.project)?;
                 portset::set(self, &project, args).map(Reply::SetPort)
             }
+            Request::Hosts(args) => {
+                let project = self.open(&args.project)?;
+                netallow::list(self, &project).map(Reply::Hosts)
+            }
+            Request::BlockHost(args) => {
+                let project = self.open(&args.project)?;
+                netallow::block(self, &project, &args.host, progress).map(Reply::BlockHost)
+            }
         }
     }
 

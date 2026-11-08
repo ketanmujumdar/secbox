@@ -155,6 +155,14 @@ pub enum Request {
     /// uses on this Mac. Nothing changes in a sandbox until it next starts, and
     /// that start asks the person to confirm, naming the ports it opens.
     SetPort(SetPortArgs),
+    /// The hostnames a project's sandbox may reach: those its plan brings and
+    /// those a person approved. Changes nothing.
+    Hosts(ProjectArgs),
+    /// Takes back a person's approval of one hostname. It only narrows what
+    /// the sandbox can reach, so nobody is asked to confirm. A sandbox that
+    /// exists is replaced without the host, keeping its data, because the
+    /// engine cannot change a sandbox's network rules.
+    BlockHost(ApproveHostArgs),
 }
 
 /// A CPU limit in words: "1 CPU", "1.5 CPUs", "2 CPUs".
@@ -639,6 +647,8 @@ pub enum Reply {
     SetResources(Box<ResourceChoicesReport>),
     PortChoices(PortChoicesReport),
     SetPort(PortChoicesReport),
+    Hosts(HostsReport),
+    BlockHost(BlockHostReport),
 }
 
 /// What changed inside a sandbox since the snapshot it started from.
@@ -1152,6 +1162,52 @@ pub struct ApproveHostReport {
     pub seconds: u64,
 }
 
+/// The hostnames a project's sandbox may reach.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostsReport {
+    pub sandbox: SandboxState,
+    /// From the project's plan: the hosts its build needs. Not approved by
+    /// anyone and not removable here.
+    pub plan_hosts: Vec<String>,
+    /// The plan's hosts stay reachable while it runs, not only while it builds.
+    pub plan_hosts_while_running: bool,
+    /// Why the plan's hosts could not be listed, if they could not.
+    pub plan_note: Option<String>,
+    /// Approved by a person, sorted by name.
+    pub approved: Vec<ApprovedHost>,
+    /// Hosts the sandbox can still reach that are no longer approved or in the
+    /// plan. They go when it is next replaced.
+    pub leaving: Vec<String>,
+}
+
+/// One hostname a person approved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovedHost {
+    pub host: String,
+    /// When it was approved. None for an approval older than this record.
+    pub approved_unix: Option<u64>,
+    /// The sandbox as it is can reach it. False when there is no sandbox yet.
+    pub in_effect: bool,
+}
+
+/// A hostname whose approval was taken back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlockHostReport {
+    /// As stored: lowercase, with no trailing dot.
+    pub host: String,
+    /// What the sandbox is now.
+    pub sandbox: SandboxState,
+    /// The sandbox was replaced, so the host is blocked now. If not, there is
+    /// no sandbox yet, or the host was not approved.
+    pub applied: bool,
+    /// It was approved. If not, nothing changed.
+    pub was_approved: bool,
+    pub seconds: u64,
+}
+
 /// A project's secrets, by name. Never a value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1356,6 +1412,23 @@ pub struct HeldSecret {
     pub services: Vec<String>,
 }
 
+/// A time in UTC to the minute, such as `2026-11-08 04:41 UTC`.
+pub fn utc_minute(unix: u64) -> String {
+    let days = i64::try_from(unix / 86_400).unwrap_or(i64::MAX / 2);
+    let secs = unix % 86_400;
+    // Days to a civil date, after Howard Hinnant's `civil_from_days`.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02} {:02}:{:02} UTC", secs / 3600, secs % 3600 / 60)
+}
+
 /// Hosts the sandbox planned here can reach while it runs.
 pub fn reachable_while_running(network: &NetworkPlan) -> Vec<String> {
     let mut hosts: Vec<String> = network.run_hosts.clone();
@@ -1478,6 +1551,13 @@ mod secret_text_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_time_is_shown_in_utc_to_the_minute() {
+        assert_eq!(super::utc_minute(0), "1970-01-01 00:00 UTC");
+        assert_eq!(super::utc_minute(1_794_113_048), "2026-11-08 04:44 UTC");
+        assert_eq!(super::utc_minute(951_782_400), "2000-02-29 00:00 UTC");
+    }
+
     use super::*;
 
     #[test]

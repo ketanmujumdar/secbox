@@ -1606,6 +1606,7 @@
   // ---------- network ----------
 
   async function readTraffic() {
+    readAllowed();
     const row = selectedRow();
     const notes = $('traffic-notes');
     const rows = $('traffic-rows');
@@ -1673,6 +1674,86 @@
       banner(asking.unchecked ? said + ' ' + NOT_CHECKED : said, 'ok');
     } catch (error) {
       banner('Could not approve it: ' + errorText(error));
+    }
+    busy('');
+    await refreshProjects();
+    await loadStatus();
+    await readTraffic();
+  }
+
+  // A time from the daemon, in UTC like the blocked list beside it.
+  function utcMinute(unix) {
+    return new Date(unix * 1000).toISOString().slice(0, 16).replace('T', ' ');
+  }
+
+  async function readAllowed() {
+    const row = selectedRow();
+    const notes = $('allowed-notes');
+    const rows = $('allowed-rows');
+    clear(notes);
+    clear(rows);
+    if (!row) return;
+    let view;
+    try {
+      view = await invoke('allowed_hosts', { project: row.path });
+    } catch (error) {
+      if (state.selected === row.path) notes.appendChild(el('li', 'The allowed hosts could not be read: ' + errorText(error), 'alert'));
+      return;
+    }
+    if (state.selected !== row.path) return;
+    clear(notes);
+    clear(rows);
+    const line = (host, why, action) => {
+      const tr = el('tr');
+      tr.appendChild(el('td', host, 'mono'));
+      tr.appendChild(el('td', why, 'muted'));
+      const cell = el('td', '', 'num');
+      if (action) cell.appendChild(action);
+      tr.appendChild(cell);
+      rows.appendChild(tr);
+    };
+    for (const host of view.approved) {
+      let why = 'Approved by you';
+      if (host.approved_unix != null) why += ', ' + utcMinute(host.approved_unix) + ' UTC';
+      if (!host.in_effect) why += view.sandbox === 'none' ? '. Applies at the next start' : '. Not in the sandbox yet';
+      const block = el('button', 'Block again', 'small');
+      block.disabled = state.busy;
+      block.addEventListener('click', () => blockHost(host.host));
+      line(host.host, why, block);
+    }
+    for (const host of view.leaving) {
+      line(host, 'Blocked again. Reachable until the sandbox is replaced', null);
+    }
+    const planWhy = view.plan_hosts_while_running ? 'From the plan, for the build. Reachable while it runs too' : 'From the plan, for the build';
+    for (const host of view.plan_hosts) line(host, planWhy, null);
+    if (view.plan_note) notes.appendChild(el('li', 'The plan could not be read, so its hosts are not listed: ' + view.plan_note, 'warn'));
+    if (!view.approved.length && !view.plan_hosts.length && !view.leaving.length) {
+      notes.appendChild(el('li', 'None. Everything is refused.'));
+    }
+  }
+
+  async function blockHost(host) {
+    const row = selectedRow();
+    if (!row) return;
+    const agreed = await ask({
+      title: 'Block ' + row.name + ' from this host again?',
+      okText: 'Block again',
+      build: (body) => {
+        body.appendChild(el('p', host, 'mono'));
+        body.appendChild(el('p', 'Its services restart; its data is kept. You can approve it again later from the blocked list.', 'muted'));
+      },
+    });
+    if (!agreed) {
+      banner('Nothing was changed.', 'info');
+      return;
+    }
+    stopLogs();
+    busy('Blocking ' + host + ' again. Its services are restarting.');
+    try {
+      const said = await invoke('block_host', { project: row.path, host, onProgress: new Channel() });
+      banner(said, 'ok');
+    } catch (error) {
+      banner('Could not block it: ' + errorText(error));
     }
     busy('');
     await refreshProjects();

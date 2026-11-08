@@ -24,6 +24,17 @@ The engine cannot change the rules of an existing sandbox, so secbox replaces it
 - If a step fails, the data stays in the kept disk, and approving again carries on from it.
 - The kept disk stays in the project's state folder until the sandbox is destroyed.
 
+## Seeing and taking back approvals
+
+```sh
+secbox net hosts                   # approved by you, and from the plan
+secbox net block api.example.com   # block it again
+```
+
+In the desktop app, the Network tab's **Allowed hosts** card lists both, and **Block again** takes an approval back. The terminal interface's Network tab shows the same list.
+
+Blocking again replaces the sandbox the same way, with its data kept, and restarts its services. It only narrows what the sandbox can reach, so there is no Touch ID prompt. A stopped sandbox is replaced too and stays stopped, because starting it again would keep its old rules. The plan's build hosts can't be blocked here; they come with the project's files.
+
 ## What is enforced today
 
 When the daemon creates a sandbox, it gives the engine the list of hostnames the project may reach. Lookups for any other name are refused. Raw IP addresses, the cloud metadata address (`169.254.169.254`) and UDP were also blocked when tested.

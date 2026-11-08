@@ -87,6 +87,7 @@ attack in plain Docker for comparison, where seven of them succeeded.
 | A port can be opened later only on a sandbox whose engine rule lets it in from the host's loopback; one made before this cannot open new ports | `a_new_sandbox_lets_in_every_planned_port_so_any_can_open_later`, `a_sandbox_from_before_ports_could_change_cannot_open_new_ones` | Tested in code |
 | Build hosts come from a fixed menu, chosen by the project's files; a repo can't name its own | `crates/daemon/src/buildhosts.rs` tests, `a_node_project_gets_the_npm_registry_and_adding_it_moves_the_digest` | Tested in code |
 | Run-time hosts come only from approvals stored on the host, never from the repo | `the_runnable_demo_starts_and_its_secret_goes_only_to_api_over_standard_input` | Tested in code |
+| An approved host can be taken back: the sandbox is replaced without it, data kept, a stopped one stays stopped, and nobody is asked because it only narrows | `blocking_an_approved_host_again_replaces_the_sandbox_without_it_and_asks_nobody`, `a_stopped_sandbox_is_replaced_without_the_host_and_stays_stopped` | Tested in code with the fake engine |
 | Every plan and `status` list each secret, who holds it, every reachable host, and which of those accept uploads from anyone | `proto` exposure tests, `the_plan_says_where_a_secret_could_be_sent_including_build_hosts` | Tested in code |
 
 ### Logs and visibility

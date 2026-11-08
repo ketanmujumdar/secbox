@@ -740,7 +740,7 @@ pub(crate) fn resolve(path: Option<&std::path::Path>, command: &str, deps: &mut 
 }
 
 /// Sends one request, printing each step as it arrives.
-fn request(deps: &mut Deps, request: Request, command: &str) -> Result<Reply, i32> {
+pub(crate) fn request(deps: &mut Deps, request: Request, command: &str) -> Result<Reply, i32> {
     call_daemon(deps, request, command, &mut dots)
 }
 
