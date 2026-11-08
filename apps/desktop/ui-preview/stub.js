@@ -126,6 +126,34 @@
     ],
   };
 
+  // What the daemon refused or what failed, as ops' problems() reads it from
+  // the audit log. Times are a while before now, so the rail's count shows.
+  const NOW = Math.floor(Date.now() / 1000);
+  const problem = (minutesAgo, project, what, why) => {
+    const at = NOW - minutesAgo * 60;
+    const row = projects.find((p) => p.name === project);
+    return {
+      time: new Date(at * 1000).toISOString().slice(0, 19).replace('T', ' '),
+      at_unix: at,
+      project: project,
+      project_path: row ? row.path : null,
+      what,
+      why,
+    };
+  };
+  const problemRows = scene === 'empty' ? [
+    problem(3, null, 'Fetch git@codeberg.org:acme/does-not-exist.git', "The host's key is not in your known_hosts. Check it and add it by connecting once yourself: ssh -T git@codeberg.org"),
+  ] : [
+    problem(3, null, 'Fetch git@codeberg.org:acme/does-not-exist.git', "The host's key is not in your known_hosts. Check it and add it by connecting once yourself: ssh -T git@codeberg.org"),
+    problem(26, 'demo_shop', 'Push', 'pushing to main is not allowed from a sandbox. Make a branch with git switch -c NAME, then push that'),
+    problem(31, 'demo_shop', 'Push', 'not confirmed with Touch ID or your login password, so nothing was done: you cancelled (LocalAuthentication -2)'),
+    problem(95, 'billing-api', 'Start', 'Not confirmed: nobody answered within 120 seconds'),
+    problem(240, 'demo_shop', 'Push', 'deleting a branch from a sandbox is not allowed: refs/heads/old-refunds'),
+    problem(242, 'demo_shop', 'Push', 'only branches can be pushed, not refs/tags/v0.3'),
+    problem(1500, 'docs-site', 'Allow a hostname', 'Not confirmed: you cancelled (LocalAuthentication -2)'),
+    problem(2900, null, 'Fetch git@github.com:acme/payments.git', 'No key was accepted. Load yours into your SSH agent with ssh-add, or unlock 1Password, then try again. A key with a passphrase works only through an agent, because nothing can ask for it.'),
+  ];
+
   const unread = (reason) => ({ unread: reason, added: 0, removed: 0, truncated: false, hunks: [] });
   const text = (old_start, new_start, lines) => ({
     unread: null,
@@ -197,7 +225,7 @@
     window.__calls = window.__calls || [];
     window.__calls.push({ cmd, args: JSON.parse(JSON.stringify(args, (k, v) => (v instanceof Channel ? '[channel]' : v))) });
     await later(30);
-    const needDaemon = !['app_info', 'daemon_state', 'list_projects', 'start_daemon', 'logs_stop'].includes(cmd);
+    const needDaemon = !['app_info', 'daemon_state', 'list_projects', 'start_daemon', 'logs_stop', 'problems'].includes(cmd);
     if (needDaemon && !daemonRunning) throw 'The daemon is not running. Start it from the menu bar icon.';
     switch (cmd) {
       case 'app_info':
@@ -278,6 +306,10 @@
         return null;
       case 'blocked':
         return blocked;
+      case 'problems': {
+        const rows = args.project ? problemRows.filter((r) => r.project_path === args.project) : problemRows;
+        return { rows, notes: rows.length ? [] : [{ weight: 'plain', text: 'Nothing has been refused recently.' }] };
+      }
       case 'resource_choices':
       case 'set_resources': {
         const GIB = 1024 * 1024 * 1024;

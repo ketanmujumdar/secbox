@@ -153,6 +153,7 @@
     for (const item of $('projects').children) {
       item.classList.toggle('selected', page === 'project' && item.dataset.path === state.selected);
     }
+    $('btn-problems').classList.toggle('selected', page === 'problems');
     $('content').scrollTop = 0;
   }
 
@@ -1518,6 +1519,10 @@
       return;
     }
     if (state.selected !== row.path) return;
+    // Two reads can overlap, as when a project opens on this tab. Only what
+    // the last one to finish found is shown.
+    clear(notes);
+    clear(rows);
     state.blocked = view;
     for (const note of view.notes) notes.appendChild(el('li', note.text, note.weight === 'plain' ? '' : note.weight));
     $('traffic-total').textContent = view.recording ? plural(view.total, 'refused lookup', 'refused lookups') + ' counted' : '';
@@ -1569,6 +1574,96 @@
   }
 
   $('traffic-read').addEventListener('click', readTraffic);
+
+  // ---------- problems ----------
+
+  // Rows of things refused or failed, newest first. Every field is text from
+  // the audit log, escaped by the app's Rust side, and goes in as text.
+  function renderProblems(table, tbody, notes, view, withProject) {
+    clear(tbody);
+    clear(notes);
+    for (const note of view.notes) notes.appendChild(el('li', note.text, note.weight === 'plain' ? '' : note.weight));
+    for (const problem of view.rows) {
+      const tr = el('tr');
+      tr.appendChild(el('td', problem.time, 'mono muted time'));
+      if (withProject) {
+        const cell = el('td', null, 'project');
+        if (problem.project_path) {
+          const open = el('button', problem.project || lastSegment(problem.project_path), 'link');
+          open.title = problem.project_path;
+          open.addEventListener('click', () => openProject(problem.project_path));
+          cell.appendChild(open);
+        } else {
+          cell.appendChild(el('span', problem.project || 'No project', problem.project ? '' : 'muted'));
+        }
+        tr.appendChild(cell);
+      }
+      tr.appendChild(el('td', problem.what, 'what'));
+      tr.appendChild(el('td', problem.why, 'why'));
+      tbody.appendChild(tr);
+    }
+    show(table, view.rows.length > 0);
+  }
+
+  // How many problems are less than a day old, for the rail and first run.
+  function recentCount(view) {
+    const since = Date.now() / 1000 - 24 * 60 * 60;
+    return view.rows.filter((r) => r.at_unix >= since).length;
+  }
+
+  async function refreshProblemCount() {
+    let view;
+    try {
+      view = await invoke('problems', { project: null });
+    } catch (error) {
+      return;
+    }
+    const recent = recentCount(view);
+    const badge = $('badge-problems');
+    badge.textContent = String(recent);
+    badge.title = plural(recent, 'problem', 'problems') + ' in the last 24 hours';
+    show(badge, recent > 0);
+    show($('choose-problems'), view.rows.length > 0);
+    return view;
+  }
+
+  async function readProblems() {
+    let view;
+    try {
+      view = await invoke('problems', { project: null });
+    } catch (error) {
+      view = { rows: [], notes: [{ weight: 'alert', text: errorText(error) }] };
+    }
+    renderProblems($('problems-table'), $('problems-rows'), $('problems-notes'), view, true);
+    await refreshProblemCount();
+  }
+
+  async function openProblems() {
+    banner('');
+    showPage('problems');
+    await readProblems();
+  }
+
+  async function readRefused() {
+    const row = selectedRow();
+    clear($('refused-rows'));
+    clear($('refused-notes'));
+    show($('refused-table'), false);
+    if (!row) return;
+    let view;
+    try {
+      view = await invoke('problems', { project: row.path });
+    } catch (error) {
+      view = { rows: [], notes: [{ weight: 'alert', text: errorText(error) }] };
+    }
+    if (state.selected !== row.path) return;
+    renderProblems($('refused-table'), $('refused-rows'), $('refused-notes'), view, false);
+  }
+
+  $('btn-problems').addEventListener('click', openProblems);
+  $('choose-problems').addEventListener('click', openProblems);
+  $('problems-read').addEventListener('click', readProblems);
+  $('refused-read').addEventListener('click', readRefused);
 
   // ---------- changes ----------
 
@@ -1947,7 +2042,10 @@
     if (tab !== 'secrets') closeSecretForm();
     if (tab === 'secrets') await loadSecrets();
     if (tab === 'settings') await loadLimits();
-    if (tab === 'network') await readTraffic();
+    if (tab === 'network') {
+      await readTraffic();
+      await readRefused();
+    }
     if (tab === 'changes') {
       renderGitAvailability();
       const diff = state.diffs.get(state.selected);
@@ -1992,6 +2090,8 @@
     } catch (error) {
       busy('');
       banner(errorText(error));
+      // A failed fetch is recorded, and is listed under Problems.
+      await refreshProblemCount();
       return;
     }
     busy('');
@@ -2087,6 +2187,7 @@
     await refreshProjects();
     if (state.projects.length) await openProject(state.projects[0].path);
     else showPage('choose');
+    await refreshProblemCount();
     // The menu bar icon may have started or restarted the daemon meanwhile.
     setInterval(async () => {
       if (state.busy || state.starting || $('dialog').open) return;
@@ -2094,6 +2195,7 @@
       await refreshDaemon();
       if (before !== state.daemonRunning || state.page === 'project') await refreshProjects();
       if (state.page === 'project' && state.selected && state.tab === 'overview') await loadStatus();
+      await refreshProblemCount();
     }, 10000);
   }
 
