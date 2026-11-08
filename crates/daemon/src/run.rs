@@ -553,16 +553,26 @@ fn docker_ready(service: &Service, project: &Project) -> bool {
 }
 
 /// The start of every Compose command: the project's own files in the order
-/// Compose would merge them, then the host's override when there is one.
+/// Compose would merge them, then the host's overrides, each when there is
+/// one: the one that publishes the approved ports (see [`crate::ports`]), and
+/// the secrets one.
 ///
-/// Naming the files explicitly is what makes room for the override. The
+/// Naming the files explicitly is what makes room for the overrides. The
 /// project's own override files are listed too, so this reads exactly what
 /// the project would read on its own.
-pub(crate) fn compose_command(plan: &PlanReport, delivered: &Delivered) -> Vec<String> {
+pub(crate) fn compose_command(
+    plan: &PlanReport,
+    ports_file: Option<&str>,
+    delivered: &Delivered,
+) -> Vec<String> {
     let mut args = vec!["docker".to_owned(), "compose".to_owned()];
     for file in &plan.compose_files {
         args.push("-f".to_owned());
         args.push(file.clone());
+    }
+    if let Some(ports_file) = ports_file {
+        args.push("-f".to_owned());
+        args.push(ports_file.to_owned());
     }
     if let Some(override_file) = &delivered.override_file {
         args.push("-f".to_owned());
@@ -581,7 +591,11 @@ pub(crate) fn compose_up(
         audit::entry(service.deps().now_unix(), audit::Action::BuildStarted)
             .project(project.id.as_str()),
     );
-    let mut command = compose_command(plan, delivered);
+    // Written on every start, after the secrets. The engine's forward arrives
+    // on the guest's own address, so a port the project published on the
+    // guest's loopback alone would never answer.
+    let ports_file = crate::ports::write_override(service, project, &plan.ports)?;
+    let mut command = compose_command(plan, ports_file.as_deref(), delivered);
     command.extend(
         [
             "up",

@@ -95,6 +95,23 @@ Built on Nov 5, 2026 and tested only against `FakeEngine`, with `tests/fixtures/
 
 - [ ] Ports the daemon approved appearing on `127.0.0.1` only, with their numbers unchanged, and gone after `down`.
 - [ ] A port in the plan but not approved **not** appearing.
+
+#### A port the project publishes on `127.0.0.1` (fixed Nov 8, 2026, not yet rerun)
+
+Seen on a Mac: `tests/fixtures/clean` publishes `"127.0.0.1:8080:80"`. With 8080 approved, the engine listened on the host's `127.0.0.1:8080` and accepted connections, but `curl` hung. Inside the guest Compose had bound only the guest's loopback, and the engine forwards to the guest's own address (`172.16.0.10`), where the port was closed. The same happened with `"127.0.0.1:3000:80"`.
+
+The fix (`crates/daemon/src/ports.rs`): on every start the daemon writes `/run/<state dir>/ports.yaml` into the guest and passes it to `docker compose up` after the project's files. It replaces each publishing service's `ports` with `!override`, listing only the approved ports with no address, and gives a service with none approved `!reset []`. The host side is unchanged: `127.0.0.1:P:P` and, without the open internet, an ingress rule from `127.0.0.1/32` only. UDP and container port ranges now block the plan instead of being forwarded as TCP.
+
+Rerun on a real VM, with a copy of `tests/fixtures/clean`:
+
+- [ ] `up <copy> --port 8080`, then `curl -sS http://127.0.0.1:8080/` on the Mac returns the nginx page.
+- [ ] In the guest (`shell`): `docker ps` shows `0.0.0.0:8080->80/tcp` (and `[::]:8080`), not `127.0.0.1:8080`; `cat /run/<state dir>/ports.yaml` shows only port 8080.
+- [ ] Compose v5.7.0 accepting the `!override` and `!reset` tags. If it does not, `compose up` fails with a parse error and nothing starts.
+- [ ] On the Mac, `lsof -nP -iTCP:8080 -sTCP:LISTEN` shows the engine on `127.0.0.1:8080` only, and from another machine on the LAN the Mac's address on 8080 is refused.
+- [ ] `down` then `up` again: still reachable (the file is rewritten, since `/run` does not survive a restart).
+- [ ] With a fresh copy and no `--port`: `curl http://127.0.0.1:8080/` is refused on the Mac, and in the guest `docker ps` shows no published port for `web`.
+- [ ] `tests/fixtures/dockerfile-only` with `--port 8080`: 8080 answers on the Mac, and in the guest 3000 is not published.
+- [ ] A project with secrets and a port: both overrides apply together.
 - [ ] The resources the daemon asks for holding, and the 3 GiB build floor being the right floor for a project other than `demo_shop`.
 - [ ] The allowlist the daemon builds, as opposed to the hand-written one the spike used.
 
