@@ -123,6 +123,10 @@ async function run(browser, scheme) {
   await p.waitForSelector('#flagged-notes li, #flagged-list li');
   await p.waitForTimeout(200);
   if (await p.evaluate(() => !document.querySelector('.tab[data-tab=problems] .badge') || document.querySelector('.tab[data-tab=problems] .badge').classList.contains('hidden'))) problems.push(`[${scheme}] the Problems tab has no count for a project with refusals`);
+  // Hostnames still blocked are listed; one approved since is not.
+  const hostRows = await p.$$eval('#problem-hosts-rows tr td.mono:not(.time)', (cells) => cells.map((c) => c.textContent));
+  if (hostRows.join() !== 'telemetry.example-cdn.com,sentry.io') problems.push(`[${scheme}] the Problems tab's blocked hosts are wrong: ${JSON.stringify(hostRows)}`);
+  if (!(await p.evaluate(() => (document.getElementById('badge-problems').title || '').includes('2 blocked hosts')))) problems.push(`[${scheme}] the Problems count does not include the blocked hosts`);
   await shot(p, scheme, '07b-problems');
   await p.click('.tab[data-tab=changes]');
   await p.click('#review-read');

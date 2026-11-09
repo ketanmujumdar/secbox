@@ -277,10 +277,23 @@
             </div>
             <div class="card">
               <div class="card-head">
+                <h2>Blocked hosts</h2>
+                <span class="buttons"><button class="small" id="problem-hosts-read">Read again</button></span>
+              </div>
+              <p class="hint">Hostnames this sandbox tried to reach and was refused, newest first. Only hostnames are recorded: raw IP and UDP attempts are blocked but not listed. Approve one in the Network tab.</p>
+              <ul class="notes" id="problem-hosts-notes"></ul>
+              <table class="table problems-table hidden" id="problem-hosts-table">
+                <thead><tr><th class="time">Time (UTC)</th><th class="num">Count</th><th>Hostname</th></tr></thead>
+                <tbody id="problem-hosts-rows"></tbody>
+              </table>
+              <button class="link hidden" id="problem-hosts-open">Open in Network →</button>
+            </div>
+            <div class="card">
+              <div class="card-head">
                 <h2>Refused and failed</h2>
                 <span class="buttons"><button class="small" id="refused-read">Read again</button></span>
               </div>
-              <p class="hint">Pushes, starts and other requests for this project that the daemon refused, that were not confirmed, or that failed, newest first. It does not matter who asked: the command line, this window or an AI agent. Blocked hostnames are in the Network tab.</p>
+              <p class="hint">Pushes, starts and other requests for this project that the daemon refused, that were not confirmed, or that failed, newest first. It does not matter who asked: the command line, this window or an AI agent. Blocked hostnames are in their own card above.</p>
               <ul class="notes" id="refused-notes"></ul>
               <table class="table problems-table hidden" id="refused-table">
                 <thead><tr><th class="time">Time (UTC)</th><th>What was asked</th><th>Why it did not happen</th></tr></thead>

@@ -65,6 +65,11 @@
     compareAgain: false,
     // The newest blocked hostnames, for the overview card.
     blocked: null,
+    // Each project's blocked hostnames as last read, by project path, for its
+    // Problems tab and the counts beside it. Read once each, and again when
+    // its Network or Problems tab is open.
+    blockedHosts: new Map(),
+    blockedReading: new Set(),
     // The Secrets tab's names, for the selected project. Never a value.
     secrets: null,
     // The secret being edited: its name, or '' for a new one.
@@ -1627,6 +1632,8 @@
     clear(notes);
     clear(rows);
     state.blocked = view;
+    state.blockedHosts.set(row.path, view);
+    renderProblemBadges();
     for (const note of view.notes) notes.appendChild(el('li', note.text, note.weight === 'plain' ? '' : note.weight));
     $('traffic-total').textContent = view.recording ? plural(view.total, 'refused lookup', 'refused lookups') + ' counted' : '';
     for (const event of view.rows) {
@@ -1793,15 +1800,83 @@
     return row.at_unix >= Date.now() / 1000 - 24 * 60 * 60;
   }
 
-  // How many problems a project has: recent refusals plus the flags of the
-  // last comparison of a running sandbox.
+  // The hostnames a project's sandbox was refused and that are still refused:
+  // one approved since is no longer a problem.
+  function stillBlocked(path) {
+    const view = state.blockedHosts.get(path);
+    return view ? view.rows.filter((r) => !r.allowed) : [];
+  }
+
+  // How many problems a project has: recent refusals, hostnames still
+  // blocked, and the flags of the last comparison of a running sandbox.
   function problemCount(path) {
     const refused = (state.problemRows || []).filter((r) => r.project_path === path && isRecent(r)).length;
+    const hosts = stillBlocked(path).length;
     const row = state.projects.find((p) => p.path === path);
     const diff = state.diffs.get(path);
     const flags = diff && row && row.state === 'running' ? diff.view.flags.length : 0;
-    return { refused, flags, total: refused + flags };
+    return { refused, hosts, flags, total: refused + hosts + flags };
   }
+
+  // Reads the blocked hostnames of every project with a sandbox that this
+  // window has not read yet, together and in the background, so the counts
+  // by each project include them. Nothing waits for it.
+  function readBlockedCounts() {
+    for (const row of state.projects) {
+      if (row.state !== 'running' && row.state !== 'stopped') continue;
+      if (state.blockedHosts.has(row.path) || state.blockedReading.has(row.path)) continue;
+      state.blockedReading.add(row.path);
+      invoke('blocked', { project: row.path })
+        .then((view) => {
+          if (!state.blockedHosts.has(row.path)) state.blockedHosts.set(row.path, view);
+          renderProblemBadges();
+        })
+        .catch(() => {})
+        .finally(() => state.blockedReading.delete(row.path));
+    }
+  }
+
+  // The Problems tab's Blocked hosts card, for the selected project.
+  function renderProblemHosts(path, error) {
+    const notes = $('problem-hosts-notes');
+    const tbody = $('problem-hosts-rows');
+    clear(notes);
+    clear(tbody);
+    const view = state.blockedHosts.get(path);
+    const rows = stillBlocked(path);
+    if (error) notes.appendChild(el('li', 'The blocked hostnames could not be read: ' + error, 'alert'));
+    else if (!view) notes.appendChild(el('li', 'Reading…', 'muted'));
+    else if (!view.recording) notes.appendChild(el('li', 'Nothing is being recorded for this sandbox. The Network tab says why.', 'warn'));
+    else if (!rows.length) notes.appendChild(el('li', view.rows.length ? 'None still blocked. Every name refused before has been approved since.' : 'None recorded so far.'));
+    for (const event of rows) {
+      const tr = el('tr');
+      tr.appendChild(el('td', event.time, 'mono muted time'));
+      tr.appendChild(el('td', event.count, 'num'));
+      tr.appendChild(el('td', event.domain, 'mono'));
+      tbody.appendChild(tr);
+    }
+    show($('problem-hosts-table'), rows.length > 0);
+    show($('problem-hosts-open'), rows.length > 0);
+  }
+
+  async function readProblemHosts() {
+    const row = selectedRow();
+    if (!row) return;
+    renderProblemHosts(row.path);
+    let error = null;
+    try {
+      const view = await invoke('blocked', { project: row.path });
+      state.blockedHosts.set(row.path, view);
+    } catch (e) {
+      error = errorText(e);
+    }
+    if (state.selected !== row.path) return;
+    renderProblemHosts(row.path, error);
+    renderProblemBadges();
+  }
+
+  $('problem-hosts-read').addEventListener('click', readProblemHosts);
+  $('problem-hosts-open').addEventListener('click', () => openTab('network'));
 
   function renderProblemBadges() {
     for (const item of $('projects').children) {
@@ -1825,6 +1900,7 @@
   function problemWords(count) {
     const parts = [];
     if (count.flags) parts.push(plural(count.flags, 'change', 'changes') + ' to look at');
+    if (count.hosts) parts.push(plural(count.hosts, 'blocked host', 'blocked hosts'));
     if (count.refused) parts.push(plural(count.refused, 'refusal', 'refusals') + ' in the last 24 hours');
     return parts.join(', ');
   }
@@ -1840,6 +1916,7 @@
     }
     state.problemRows = view.rows;
     renderProblemBadges();
+    readBlockedCounts();
     const loose = view.rows.filter((r) => !r.project_path);
     renderProblems($('fetch-failed-card'), $('fetch-failed-rows'), null, { rows: loose.slice(0, 10), notes: [] });
     return view;
@@ -2289,9 +2366,11 @@
     if (tab === 'problems') {
       renderFlagged();
       const refused = readRefused();
+      const hosts = readProblemHosts();
       await compareIfWanted(false);
       renderFlagged();
       await refused;
+      await hosts;
     }
     if (tab === 'changes') {
       renderGitAvailability();

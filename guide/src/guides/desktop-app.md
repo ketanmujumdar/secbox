@@ -14,7 +14,7 @@ The desktop app is a menu bar icon and a window for the same daemon the command 
 - a **Settings** tab that sets a project's memory, CPU and disk limits. See [RAM, CPU and disk](resources.md#changing-limits-in-the-app).
 - *Start*, *Stop* and *Destroy*
 - a **Logs** tab, and a **Network** tab with the blocked hostnames
-- a **Problems** tab for each project, with its flagged changes (the same flags the Changes tab shows first) and what was refused or failed for it, newest first: pushes, starts that were not confirmed, and other refused requests. It reads the daemon's audit log, so it lists refusals whoever asked: the command line, the app or an AI agent. The project list shows a count next to a project with problems. A fetch that failed never became a project, so it is listed on the *Clone from Git* page
+- a **Problems** tab for each project, with its flagged changes (the same flags the Changes tab shows first), the hostnames its sandbox was refused and that are still blocked (approve one in the Network tab), and what was refused or failed for it, newest first: pushes, starts that were not confirmed, and other refused requests. It reads the daemon's audit log, so it lists refusals whoever asked: the command line, the app or an AI agent. The project list shows a count next to a project with problems. A fetch that failed never became a project, so it is listed on the *Clone from Git* page
 - a **Terminal & about** tab, with commands to put the bundled CLI on your `PATH`
 - a **Changes** tab that compares by itself and shows each file's changes side by side, the same comparison as [`secbox diff --patch`](reviewing-changes.md)
 
