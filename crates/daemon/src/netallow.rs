@@ -262,6 +262,12 @@ fn replace(
         std::fs::rename(&taken, &kept)
             .map_err(|e| internal(format!("cannot keep the sandbox's disk: {}", e.kind())))?;
     }
+    if kept.exists() {
+        // It is the earlier sandbox's whole disk: only this user may read it.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| internal(format!("cannot make the kept disk private: {}", e.kind())))?;
+    }
 
     progress.step("new sandbox", Some(host));
     let args = UpArgs {

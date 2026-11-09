@@ -85,7 +85,7 @@ secbox diff $H; echo "exit $?"
 | 1.5 | `net blocked` lists `exfil.example.net` and `build-exfil.example.net` | |
 | 1.6 | `logs` shows `[DEMO_TOKEN]`, never `fake-token-1234`, including in the base64 the probe sends | |
 | 1.7 | `status` lists the secret and every host it could reach under "Where secrets could go" | |
-| 1.8 | `grep -rl fake-token-1234 ~/.secbox` and `grep -rl faketoken1234 ~/.secbox` find nothing. The second is the form the DNS probe sends, with the hyphens stripped | |
+| 1.8 | `LC_ALL=C grep -a -rl fake-token-1234 ~/.secbox` and `LC_ALL=C grep -a -rl faketoken1234 ~/.secbox` find nothing. Plain `grep` skips binary files such as the disk images, so it can pass falsely. The second is the form the DNS probe sends, with the hyphens stripped | |
 
 ```sh
 secbox down --destroy $H
@@ -121,7 +121,7 @@ secbox logs --project "$P" | grep -c fake-web-5678
 | 2.1 | The start succeeds. If it fails on mounting `tmpfs` or reading standard input, record the message | |
 | 2.2 | `web` has the secret | |
 | 2.3 | `api` has no variable and no secret file | |
-| 2.4 | The value isn't in `logs`, and `grep -rl fake-web-5678 ~/.secbox` finds nothing | |
+| 2.4 | The value isn't in `logs`, and `LC_ALL=C grep -a -rl fake-web-5678 ~/.secbox` finds nothing, disk images included | |
 | 2.5 | After `down` then `up`, `web` has it again. It is not written to the sandbox's disk, so it comes back only by being delivered | |
 | 2.6 | The app's Secrets tab: set a value with only `web` ticked. macOS doesn't ask for keychain access, and typing doesn't offer to save a password | |
 | 2.7 | The audit log gains `secret_delivered` entries | |

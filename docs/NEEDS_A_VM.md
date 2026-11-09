@@ -223,7 +223,12 @@ sandbox in a separate engine home, not through the daemon:
 
 Not run on a real VM:
 
-- [ ] The whole thing through the daemon: `secbox up` on `tests/fixtures/hostile-demo-run`, `secbox logs`, `secbox exec`, `secbox diff`, `net blocked`, then wait 10 seconds and `grep -r -l -E 'fake-token-1234|faketoken1234' ~/.secbox`. Expected: only `rootfs.raw` (and `previous-root.raw` if a host was approved).
+- [ ] The whole thing through the daemon: `secbox up` on `tests/fixtures/hostile-demo-run`, `secbox logs`, `secbox exec`, `secbox diff`, `net blocked`, then wait 10 seconds and `LC_ALL=C grep -a -r -l -E 'fake-token-1234|faketoken1234' ~/.secbox`. Expected since Nov 9: nothing, disk images included.
+
+Docker's container state kept in memory (Nov 9), checked by hand on a throwaway `docker:dind` engine sandbox, not through the daemon: with the start script and `dockerd --feature containerd-snapshotter=false`, a value given by `docker run -e` and by a Compose `env_file` was in no file of `rootfs.raw` (`LC_ALL=C grep -a -c` gave 0) while running and after a stop and start; a named volume kept its data, Compose made the container again, `logs` worked, and two values from earlier runs were gone after the wipe and `fstrim`. Found on the way: `dockerd` bind-mounts `/var/lib/docker` onto itself without submounts, which hid the first tmpfs mounts, and containerd's `meta.db` holds the container spec, environment included.
+
+- [ ] Through the daemon on a real sandbox with fake secrets: start, `approve`, `block`, restart, then `LC_ALL=C grep -a -rl` for each value in `~/.secbox`. Expected: nothing, `previous-root.raw` included.
+- [ ] An existing sandbox made before Nov 9 starts, rebuilds or pulls its images once, and keeps its volumes.
 - [ ] `exec.log` a folder and `kernel.log` a link right after `create` on `docker:dind`, and the start sequence (dockerd, Compose, secret delivery) unaffected.
 - [ ] A sandbox made by an older version: its `exec.log` cleared and replaced at the next `up`.
 - [ ] `net blocked` and `net blocked -f` still listing names, and `runtime.log` holding zeros where they were, within 5 seconds.

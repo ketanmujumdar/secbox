@@ -178,6 +178,8 @@ Each secret is assigned to specific services and uses one delivery route:
 
 Proxy injection means HTTPS interception, using a per-sandbox CA that only that VM trusts.
 
+An app-read secret is written to a `tmpfs` in the VM. Docker copies a container's environment into its own records, so those are kept on a `tmpfs` too, with Docker's classic image store, and nothing of it reaches the VM's disk, which is a file on the host. This was checked on a throwaway engine sandbox and needs a check through the daemon; see `docs/NEEDS_A_VM.md`.
+
 ### AI sign-in
 
 Login happens in the normal browser on the host, and the VM never needs one. The choice decides where the credential ends up:

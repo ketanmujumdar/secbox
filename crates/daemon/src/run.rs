@@ -57,6 +57,62 @@ pub(crate) const WORK_DIR: &str = "/work";
 /// Compose project's own files. That changes nothing the host relies on: the
 /// approved ports and the network policy are fixed on the sandbox itself.
 pub const GENERATED_COMPOSE_FILE: &str = "compose.yaml";
+
+/// Runs in the guest before `dockerd`, on every start of the VM.
+///
+/// Docker writes each container's whole environment, secrets included, to
+/// three places: `/var/lib/docker/containers/<id>/config.v2.json`, the runtime
+/// bundle under `/run/docker`, and the container's spec in containerd's
+/// metadata database. All are on the VM's root disk, which is a file on this
+/// machine (measured on msb 0.7.13: `/run` is not a tmpfs). So they are kept
+/// in memory. Containers are made again by `compose up` on each start; images
+/// and volumes, the project's data, stay on disk.
+///
+/// containerd's database also holds the images in Docker's default image
+/// store, so `dockerd` runs with the classic store (see [`DOCKERD`]), where it
+/// holds only containers. A sandbox made before this pulls or builds its
+/// images again once.
+///
+/// What an earlier start left in those folders on disk is deleted first, there
+/// and in the kept disk of a sandbox that replaced another, and the freed
+/// blocks are discarded: the engine punches them out of the disk file, so an
+/// old value is not left in free space. The VM has no swap, so a tmpfs page
+/// never reaches a disk. If a shim is somehow running, the old records are left
+/// alone and the mounts are still made.
+///
+/// The pid file from the previous life is removed too: the daemon refuses to
+/// start while it is there.
+const DOCKER_STATE_IN_MEMORY: &str = r#"
+set -e
+rm -f /var/run/docker.pid
+idle=yes
+if pidof containerd-shim-runc-v2 >/dev/null 2>&1; then idle=no; fi
+# dockerd bind-mounts its root onto itself when it is not a mount point yet,
+# without what is mounted below it, which hid these tmpfs mounts and sent the
+# records to disk (measured). Made a mount point first, it is left as it is.
+mkdir -p /var/lib/docker
+if ! grep -q " /var/lib/docker " /proc/mounts; then mount --bind /var/lib/docker /var/lib/docker; fi
+for d in /var/lib/docker/containers /var/lib/docker/network /var/lib/docker/containerd/daemon/io.containerd.metadata.v1.bolt /run/docker; do
+  mkdir -p "$d"
+  if [ "$(stat -f -c %T "$d")" = tmpfs ]; then continue; fi
+  if [ "$idle" = yes ]; then find "$d" -mindepth 1 -delete; fi
+  mount -t tmpfs -o mode=0710,nosuid,nodev tmpfs "$d"
+  [ "$(stat -f -c %T "$d")" = tmpfs ]
+done
+if grep -q " /previous-disk " /proc/mounts; then
+  for d in var/lib/docker/containers var/lib/docker/network var/lib/docker/containerd/daemon/io.containerd.metadata.v1.bolt run/docker; do
+    if [ -d "/previous-disk/$d" ]; then find "/previous-disk/$d" -mindepth 1 -delete; fi
+  done
+  fstrim /previous-disk >/dev/null 2>&1 || true
+fi
+sync
+fstrim / >/dev/null 2>&1 || true
+"#;
+
+/// The classic image store, and capped logs: container logs are in memory now,
+/// with the container records.
+const DOCKERD: &str = "dockerd --feature containerd-snapshotter=false --log-opt max-size=10m --log-opt max-file=2 >/tmp/dockerd.log 2>&1";
+
 /// How long to wait for the Docker daemon inside the guest. The spike saw it
 /// ready in 2.2 to 3.1 seconds.
 const DOCKER_READY_LIMIT: Duration = Duration::from_secs(90);
@@ -518,17 +574,19 @@ pub(crate) fn start_docker(service: &Service, project: &Project) -> Result<(), A
     if docker_ready(service, project) {
         return Ok(());
     }
-    // After a restart the daemon refuses to start while a pid file from the
-    // previous life is still there. Removing it is safe: nothing in this
-    // sandbox is running yet.
-    let _ = engine.exec(
-        &project.sandbox,
-        &ExecRequest::new(["sh", "-c", "rm -f /var/run/docker.pid"]),
-    );
+    let out = engine
+        .exec(&project.sandbox, &ExecRequest::new(["sh", "-c", DOCKER_STATE_IN_MEMORY]))
+        .map_err(|e| engine_error(e.to_string()))?;
+    if out.code != 0 {
+        return Err(engine_error(format!(
+            "could not keep Docker's container records in memory, so nothing was started and no secret was delivered: {}",
+            proto::text::escape(out.stderr.trim())
+        )));
+    }
     engine
         .exec_detached(
             &project.sandbox,
-            &ExecRequest::new(["sh", "-c", "dockerd >/tmp/dockerd.log 2>&1"]),
+            &ExecRequest::new(["sh", "-c", DOCKERD]),
         )
         .map_err(|e| engine_error(e.to_string()))?;
 
@@ -838,6 +896,27 @@ pub(crate) fn status_of(service: &Service, project: &Project) -> Result<SandboxS
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn docker_keeps_container_records_in_memory() {
+        let script = super::DOCKER_STATE_IN_MEMORY;
+        for folder in [
+            "/var/lib/docker/containers",
+            "/var/lib/docker/network",
+            "/var/lib/docker/containerd/daemon/io.containerd.metadata.v1.bolt",
+            "/run/docker",
+        ] {
+            assert!(script.contains(folder), "{folder} is not kept in memory");
+        }
+        // Mounted before the tmpfs folders, or dockerd's own bind of its root
+        // hides them.
+        let bind = script.find("mount --bind /var/lib/docker /var/lib/docker").unwrap();
+        assert!(bind < script.find("mount -t tmpfs").unwrap());
+        assert!(script.starts_with("\nset -e\n"));
+        assert!(script.contains("fstrim /previous-disk"));
+        assert!(super::DOCKERD.contains("--feature containerd-snapshotter=false"));
+        assert!(super::DOCKERD.starts_with("dockerd "));
+    }
+
     use super::*;
 
     #[test]

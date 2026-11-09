@@ -59,7 +59,7 @@ attack in plain Docker for comparison, where seven of them succeeded.
 | --- | --- | --- |
 | Values are stored only in macOS Keychain or Linux Secret Service, never in secbox's files | `crates/secrets`, `crates/cli/tests` (`set_stores_the_value_and_never_shows_or_writes_it`) | Tested in code; Keychain on a real Mac |
 | A value never appears in any command line, on the host or in the VM | `a_secret_reaches_the_sandbox_over_standard_input_and_never_in_an_argument` | Tested in code |
-| In the VM, values are delivered to a RAM-only `tmpfs`; if it can't be made, the start is refused | `delivery_stops_when_there_is_nowhere_safe_to_put_a_secret` | Tested in code. Docker then copies an environment secret onto the VM's disk: see "Secret values on the host's disk" |
+| In the VM, values are delivered to a RAM-only `tmpfs`; if it can't be made, the start is refused | `delivery_stops_when_there_is_nowhere_safe_to_put_a_secret` | Tested in code. Docker's copies are kept in memory too: see "Secret values on the host's disk" |
 | Each service gets only the secrets assigned to it | `an_environment_secret_is_written_as_one_line_for_the_named_service_only`, `the_runnable_demo_starts_and_its_secret_goes_only_to_api_over_standard_input` | Tested in code |
 | The audit log and every plan name secrets, never values | `the_host_records_which_secret_went_where_by_name_only`, `a_plan_names_a_secret_and_its_route_but_never_its_value` | Tested in code |
 | A project with only a Dockerfile gets its secrets the same way | `a_dockerfile_projects_secret_reaches_its_one_service` | Tested in code |
@@ -190,15 +190,21 @@ first. Once code runs as you on your machine, secbox does not stop it:
 - **A service can read its own secrets.** Masking stops accidental leaks into
   logs, not a thief inside that service. The network rules are what limit
   where a stolen key can go.
-- **The VM's own disk holds secret values.** Docker in the VM writes each
-  service's environment into its container config, and what the service
-  prints into its log, on the VM's disk. That disk is `rootfs.raw` in the
-  engine's folder on the host, and a copy is kept as `previous-root.raw` while
-  a host is being approved. Seen on a real Mac on Nov 8, 2026: the hostile
-  demo's fake token was in `rootfs.raw` nine times, as `DEMO_TOKEN=...` in
-  container configs and as a printed line in a container log. The disk is in
-  the owner-only state folder and is deleted by `down --destroy`. A fix would
-  keep Docker's container state on a `tmpfs` in the VM. Status: **not yet**.
+- **The VM's own disk held secret values.** Docker in the VM writes each
+  service's environment, secrets included, into `config.v2.json`, the runtime
+  bundle under `/run/docker` and containerd's metadata database, all on the
+  VM's disk, which is `rootfs.raw` in the engine's folder on the host. Seen on
+  a real Mac on Nov 8, 2026. Since Nov 9 those folders, and container logs,
+  are kept on a `tmpfs` in the VM, mounted before `dockerd` starts on every
+  boot; Docker runs with its classic image store so containerd's database
+  holds only containers; and what earlier starts left there is deleted and the
+  freed blocks discarded, in the kept disk `previous-root.raw` too (now mode
+  `0600`). On a throwaway engine sandbox a fake value set by `docker run -e`
+  and by a Compose `env_file` was then in no disk file, across a reboot, and
+  two earlier values were gone. Status: **needs a VM check through the
+  daemon**. A sandbox made before this pulls or builds its images once more,
+  and container logs no longer survive a restart. What an app writes into its
+  own files or volumes is still on the disk.
 - **A refused name is on the disk for up to 5 seconds** while the daemon runs,
   and for as long as the daemon is not running, since the engine needs debug
   logging to record it at all. Zeros are written over it; the disk blocks it
