@@ -29,6 +29,27 @@ engine="${SECBOX_ENGINE_BIN:-$root/.tools/msb/bin/msb}"
 "$root/apps/desktop/scripts/prepare-sidecars.sh" --debug
 cargo build --manifest-path "$tauri/Cargo.toml"
 
+# A debug build is signed ad hoc, under a name that changes with every build.
+# The keychain grants access by signature, so after each rebuild it asks for
+# the login password again, once for each secret. Signed with a development
+# certificate under a fixed name, "Always Allow" lasts across rebuilds.
+# SECBOX_DEV_SIGN_IDENTITY picks the certificate (a name or SHA-1); without it
+# the first "Apple Development" one is used. Set it to "-" to skip signing.
+identity="${SECBOX_DEV_SIGN_IDENTITY:-}"
+if [ -z "$identity" ]; then
+  identity="$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk '/"Apple Development: /{print $2; exit}')"
+fi
+if [ -n "$identity" ] && [ "$identity" != "-" ]; then
+  for bin in "$tauri/target/debug/secboxd" "$tauri/target/debug/secbox" "$app" "$root/target/debug/secbox" "$root/target/debug/secboxd"; do
+    [ -x "$bin" ] || continue
+    codesign --force --sign "$identity" --identifier "dev.secbox.$(basename "$bin")" "$bin" \
+      || echo "could not sign $bin; the keychain will keep asking after each rebuild" >&2
+  done
+else
+  echo "no development certificate to sign with, so the keychain asks again after each rebuild" >&2
+fi
+
 [ "$build_only" = true ] && exit 0
 
 if [ ! -x "$engine" ]; then
