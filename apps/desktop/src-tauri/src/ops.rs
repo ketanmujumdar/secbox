@@ -914,6 +914,9 @@ pub struct BlockedRow {
 pub struct BlockedView {
     pub recording: bool,
     pub total: u64,
+    /// Names refused before the daemon last started: counted, but their text
+    /// is kept in memory only, so it is gone.
+    pub unlisted: u64,
     pub rows: Vec<BlockedRow>,
     pub notes: Vec<Note>,
 }
@@ -985,6 +988,7 @@ pub fn blocked_view(report: &BlockedReport) -> BlockedView {
     BlockedView {
         recording,
         total: report.total,
+        unlisted: report.unlisted_domains,
         // Newest first in the window, where the top is what is read first.
         rows: if recording {
             report

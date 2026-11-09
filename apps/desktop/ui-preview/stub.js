@@ -122,6 +122,7 @@
   const blocked = {
     recording: true,
     total: 41,
+    unlisted: 0,
     rows: [
       { time: '2026-11-06 14:06:09', count: 28, domain: 'telemetry.example-cdn.com' },
       { time: '2026-11-06 14:05:51', count: 9, domain: 'sentry.io' },

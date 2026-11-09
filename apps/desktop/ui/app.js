@@ -1811,7 +1811,8 @@
   // blocked, and the flags of the last comparison of a running sandbox.
   function problemCount(path) {
     const refused = (state.problemRows || []).filter((r) => r.project_path === path && isRecent(r)).length;
-    const hosts = stillBlocked(path).length;
+    const view = state.blockedHosts.get(path);
+    const hosts = stillBlocked(path).length + (view && view.recording ? view.unlisted || 0 : 0);
     const row = state.projects.find((p) => p.path === path);
     const diff = state.diffs.get(path);
     const flags = diff && row && row.state === 'running' ? diff.view.flags.length : 0;
@@ -1847,7 +1848,10 @@
     if (error) notes.appendChild(el('li', 'The blocked hostnames could not be read: ' + error, 'alert'));
     else if (!view) notes.appendChild(el('li', 'Reading…', 'muted'));
     else if (!view.recording) notes.appendChild(el('li', 'Nothing is being recorded for this sandbox. The Network tab says why.', 'warn'));
-    else if (!rows.length) notes.appendChild(el('li', view.rows.length ? 'None still blocked. Every name refused before has been approved since.' : 'None recorded so far.'));
+    else if (!rows.length && !view.unlisted) notes.appendChild(el('li', view.rows.length ? 'None still blocked. Every name refused before has been approved since.' : 'None recorded so far.'));
+    if (view && view.recording && view.unlisted) {
+      notes.appendChild(el('li', plural(view.unlisted, 'host was', 'hosts were') + ' blocked before secbox last restarted. Names are never written to disk, because a sandbox can hide a secret in one, so these are counted but not named. One shows here again if the sandbox tries it again.', 'warn'));
+    }
     for (const event of rows) {
       const tr = el('tr');
       tr.appendChild(el('td', event.time, 'mono muted time'));
