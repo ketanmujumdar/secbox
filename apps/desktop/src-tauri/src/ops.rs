@@ -976,8 +976,9 @@ pub fn blocked_view(report: &BlockedReport) -> BlockedView {
         notes.push(note(
             Weight::Warn,
             format!(
-                "{} names seen before the daemon last started are not listed. A sandbox chooses the names it looks up and can hide a secret in one, so names are never written to disk.",
-                report.unlisted_domains
+                "{} seen before the daemon last started {} not listed. A sandbox chooses the names it looks up and can hide a secret in one, so names are never written to disk.",
+                if report.unlisted_domains == 1 { "1 name".to_owned() } else { format!("{} names", report.unlisted_domains) },
+                if report.unlisted_domains == 1 { "is" } else { "are" }
             ),
         ));
     }

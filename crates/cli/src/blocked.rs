@@ -115,8 +115,9 @@ pub(crate) fn notes(report: &BlockedReport) -> Vec<(Weight, String)> {
 /// The sandbox chooses each name it looks up and can hide a secret in one, so
 /// the daemon keeps names in memory only.
 pub(crate) fn unlisted_note(count: u64) -> String {
+    let (names, are) = if count == 1 { ("name", "is") } else { ("names", "are") };
     format!(
-        "{count} names seen before the daemon last started are not listed. A sandbox chooses the names it looks up and can hide a secret in one, so names are never written to disk."
+        "{count} {names} seen before the daemon last started {are} not listed. A sandbox chooses the names it looks up and can hide a secret in one, so names are never written to disk."
     )
 }
 
@@ -364,7 +365,8 @@ mod tests {
         assert!(text.contains("cut off"), "{text}");
         assert!(text.contains("3 older names"), "{text}");
         assert!(text.contains("2 log lines"), "{text}");
-        assert!(text.contains("4 names seen before the daemon last started"), "{text}");
+        assert!(text.contains("4 names seen before the daemon last started are"), "{text}");
+        assert!(unlisted_note(1).starts_with("1 name seen before the daemon last started is not listed"));
     }
 
     #[test]
