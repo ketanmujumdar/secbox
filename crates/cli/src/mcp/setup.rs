@@ -346,15 +346,16 @@ fn codex(args: &CodexArgs, deps: &mut Deps) -> i32 {
     }
     say!(deps);
     say!(deps, "Then start the sandbox, and start Codex from an empty folder outside the project,");
-    say!(deps, "with its own sandbox read-only and every command it wants to run put to you:");
+    say!(deps, "with its own sandbox read-only:");
     say!(deps);
     say!(deps, "  {} up {}", brand::CLI_BIN, shell_quote(&launch.project));
     say!(deps, "  mkdir -p ~/{name}-agent && cd ~/{name}-agent");
-    say!(deps, "  codex --sandbox read-only --ask-for-approval untrusted");
+    say!(deps, "  codex --sandbox read-only --ask-for-approval on-request");
     say!(deps);
-    say!(deps, "Codex has no setting that switches its shell off. Read-only stops it writing on the");
-    say!(deps, "host, but it can still read any file your user can, so this is weaker than Claude");
-    say!(deps, "Code with its tools denied. See docs/MCP.md.");
+    say!(deps, "Codex can still run commands on this machine without asking you. Read-only stops");
+    say!(deps, "them writing, but they can read any file your user can, including your home folder.");
+    say!(deps, "Codex has no setting that turns that off, so this is much weaker than Claude Code");
+    say!(deps, "with its tools denied. See docs/MCP.md.");
     exit::OK
 }
 

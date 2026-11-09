@@ -63,7 +63,7 @@ Built on Nov 5, 2026 (`docs/MCP.md`). Tested against the real daemon logic with 
 - [ ] Output over 256 KiB being cut without the engine or the command hanging.
 - [ ] `dirname`, `mkdir -p` and `cat` behaving as expected in the guest's shell, including paths with spaces.
 - [ ] A model in Claude Code using the tools on a real project, with `Bash` and `Read` denied, and never reaching the host's copy of the project.
-- [ ] Codex with `codex mcp add`, `--sandbox read-only` and `--ask-for-approval untrusted`. Codex was not installed where this was built.
+- [x] Codex 0.167 with the server given by `-c mcp_servers.secbox...`: its tools work, and a stopped sandbox is reported. It also ran `ls ~` on the host without asking, even with its shell tool off. `--ask-for-approval untrusted` no longer exists; the instructions now say `on-request` and warn plainly.
 - [ ] The audit log holding one `TerminalOpened` entry per `exec`, `read_file` and `write_file` call.
 
 ## Must run on a real VM before any of this is described as working

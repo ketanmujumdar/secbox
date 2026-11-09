@@ -254,7 +254,7 @@ cd /tmp/agent-test && claude
 | 8.6 | An `exec` with a 2-second timeout on `sleep 100` | It stops, and `ps` in the sandbox shows no `sleep` | |
 | 8.7 | An `exec` printing over 256 KiB | Cut short, with no hang | |
 | 8.8 | Stop the sandbox, then ask it to run `ls` | Fails, saying it is stopped | |
-| 8.9 | Codex: `secbox mcp setup codex --project "$P"`, then 8.1, 8.2 and 8.8 | It works, and asks before host commands | |
+| 8.9 | Codex: `secbox mcp setup codex --project "$P"`, then 8.1, 8.2 and 8.8 | Its secbox tools work, and the printed start command runs. Codex can still read host files without asking; the setup text must say so | |
 
 ## 9. Desktop app and terminal interface
 

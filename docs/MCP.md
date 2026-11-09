@@ -96,10 +96,10 @@ This changes nothing. It prints a `codex mcp add` command, the matching `~/.code
 ```sh
 codex mcp add secbox -- /abs/path/to/secbox mcp serve --project /abs/path/to/myapp
 mkdir -p ~/secbox-agent && cd ~/secbox-agent
-codex --sandbox read-only --ask-for-approval untrusted
+codex --sandbox read-only --ask-for-approval on-request
 ```
 
-**This is weaker than the Claude Code setup.** Codex has no setting that turns its shell off. `--sandbox read-only` stops its commands from writing on the host, but they can still read any file your user can, including the project on the host and anything in your home folder. `--ask-for-approval untrusted` puts each command that isn't a known-safe read to you first. Read what it asks before saying yes.
+**This is much weaker than the Claude Code setup.** Codex runs commands on this machine without asking you. `--sandbox read-only` stops them writing, but they can read any file your user can, including the project on the host and your home folder. Measured on Codex 0.167: `ls ~` ran on the host with no prompt, and still did with its shell tool turned off, through its built-in JavaScript runner. Codex no longer has a mode that asks before every command (`untrusted` was removed). Use Claude Code when the agent must not read your files.
 
 ### Any other MCP client
 
