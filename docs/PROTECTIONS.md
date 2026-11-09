@@ -201,8 +201,11 @@ first. Once code runs as you on your machine, secbox does not stop it:
   freed blocks discarded, in the kept disk `previous-root.raw` too (now mode
   `0600`). On a throwaway engine sandbox a fake value set by `docker run -e`
   and by a Compose `env_file` was then in no disk file, across a reboot, and
-  two earlier values were gone. Status: **needs a VM check through the
-  daemon**. A sandbox made before this pulls or builds its images once more,
+  two earlier values were gone. Through the daemon on a real Mac on Nov 9,
+  with two fake secrets delivered to Compose services, `LC_ALL=C grep -a -rl`
+  found neither value, nor the form the DNS probe sends, anywhere under
+  `~/.secbox`: after a start, after a stop and start, after approving a host
+  and after blocking it again. A sandbox made before this pulls or builds its images once more,
   and container logs no longer survive a restart. What an app writes into its
   own files or volumes is still on the disk.
 - **A refused name is on the disk for up to 5 seconds** while the daemon runs,

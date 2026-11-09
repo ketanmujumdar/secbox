@@ -227,6 +227,8 @@ Not run on a real VM:
 
 Docker's container state kept in memory (Nov 9), checked by hand on a throwaway `docker:dind` engine sandbox, not through the daemon: with the start script and `dockerd --feature containerd-snapshotter=false`, a value given by `docker run -e` and by a Compose `env_file` was in no file of `rootfs.raw` (`LC_ALL=C grep -a -c` gave 0) while running and after a stop and start; a named volume kept its data, Compose made the container again, `logs` worked, and two values from earlier runs were gone after the wipe and `fstrim`. Found on the way: `dockerd` bind-mounts `/var/lib/docker` onto itself without submounts, which hid the first tmpfs mounts, and containerd's `meta.db` holds the container spec, environment included.
 
+Then through the daemon on a real Mac (Nov 9): `FAKE_WEB_ONLY` for `web` and `DEMO_TOKEN` for `web` and `api`, delivered as assigned. `LC_ALL=C grep -a -rl` over `~/.secbox` found neither value, nor `faketoken1234`, after a start, a stop and start, `net allow` and `net block`. Tests 1.8 and 2.4 pass.
+
 - [ ] Through the daemon on a real sandbox with fake secrets: start, `approve`, `block`, restart, then `LC_ALL=C grep -a -rl` for each value in `~/.secbox`. Expected: nothing, `previous-root.raw` included.
 - [ ] An existing sandbox made before Nov 9 starts, rebuilds or pulls its images once, and keeps its volumes.
 - [ ] `exec.log` a folder and `kernel.log` a link right after `create` on `docker:dind`, and the start sequence (dockerd, Compose, secret delivery) unaffected.
