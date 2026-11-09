@@ -910,7 +910,8 @@ pub struct TerminalReport {
     pub workdir: String,
 }
 
-/// Why a request did not succeed. The message is already safe to print.
+/// Why a request did not succeed. The message is already safe to print: only
+/// its line breaks are left, as a build's last lines need them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiError {
@@ -922,7 +923,7 @@ impl ApiError {
     pub fn new(code: ErrorCode, message: impl AsRef<str>) -> Self {
         Self {
             code,
-            message: text::escape_short(message.as_ref(), 2000),
+            message: text::escape_keeping_breaks(message.as_ref(), 2000),
         }
     }
 }

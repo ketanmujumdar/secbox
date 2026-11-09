@@ -65,6 +65,8 @@ struct State {
     keeps_files: bool,
     lookups_denied: u32,
     refuses_resizes: bool,
+    /// Outputs for an `exec` whose command holds this word, ahead of the queue.
+    answers: Vec<(String, ExecOutput)>,
 }
 
 /// In-memory [`Engine`]. `create` leaves a sandbox running, matching the CLI's
@@ -88,6 +90,12 @@ impl FakeEngine {
     /// with empty output.
     pub fn push_exec_result(&self, output: ExecOutput) {
         self.lock().exec_results.push_back(output);
+    }
+
+    /// Answers every `exec` whose command has this word as one of its
+    /// arguments with this output, ahead of anything queued.
+    pub fn answer_exec(&self, word: impl Into<String>, output: ExecOutput) {
+        self.lock().answers.push((word.into(), output));
     }
 
     /// Queues output for the next `exec_stream`.
@@ -434,6 +442,9 @@ impl Engine for FakeEngine {
         if let Some(root) = state.piped_root.clone().filter(|_| runs_git(request)) {
             drop(state);
             return run_locally(&root, request, &[]);
+        }
+        if let Some((_, output)) = state.answers.iter().find(|(word, _)| request.command.contains(word)) {
+            return Ok(output.clone());
         }
         Ok(state.exec_results.pop_front().unwrap_or_default())
     }

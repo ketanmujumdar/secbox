@@ -308,6 +308,8 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; m
 .content { flex: 1; min-width: 0; overflow: auto; position: relative; }
 .messages { display: flex; flex-direction: column; }
 .notice, .banner, .busy {
+  /* A failed start ends with the last lines Compose printed, one per line. */
+  white-space: pre-line;
   margin: 12px 28px 0;
   padding: 9px 14px;
   border-radius: 10px;

@@ -164,6 +164,7 @@ fn describe(entry: &Entry) -> Option<(String, String)> {
         "port_refused" if detail == "not approved" => return None,
         "port_refused" => format!("Forward port {subject}"),
         "secret_refused" => format!("Deliver secret {subject}"),
+        "build_failed" => return Some(("Start".to_owned(), format!("The project did not build or start; the sandbox was stopped. {detail}"))),
         "request_refused" if entry.project.is_some() => "Start".to_owned(),
         "request_refused" => "Connect to the daemon".to_owned(),
         "baseline_missing" => "Keep a copy to compare changes with".to_owned(),
@@ -255,6 +256,18 @@ mod tests {
         assert_eq!(view.rows[0].time, "2026-11-08 00:16:40");
         assert!(view.rows[1].why.starts_with("Not confirmed: you cancelled"), "{:?}", view.rows[1]);
         assert!(view.notes.iter().any(|n| n.text.contains("1 lines")), "{:?}", view.notes);
+    }
+
+    #[test]
+    fn a_failed_build_is_listed_as_a_start() {
+        let (_home, paths) = state_with(&[
+            r#"{"at_unix":1794095000,"action":"build_started","project":"shop-1","subject":null,"detail":null}"#,
+            r#"{"at_unix":1794095010,"action":"build_failed","project":"shop-1","subject":null,"detail":"Compose stopped with exit code 1"}"#,
+        ]);
+        let view = problems(&paths, None);
+        assert_eq!(view.rows.len(), 1, "{:?}", view.rows);
+        assert_eq!(view.rows[0].what, "Start");
+        assert!(view.rows[0].why.contains("sandbox was stopped") && view.rows[0].why.contains("exit code 1"));
     }
 
     #[test]

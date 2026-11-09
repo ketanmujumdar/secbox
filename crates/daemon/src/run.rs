@@ -235,10 +235,6 @@ pub fn up(
     compose_up(service, project, &plan, &delivered)?;
 
     let services = compose_services(service, project)?;
-    service.record(
-        audit::entry(service.deps().now_unix(), audit::Action::BuildFinished)
-            .project(project.id.as_str()),
-    );
 
     Ok(UpReport {
         project_id: project.id.as_str().to_owned(),
@@ -674,13 +670,43 @@ pub(crate) fn compose_up(
         .exec(&project.sandbox, &request)
         .map_err(|e| engine_error(e.to_string()))?;
     if out.code == 0 {
+        service.record(
+            audit::entry(service.deps().now_unix(), audit::Action::BuildFinished)
+                .project(project.id.as_str()),
+        );
         return Ok(());
     }
+    service.record(
+        audit::entry(service.deps().now_unix(), audit::Action::BuildFailed)
+            .project(project.id.as_str())
+            .detail(format!("Compose stopped with exit code {}", out.code)),
+    );
+    // A half-started project must not stay up with its ports open and its
+    // secrets delivered. Stopping keeps the data, as `down` does.
+    let stopped = service.deps().engine().stop(&project.sandbox).is_ok();
+    if stopped {
+        service.record(
+            audit::entry(service.deps().now_unix(), audit::Action::SandboxStopped)
+                .project(project.id.as_str()),
+        );
+    }
+    // The output comes from the project, and a service can print a secret.
+    let lines = match crate::mask::Masker::for_project(service, project) {
+        Ok(masker) => text::escape_last_lines(&masker.mask(&out.stderr), BUILD_ERROR_LINES, 200),
+        Err(_) => "(not shown, because the secret values to hide in it could not be read)".to_owned(),
+    };
+    let after = if stopped {
+        "The sandbox was stopped, so its ports are closed; its data is kept. Fix the project, then start it again."
+    } else {
+        "The sandbox could not be stopped afterwards. Stop it yourself before trying again."
+    };
     Err(engine_error(format!(
-        "the project did not start inside the sandbox: {}",
-        text::escape_short(out.stderr.trim(), 1500)
+        "the project did not start inside the sandbox. {after} The last lines Compose printed:\n{lines}"
     )))
 }
+
+/// How many of Compose's last lines a failed start shows.
+const BUILD_ERROR_LINES: usize = 15;
 
 /// Asks Compose what is running. The answer comes from inside the sandbox, so
 /// it is shown and never believed.

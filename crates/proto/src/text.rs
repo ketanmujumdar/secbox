@@ -36,6 +36,44 @@ pub fn escape_short(text: &str, max_chars: usize) -> String {
     out
 }
 
+/// Like [`escape_short`], but line breaks stay. Everything else that could
+/// move the cursor or recolour a terminal is escaped. A client indents every
+/// line after the first, so no line can pass for one of its own.
+pub fn escape_keeping_breaks(text: &str, max_chars: usize) -> String {
+    let mut out = String::with_capacity(text.len().min(max_chars));
+    for (count, c) in text.chars().enumerate() {
+        if count >= max_chars {
+            out.push_str("...");
+            break;
+        }
+        if c != '\n' && is_unsafe(c) {
+            out.extend(c.escape_unicode());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The last `max_lines` lines of a tool's output, each escaped and cut to
+/// `max_chars`, joined by real line breaks. Nothing but those breaks is left
+/// unescaped, so the text cannot move the cursor or recolour a terminal. A
+/// client indents every line after the first, so none can pass for its own.
+pub fn escape_last_lines(text: &str, max_lines: usize, max_chars: usize) -> String {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(|line| line.trim_end_matches('\r'))
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let skipped = lines.len().saturating_sub(max_lines);
+    let mut out: Vec<String> = Vec::new();
+    if skipped > 0 {
+        out.push(format!("({skipped} earlier lines left out)"));
+    }
+    out.extend(lines[skipped..].iter().map(|line| escape_short(line, max_chars)));
+    out.join("\n")
+}
+
 /// Escapes one line of a file for reading, cut to `max_chars`. Tabs stay, since
 /// code is laid out with them and they cannot rewrite what is on screen. A cut
 /// says so, because the part past it has not been read.
@@ -292,6 +330,15 @@ mod tests {
         assert!(!out.contains('\n'));
         assert!(!out.contains('\u{202e}'));
         assert!(out.contains("\\u{1b}"));
+    }
+
+    #[test]
+    fn last_lines_keep_their_breaks_and_nothing_else() {
+        let out = escape_last_lines("one\r\n\ntwo \u{1b}[2J\nthree\nfour\n", 3, 100);
+        assert_eq!(out, "(1 earlier lines left out)\ntwo \\u{1b}[2J\nthree\nfour");
+        assert_eq!(escape_last_lines("a\nb", 5, 100), "a\nb");
+        assert_eq!(escape_last_lines("abcdef", 5, 3), "abc...");
+        assert_eq!(escape_keeping_breaks("a\nb\r\u{1b}", 100), "a\nb\\u{d}\\u{1b}");
     }
 
     #[test]

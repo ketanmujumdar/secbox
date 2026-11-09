@@ -1835,6 +1835,47 @@ impl SecretFixture {
 }
 
 #[test]
+fn a_failed_build_stops_the_sandbox_logs_it_and_shows_its_last_lines() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.deps.inner.engine.answer_exec(
+        "--build",
+        engine::ExecOutput {
+            code: 17,
+            stdout: String::new(),
+            stderr: format!("#1 building web\n#2 api printed {FAKE_VALUE}\n#3 ERROR: \u{1b}[31mfailed\n"),
+        },
+    );
+    let error = f.up().unwrap_err();
+    let message = &error.message;
+    assert!(message.contains("The sandbox was stopped"), "{message}");
+    assert!(message.contains("\n#3 ERROR: \\u{1b}[31mfailed"), "one line each: {message}");
+    assert!(!message.contains("\\u{a}"), "{message}");
+    assert!(!message.contains(FAKE_VALUE) && message.contains("[ENCRYPTION_KEY]"), "{message}");
+
+    let calls = f.deps.inner.engine.calls();
+    let built = calls
+        .iter()
+        .position(|c| matches!(c, FakeCall::Exec(_, r) if r.command.iter().any(|a| a == "--build")))
+        .expect("compose up ran");
+    assert!(calls[built..].iter().any(|c| matches!(c, FakeCall::Stop(_))), "not stopped: {calls:?}");
+
+    let log = std::fs::read_to_string(f._state.path().join(brand::STATE_DIR).join("daemon-audit.jsonl")).unwrap();
+    assert!(log.contains(r#""action":"build_failed""#) && log.contains("exit code 17"), "{log}");
+    assert!(!log.contains(r#""action":"build_finished""#), "{log}");
+    assert!(log.contains(r#""action":"sandbox_stopped""#), "{log}");
+    assert!(!log.contains(FAKE_VALUE), "{log}");
+}
+
+#[test]
+fn a_build_that_works_is_logged_as_finished() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.up().unwrap();
+    let log = std::fs::read_to_string(f._state.path().join(brand::STATE_DIR).join("daemon-audit.jsonl")).unwrap();
+    assert_eq!(log.matches(r#""action":"build_finished""#).count(), 1, "{log}");
+    assert!(!log.contains("build_failed"), "{log}");
+}
+
+#[test]
 fn a_sandbox_file_shows_names_only_and_says_what_using_it_would_do() {
     let f = with_secret(secrets::Delivery::Injected, &["api"]);
     f.up().unwrap();

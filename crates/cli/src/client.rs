@@ -60,12 +60,17 @@ impl CallError {
     /// The message, safe to print on a terminal. The lines this program wrote
     /// itself keep their line breaks, and the one path in them is already
     /// escaped. Anything else came from the daemon or the system, so every
-    /// control character is escaped, line breaks included, and it cannot
-    /// fake a line of its own.
+    /// control character is escaped. A line break in it starts an indented
+    /// line, as a build's last lines do, so it cannot fake a line of its own.
     pub fn for_terminal(&self) -> String {
         match self {
             Self::NotRunning { .. } => self.message(),
-            _ => crate::ui::esc(&self.message()),
+            _ => self
+                .message()
+                .split('\n')
+                .map(crate::ui::esc)
+                .collect::<Vec<_>>()
+                .join("\n    "),
         }
     }
 }
@@ -359,8 +364,10 @@ mod tests {
             "refused\nStarted   in 1s\u{1b}[2J",
         ));
         let text = error.for_terminal();
-        assert_eq!(text.lines().count(), 1, "{text}");
-        assert!(text.contains("\\u{a}") && text.contains("\\u{1b}"), "{text}");
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert!(text.lines().skip(1).all(|line| line.starts_with("    ")), "{text}");
+        assert!(text.contains("\\u{1b}") && !text.contains('\u{1b}'), "{text}");
+        assert!(!text.contains("\\u{a}"), "{text}");
     }
 
     fn follow_request() -> Request {

@@ -27,6 +27,11 @@ has to run on real hardware.
   each secret, who holds it, and every host the sandbox can reach.
 - **Keys are hidden in logs.** Printed, base64'd, URL-encoded, hex'd, or cut
   into a DNS name, they show as `[NAME]`.
+- **A start that fails leaves nothing open.** If Compose cannot build or start
+  the project, the sandbox is stopped, which closes its ports and drops the
+  secrets it was given; its data is kept. The audit log records
+  `build_failed` with Compose's exit code, and the project's Problems tab
+  lists it. Compose's last lines are shown masked, one per line.
 - **Nothing a sandbox writes reaches your machine unseen.** The VM works on a
   copy; a planted AI-assistant hook stays in the VM until a reviewed export.
 

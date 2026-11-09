@@ -79,6 +79,10 @@ pub enum Action {
     SnapshotExcluded,
     BuildStarted,
     BuildFinished,
+    /// Compose could not build or start the project, so the sandbox was
+    /// stopped: its ports close and its delivered secrets go. Compose's exit
+    /// code only, since its output can hold anything a service printed.
+    BuildFailed,
     RequestRefused,
     /// A client was told how to open a terminal in a running sandbox. What
     /// happens in that terminal is not recorded.
