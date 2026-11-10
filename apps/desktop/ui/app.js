@@ -336,8 +336,24 @@
     const s = state.status;
     const net = $('badge-network');
     const hosts = s && typeof s.blocked_domains === 'number' ? s.blocked_domains : 0;
+    // As with Problems: red while there are refusals the Network tab has not
+    // shown yet, grey once it has. Counted in tries, so a new try of a host
+    // already listed turns it red again.
+    const tries = s && typeof s.blocked_total === 'number' ? s.blocked_total : 0;
+    const seen = seenProblems();
+    const key = 'net:' + state.selected;
+    if (state.page === 'project' && state.tab === 'network' && state.selected && seen[key] !== tries) {
+      seen[key] = tries;
+      try {
+        localStorage.setItem(SEEN_KEY, JSON.stringify(seen));
+      } catch (e) {
+        // Kept for this window only.
+      }
+    }
+    const fresh = tries > (typeof seen[key] === 'number' ? seen[key] : 0);
     net.textContent = String(hosts);
-    show(net, hosts > 0);
+    net.className = 'badge' + (fresh ? ' bad' : '') + (hosts > 0 ? '' : ' hidden');
+    net.title = hosts ? plural(hosts, 'blocked host', 'blocked hosts') + (fresh ? ', with new tries' : ', all seen') : '';
     const changes = $('badge-changes');
     const diff = state.diffs.get(state.selected);
     changes.textContent = diff ? String(diff.view.files.length) : '';
@@ -2413,7 +2429,7 @@
     if (tab !== 'secrets') closeSecretForm();
     if (tab === 'secrets') await loadSecrets();
     if (tab === 'settings') { await loadLimits(); await loadPorts(); }
-    if (tab === 'network') await readTraffic();
+    if (tab === 'network') { renderBadges(); await readTraffic(); }
     if (tab === 'problems') {
       renderProblemBadges();
       renderFlagged();
