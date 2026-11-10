@@ -1882,23 +1882,70 @@
   $('problem-hosts-read').addEventListener('click', readProblemHosts);
   $('problem-hosts-open').addEventListener('click', () => openTab('network'));
 
+  // One key for each problem, so the badges can tell what is new since the
+  // Problems tab was last open for that project: red while something is new,
+  // grey once it has been seen. The count stays until the problem is gone.
+  function problemKeys(path) {
+    const keys = [];
+    for (const r of (state.problemRows || [])) {
+      if (r.project_path === path && isRecent(r)) keys.push('r:' + r.at_unix + ':' + r.action + ':' + (r.subject || ''));
+    }
+    for (const r of stillBlocked(path)) keys.push('h:' + r.domain);
+    const view = state.blockedHosts.get(path);
+    if (view && view.recording && view.unlisted) keys.push('u:' + view.unlisted);
+    const row = state.projects.find((p) => p.path === path);
+    const diff = state.diffs.get(path);
+    if (diff && row && row.state === 'running') {
+      for (const f of diff.view.flags) keys.push('f:' + f.path + ':' + f.message);
+    }
+    return keys;
+  }
+
+  const SEEN_KEY = 'secbox.seenProblems';
+  function seenProblems() {
+    if (!state.seenProblems) {
+      try {
+        state.seenProblems = JSON.parse(localStorage.getItem(SEEN_KEY) || '{}') || {};
+      } catch (e) {
+        state.seenProblems = {};
+      }
+    }
+    return state.seenProblems;
+  }
+  function markProblemsSeen(path) {
+    const seen = seenProblems();
+    const keys = problemKeys(path);
+    if (JSON.stringify(seen[path] || []) === JSON.stringify(keys)) return;
+    seen[path] = keys;
+    try {
+      localStorage.setItem(SEEN_KEY, JSON.stringify(seen));
+    } catch (e) {
+      // Not kept across restarts, then; the badges still work.
+    }
+  }
+  function unseenProblems(path) {
+    const seen = new Set(seenProblems()[path] || []);
+    return problemKeys(path).filter((k) => !seen.has(k)).length;
+  }
+  function paintBadge(badge, path) {
+    const count = path ? problemCount(path) : { total: 0 };
+    const fresh = path ? unseenProblems(path) : 0;
+    badge.textContent = String(count.total);
+    badge.className = 'badge' + (fresh ? ' bad' : '') + (count.total > 0 ? '' : ' hidden');
+    badge.title = count.total ? problemWords(count) + (fresh ? ' (' + fresh + ' new)' : ', all seen') : '';
+  }
+
   function renderProblemBadges() {
+    if (state.page === 'project' && state.tab === 'problems' && state.selected) markProblemsSeen(state.selected);
     for (const item of $('projects').children) {
       let badge = item.querySelector('.badge');
-      const count = problemCount(item.dataset.path);
       if (!badge) {
-        badge = el('span', '', 'badge bad hidden');
+        badge = el('span', '', 'badge hidden');
         item.insertBefore(badge, item.querySelector('.word'));
       }
-      badge.textContent = String(count.total);
-      badge.title = problemWords(count);
-      show(badge, count.total > 0);
+      paintBadge(badge, item.dataset.path);
     }
-    const tab = $('badge-problems');
-    const count = state.selected ? problemCount(state.selected) : { total: 0 };
-    tab.textContent = String(count.total);
-    tab.title = count.total ? problemWords(count) : '';
-    show(tab, count.total > 0);
+    paintBadge($('badge-problems'), state.selected);
   }
 
   function problemWords(count) {
@@ -2368,6 +2415,7 @@
     if (tab === 'settings') { await loadLimits(); await loadPorts(); }
     if (tab === 'network') await readTraffic();
     if (tab === 'problems') {
+      renderProblemBadges();
       renderFlagged();
       const refused = readRefused();
       const hosts = readProblemHosts();
@@ -2375,6 +2423,7 @@
       renderFlagged();
       await refused;
       await hosts;
+      renderProblemBadges();
     }
     if (tab === 'changes') {
       renderGitAvailability();
