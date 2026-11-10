@@ -1034,6 +1034,7 @@ dependencies = [
 name = "proto"
 version = "0.1.0"
 dependencies = [
+ "brand",
  "serde",
  "serde_json",
  "thiserror",
@@ -1150,6 +1151,7 @@ version = "0.1.0"
 dependencies = [
  "brand",
  "keyring",
+ "security-framework 3.7.0",
  "serde",
  "serde_json",
  "tempfile",

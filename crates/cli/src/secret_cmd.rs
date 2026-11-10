@@ -43,6 +43,9 @@ enum SecretsCommand {
     List(ListArgs),
     /// Delete one secret from the keychain and the metadata
     Rm(RmArgs),
+    /// Find secrets left in the keychain by projects that are no longer on
+    /// this machine, and delete them after asking. Reads no value
+    Prune(PruneArgs),
 }
 
 #[derive(Args)]
@@ -123,6 +126,13 @@ struct ListArgs {
 }
 
 #[derive(Args)]
+struct PruneArgs {
+    /// Delete them without asking
+    #[arg(long)]
+    yes: bool,
+}
+
+#[derive(Args)]
 struct RmArgs {
     /// Secret name
     #[arg(allow_hyphen_values = true)]
@@ -141,6 +151,7 @@ pub fn run(args: SecretsArgs, deps: &mut Deps) -> i32 {
         SecretsCommand::Set(args) => set(&args, deps),
         SecretsCommand::List(args) => list(&args, deps),
         SecretsCommand::Rm(args) => rm(&args, deps),
+        SecretsCommand::Prune(args) => prune(&args, deps),
     };
     match result {
         Ok(code) => code,
@@ -710,6 +721,71 @@ fn rm(args: &RmArgs, deps: &mut Deps) -> Result<i32, String> {
         "from the metadata; the keychain had no value for it"
     };
     say!(deps, "Removed    {name} {place}");
+    Ok(exit::OK)
+}
+
+/// Deletes what the keychain holds for projects this machine no longer has.
+/// A project is known while its records folder exists, which is from its
+/// first secret or start until it is removed. Values are never read, so the
+/// keychain does not ask for the login password.
+fn prune(args: &PruneArgs, deps: &mut Deps) -> Result<i32, String> {
+    let paths = StatePaths::locate(deps.env).map_err(|e| esc(&e))?;
+    let Some(accounts) = (deps.accounts)().map_err(store_failure)? else {
+        tell!(
+            deps,
+            "secrets: this machine's secret store cannot list what it holds, so nothing was checked."
+        );
+        return Ok(exit::FAILED);
+    };
+    let mut orphans: Vec<(ProjectId, SecretName)> = accounts
+        .iter()
+        .filter_map(|account| secrets::split_account(account))
+        .filter(|(project, _)| !paths.project(project).is_dir())
+        .collect();
+    orphans.sort_by(|a, b| (a.0.as_str(), a.1.as_str()).cmp(&(b.0.as_str(), b.1.as_str())));
+    if orphans.is_empty() {
+        say!(deps, "Nothing to remove: every secret in the keychain belongs to a project on this machine.");
+        return Ok(exit::OK);
+    }
+    say!(deps, "Left in the keychain by projects no longer on this machine:");
+    for (project, name) in &orphans {
+        say!(deps, "  {project}  {name}");
+    }
+    if !args.yes {
+        if !deps.terminal {
+            tell!(deps, "secrets: nothing was deleted. Run it in a terminal to be asked, or add --yes.");
+            return Ok(exit::FAILED);
+        }
+        let _ = write!(deps.out, "Delete these {}? [y/N] ", orphans.len());
+        let _ = deps.out.flush();
+        let mut line = String::new();
+        deps.input
+            .read_line(&mut line)
+            .map_err(|e| format!("could not read the answer: {}", e.kind()))?;
+        if !matches!(line.trim(), "y" | "Y" | "yes") {
+            say!(deps, "Nothing was deleted.");
+            return Ok(exit::OK);
+        }
+    }
+    let mut removed = 0usize;
+    let mut failed = Vec::new();
+    for (project, name) in &orphans {
+        match (deps.store)(project).delete(name) {
+            Ok(_) => removed += 1,
+            Err(_) => failed.push(format!("{project}/{name}")),
+        }
+    }
+    say!(deps, "Deleted {removed} from the keychain.");
+    if !failed.is_empty() {
+        tell!(
+            deps,
+            "secrets: {} could not be deleted: {}. Delete them in Keychain Access, under \"{}\".",
+            failed.len(),
+            failed.join(", "),
+            brand::KEYCHAIN_SERVICE
+        );
+        return Ok(exit::FAILED);
+    }
     Ok(exit::OK)
 }
 

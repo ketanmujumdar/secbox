@@ -297,7 +297,7 @@
       case 'remove_project': {
         const i = projects.findIndex((p) => p.path === args.project);
         if (i >= 0) projects.splice(i, 1);
-        return 'Removed, with its imported copy. The remote itself was not touched. Any secrets you stored for it stay in your keychain.';
+        return 'Removed, with its imported copy. The remote itself was not touched. Its 2 secrets were deleted from your keychain.';
       }
       case 'logs': {
         const id = nextLog++;

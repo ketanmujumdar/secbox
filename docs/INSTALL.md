@@ -36,7 +36,7 @@ secbox doctor
 
 ## Uninstalling
 
-1. Delete secrets you stored, in each project: `secbox secrets list`, then `secbox secrets rm NAME`. Nothing else removes them from the keychain.
+1. Delete secrets you stored: `secbox remove` on each project deletes its secrets from the keychain, or `secbox secrets rm NAME` one at a time. `secbox secrets prune` finds any left by projects already gone. The state folder's removal does not touch the keychain.
 2. Remove the state folder: `secbox uninstall --purge`. It lists everything it would remove, and asks you to type the product name. `--yes` skips that question.
 3. Remove the program: `cargo uninstall cli`, or delete the binaries.
 

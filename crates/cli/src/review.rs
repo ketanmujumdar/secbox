@@ -381,6 +381,7 @@ mod tests {
                 cwd: dir.path().to_path_buf(),
                 env: &env,
                 store: &store,
+                accounts: &|| Ok(None),
                 prompt: &prompt,
                 host: &host,
                 daemon: &answer,

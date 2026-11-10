@@ -532,7 +532,7 @@ pub fn run(deps: &mut Deps) -> i32 {
                             Line::plain(""),
                             Line::plain("A project imported from a remote also loses the copy on this machine. The remote is not touched."),
                             Line::plain(format!("A folder of your own is not touched: {}", crate::ui::esc(&row.path))),
-                            Line::styled("Any secrets you stored for it stay in your keychain.", Style::WindowDim),
+                            Line::styled("Its secrets are deleted from your keychain too.", Style::WindowDim),
                         ],
                     ));
                     removing = true;
@@ -988,7 +988,10 @@ fn removed_message(report: &proto::RemoveReport) -> String {
     if report.sandbox_destroyed {
         text.push_str(" Its sandbox was destroyed: rotate every secret it was given.");
     }
-    text.push_str(" Any secrets you stored for it stay in your keychain.");
+    if let Some(sentence) = report.secrets_sentence() {
+        text.push(' ');
+        text.push_str(&sentence);
+    }
     text
 }
 
@@ -1673,16 +1676,22 @@ mod import_tests {
             project_id: "p".to_owned(),
             sandbox_destroyed: true,
             removed_copy: true,
+            secrets_removed: 2,
+            secrets_left: vec!["API_KEY".to_owned()],
         });
         assert!(said.starts_with("Removed, with its imported copy."), "{said}");
-        assert!(said.contains("rotate every secret") && said.contains("stay in your keychain"), "{said}");
+        assert!(said.contains("rotate every secret"), "{said}");
+        assert!(said.contains("Its 2 secrets were deleted from your keychain."), "{said}");
+        assert!(said.contains("1 secret could not be removed from the keychain: API_KEY."), "{said}");
         let said = removed_message(&proto::RemoveReport {
             project_id: "p".to_owned(),
             sandbox_destroyed: false,
             removed_copy: false,
+            secrets_removed: 0,
+            secrets_left: Vec::new(),
         });
         assert!(said.starts_with("Removed from this list. Its folder was not touched."), "{said}");
-        assert!(!said.contains("rotate"), "{said}");
+        assert!(!said.contains("rotate") && !said.contains("keychain"), "{said}");
     }
 
     #[test]

@@ -160,4 +160,10 @@ After a suspected compromise, run `secbox down --destroy` and rotate every secre
 secbox secrets rm NAME
 ```
 
-Deletes it from the keychain and the metadata. An empty name is just dropped from the list. `secbox uninstall --purge` does **not** remove keychain entries, so remove secrets with `rm` first.
+Deletes it from the keychain and the metadata. An empty name is just dropped from the list. Removing a project (`secbox remove`, or Remove in the app) deletes all of its secrets from the keychain; one that cannot be deleted is named. `down --destroy` keeps them, since the project stays. `secbox uninstall --purge` does **not** remove keychain entries, so remove secrets or projects first.
+
+```sh
+secbox secrets prune
+```
+
+Lists secrets left in the keychain by projects that are no longer on this machine, such as those removed by an earlier build, and deletes them after asking (`--yes` skips the question). It reads names only, never a value, so the keychain does not ask for your password. macOS only; elsewhere it says it cannot list them.

@@ -1,6 +1,6 @@
 # Uninstall
 
-Removing secbox takes three steps: delete stored secrets, remove the state folder, then remove the programs. Do them in this order, because nothing else removes keychain entries.
+Removing secbox takes three steps: delete stored secrets, remove the state folder, then remove the programs. Do them in this order, because removing the state folder does not touch the keychain.
 
 ## 1. Delete stored secrets
 
@@ -10,6 +10,8 @@ In each project where you stored secrets:
 secbox secrets list
 secbox secrets rm NAME
 ```
+
+Or remove the project with `secbox remove`, which deletes its secrets from the keychain too. `secbox secrets prune` lists what projects no longer on this machine left in the keychain, and deletes it after asking.
 
 ## 2. Stop sandboxes and remove the state folder
 

@@ -54,6 +54,11 @@ pub enum Action {
     SecretDelivered,
     /// A secret was not delivered, and why.
     SecretRefused,
+    /// A removed project's secrets were deleted from the keychain. How many.
+    SecretsRemoved,
+    /// Some of a removed project's secrets could not be deleted from the
+    /// keychain. Their names only.
+    SecretsLeft,
     /// A person chose limits for a project. Nothing changed in a sandbox yet.
     ResourcesChosen,
     /// A stopped sandbox's limits were changed, from a plan a person approved.

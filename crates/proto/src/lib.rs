@@ -1365,6 +1365,39 @@ pub struct RemoveReport {
     pub sandbox_destroyed: bool,
     /// The project was imported, and the daemon's copy is gone.
     pub removed_copy: bool,
+    /// How many of its secrets were deleted from the keychain.
+    #[serde(default)]
+    pub secrets_removed: u64,
+    /// Secrets that could not be deleted from the keychain, by name.
+    #[serde(default)]
+    pub secrets_left: Vec<String>,
+}
+
+impl RemoveReport {
+    /// What happened to its secrets, in one sentence, or nothing when it had
+    /// none. The names are secret names, which are checked words.
+    pub fn secrets_sentence(&self) -> Option<String> {
+        let removed = match self.secrets_removed {
+            0 => None,
+            1 => Some("Its 1 secret was deleted from your keychain.".to_owned()),
+            n => Some(format!("Its {n} secrets were deleted from your keychain.")),
+        };
+        let left = match self.secrets_left.len() {
+            0 => None,
+            n => Some(format!(
+                "{n} {} could not be removed from the keychain: {}. Delete {} in Keychain Access, under \"{}\".",
+                if n == 1 { "secret" } else { "secrets" },
+                self.secrets_left.join(", "),
+                if n == 1 { "it" } else { "them" },
+                brand::KEYCHAIN_SERVICE
+            )),
+        };
+        match (removed, left) {
+            (None, None) => None,
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (Some(a), Some(b)) => Some(format!("{a} {b}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

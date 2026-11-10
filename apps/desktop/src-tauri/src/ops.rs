@@ -868,7 +868,10 @@ pub fn remove(client: &Client, path: &str) -> Result<String, CallError> {
     if report.sandbox_destroyed {
         text.push_str(" Its sandbox was destroyed: rotate every secret it was given.");
     }
-    text.push_str(" Any secrets you stored for it stay in your keychain.");
+    if let Some(sentence) = report.secrets_sentence() {
+        text.push(' ');
+        text.push_str(&sentence);
+    }
     Ok(text)
 }
 

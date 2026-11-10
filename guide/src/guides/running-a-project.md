@@ -127,7 +127,7 @@ secbox remove ~/code/myapp # another folder, even one that no longer exists
 
 `down --destroy` removes the sandbox but keeps the project listed, with its approved ports and hosts. `remove` does that and also deletes those records, so the project leaves the list. In the desktop app this is **Remove project**.
 
-For a project imported from a remote, the copy on your machine goes too. The remote is not touched. **A folder of your own is never deleted.** Secrets stay in your keychain.
+For a project imported from a remote, the copy on your machine goes too. The remote is not touched. **A folder of your own is never deleted.** Its secrets are deleted from your keychain; `down --destroy` keeps them.
 
 ## Projects with only a Dockerfile
 

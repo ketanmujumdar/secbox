@@ -1437,7 +1437,7 @@
         body.appendChild(el('p', 'This destroys its sandbox and everything in it, and removes the project from this list, with its approved ports and hosts.', 'alert'));
         body.appendChild(el('p', 'A project imported from a remote also loses the copy on this machine. The remote is not touched.'));
         body.appendChild(el('p', 'A folder of your own is not touched: ' + row.path, 'mono'));
-        body.appendChild(el('p', 'Any secrets you stored for it stay in your keychain.', 'muted'));
+        body.appendChild(el('p', 'Its secrets are deleted from your keychain too.', 'muted'));
       },
     });
     if (!agreed) {

@@ -2939,6 +2939,7 @@ dependencies = [
 name = "proto"
 version = "0.1.0"
 dependencies = [
+ "brand",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -3250,6 +3251,7 @@ version = "0.1.0"
 dependencies = [
  "brand",
  "keyring",
+ "security-framework 3.7.0",
  "serde",
  "thiserror 2.0.21",
  "zeroize",

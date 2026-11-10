@@ -316,7 +316,9 @@ pub fn remove(args: &RemoveArgsCli, deps: &mut Deps) -> i32 {
     if report.sandbox_destroyed {
         say!(deps, "Its sandbox was destroyed. Rotate every secret it was given.");
     }
-    say!(deps, "Any secrets you stored for it stay in your keychain.");
+    if let Some(sentence) = report.secrets_sentence() {
+        say!(deps, "{sentence}");
+    }
     exit::OK
 }
 

@@ -64,6 +64,9 @@ pub struct Deps<'a> {
     pub cwd: PathBuf,
     pub env: &'a dyn Fn(&str) -> Option<OsString>,
     pub store: &'a dyn Fn(&ProjectId) -> Box<dyn SecretStore>,
+    /// Every account the secret store holds, `<project id>/<name>`, listed
+    /// without reading a value. `Ok(None)` where the store cannot list them.
+    pub accounts: &'a dyn Fn() -> Result<Option<Vec<String>>, secrets::StoreError>,
     pub prompt: &'a dyn Fn(&str) -> io::Result<SecretValue>,
     pub host: &'a dyn Fn(&Path) -> HostInfo,
     /// Where requests go. The command line decides nothing on its own.
@@ -250,6 +253,9 @@ pub(crate) fn with_test_deps<R>(
     };
     let prompt = |_: &str| -> io::Result<SecretValue> { panic!("a unit test must never prompt") };
     let host = |_: &Path| -> HostInfo { panic!("a unit test must never probe the host") };
+    let accounts = || -> Result<Option<Vec<String>>, secrets::StoreError> {
+        panic!("a unit test must never list the secret store")
+    };
     f(&mut Deps {
         out: &mut out,
         err: &mut err,
@@ -259,6 +265,7 @@ pub(crate) fn with_test_deps<R>(
         cwd: cwd.to_path_buf(),
         env,
         store: &store,
+        accounts: &accounts,
         prompt: &prompt,
         host: &host,
         daemon,
@@ -371,6 +378,7 @@ pub fn real_main() -> i32 {
             cwd,
             env: &env,
             store: &store,
+            accounts: &secrets::keychain_accounts,
             prompt: &prompt,
             host: &host::probe,
             daemon,

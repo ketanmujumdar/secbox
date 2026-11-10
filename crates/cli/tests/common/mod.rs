@@ -132,6 +132,9 @@ impl SecretStore for VaultStore {
     fn delete(&self, name: &SecretName) -> Result<bool, StoreError> {
         self.0.delete(name)
     }
+    fn names(&self) -> Result<Option<Vec<SecretName>>, StoreError> {
+        self.0.names()
+    }
 }
 
 impl Vault {
@@ -139,6 +142,26 @@ impl Vault {
         let mut projects = self.projects.lock().unwrap();
         let store = projects.entry(project.clone()).or_default().clone();
         Box::new(VaultStore(store))
+    }
+
+    /// Every `<project id>/<name>` held, as the keychain would list them.
+    pub fn accounts(&self) -> Vec<String> {
+        let projects = self.projects.lock().unwrap();
+        let mut all = Vec::new();
+        for (project, store) in projects.iter() {
+            for name in store.names().unwrap().unwrap() {
+                all.push(format!("{project}/{name}"));
+            }
+        }
+        all.sort();
+        all
+    }
+
+    /// Puts a value straight into the store, as an older build might have.
+    pub fn put(&self, project: &str, name: &str, value: &str) {
+        self.open(&ProjectId::new(project).unwrap())
+            .put(&SecretName::new(name).unwrap(), &SecretValue::new(value))
+            .unwrap();
     }
 
     /// Reads a value from whichever project holds it.
@@ -230,6 +253,8 @@ impl Harness {
         let env = |key: &str| (key == var).then(|| home.clone());
         let vault = self.vault.clone();
         let store = move |project: &ProjectId| vault.open(project);
+        let listed = self.vault.clone();
+        let accounts = move || Ok(Some(listed.accounts()));
         let prompt = |_: &str| {
             let next = self.answers.lock().unwrap().pop();
             next.map(SecretValue::new)
@@ -250,6 +275,7 @@ impl Harness {
                 cwd: self.project.path().to_path_buf(),
                 env: &env,
                 store: &store,
+                accounts: &accounts,
                 prompt: &prompt,
                 host: &host,
                 daemon: self.daemon.as_ref().map_or(&NO_DAEMON as &dyn DaemonClient, |d| d.as_ref()),

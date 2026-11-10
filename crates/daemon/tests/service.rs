@@ -1623,6 +1623,9 @@ impl SecretStore for Shared {
     fn delete(&self, name: &secrets::SecretName) -> Result<bool, secrets::StoreError> {
         self.0.delete(name)
     }
+    fn names(&self) -> Result<Option<Vec<secrets::SecretName>>, secrets::StoreError> {
+        self.0.names()
+    }
 }
 
 struct SecretDeps {
@@ -3672,4 +3675,134 @@ fn a_udp_port_blocks_the_plan_rather_than_being_forwarded_as_tcp() {
     assert!(plan.ports.is_empty());
     assert_eq!(plan.blockers.len(), 1, "{:?}", plan.blockers);
     assert!(plan.blockers[0].contains("5353/udp"), "{:?}", plan.blockers);
+}
+
+// --- Removing a project's secrets ----------------------------------------
+
+impl SecretFixture {
+    fn audit(&self) -> String {
+        std::fs::read_to_string(self._state.path().join(brand::STATE_DIR).join("daemon-audit.jsonl")).unwrap_or_default()
+    }
+
+    fn remove(&self) -> proto::RemoveReport {
+        match self
+            .service
+            .handle(&Request::Remove(proto::ProjectArgs { project: self.path() }), &mut Quiet)
+            .unwrap()
+        {
+            Reply::Remove(report) => report,
+            other => panic!("expected a removal, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn removing_a_project_deletes_its_secrets_from_the_keychain() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    // One more in the keychain that the records do not name, as an older
+    // build could leave.
+    let stray = secrets::SecretName::new("LEFT_OVER").unwrap();
+    f.deps.store.put(&stray, &secrets::SecretValue::new("fake-left-over")).unwrap();
+    f.up().unwrap();
+
+    let report = f.remove();
+    assert_eq!(report.secrets_removed, 2, "{report:?}");
+    assert!(report.secrets_left.is_empty(), "{report:?}");
+    assert_eq!(f.deps.store.names().unwrap().unwrap().len(), 0);
+    let said = report.secrets_sentence().unwrap();
+    assert_eq!(said, "Its 2 secrets were deleted from your keychain.");
+    let audit = f.audit();
+    assert!(audit.contains("\"secrets_removed\"") && audit.contains("2 deleted from the keychain"), "{audit}");
+    assert!(!audit.contains(FAKE_VALUE) && !audit.contains("fake-left-over"), "{audit}");
+}
+
+#[test]
+fn destroying_a_sandbox_keeps_the_projects_secrets() {
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    f.up().unwrap();
+    f.service
+        .handle(
+            &Request::Down(DownArgs {
+                project: f.path(),
+                destroy: true,
+            }),
+            &mut Quiet,
+        )
+        .unwrap();
+    let name = secrets::SecretName::new("ENCRYPTION_KEY").unwrap();
+    assert_eq!(f.deps.store.get(&name).unwrap().unwrap().expose(), FAKE_VALUE);
+    assert!(!f.audit().contains("secrets_removed"));
+}
+
+/// A store whose deletes fail, so a removal has to say what it left.
+struct Stuck(Shared);
+
+impl SecretStore for Stuck {
+    fn put(&self, name: &secrets::SecretName, value: &secrets::SecretValue) -> Result<(), secrets::StoreError> {
+        self.0.put(name, value)
+    }
+    fn get(&self, name: &secrets::SecretName) -> Result<Option<secrets::SecretValue>, secrets::StoreError> {
+        self.0.get(name)
+    }
+    fn delete(&self, _name: &secrets::SecretName) -> Result<bool, secrets::StoreError> {
+        Err(secrets::StoreError::Unavailable)
+    }
+}
+
+#[test]
+fn a_secret_that_cannot_be_deleted_is_named_and_the_project_still_goes() {
+    let store = Stuck(Shared::default());
+    let name = secrets::SecretName::new("STUCK_KEY").unwrap();
+    store.put(&name, &secrets::SecretValue::new("fake-stuck")).unwrap();
+    let f = with_secret(secrets::Delivery::Injected, &["api"]);
+    // The fixture's records name ENCRYPTION_KEY; the stuck store holds it too.
+    store
+        .put(&secrets::SecretName::new("ENCRYPTION_KEY").unwrap(), &secrets::SecretValue::new(FAKE_VALUE))
+        .unwrap();
+    // The first start is what records the project on this machine.
+    f.up().unwrap();
+    let state = f._state.path().join(brand::STATE_DIR);
+    let deps = Arc::new(StuckDeps { inner: TestDeps::new(), store });
+    let service = Service::new(StatePaths { state, overridden: true }, Arc::clone(&deps) as Arc<dyn Deps>).unwrap();
+    let report = match service
+        .handle(&Request::Remove(proto::ProjectArgs { project: f.path() }), &mut Quiet)
+        .unwrap()
+    {
+        Reply::Remove(report) => report,
+        other => panic!("expected a removal, got {other:?}"),
+    };
+    assert_eq!(report.secrets_removed, 0);
+    assert_eq!(report.secrets_left, vec!["ENCRYPTION_KEY".to_owned()]);
+    assert_eq!(
+        report.secrets_sentence().unwrap(),
+        format!(
+            "1 secret could not be removed from the keychain: ENCRYPTION_KEY. Delete it in Keychain Access, under \"{}\".",
+            brand::KEYCHAIN_SERVICE
+        )
+    );
+    assert!(f.audit().contains("\"secrets_left\""), "{}", f.audit());
+    assert!(!f.audit().contains("fake-stuck") && !f.audit().contains(FAKE_VALUE));
+}
+
+struct StuckDeps {
+    inner: TestDeps,
+    store: Stuck,
+}
+
+impl Deps for StuckDeps {
+    fn engine(&self) -> &dyn Engine {
+        self.inner.engine()
+    }
+    fn now_unix(&self) -> u64 {
+        self.inner.now_unix()
+    }
+    fn host_info(&self, disk_path: &Path) -> HostInfo {
+        self.inner.host_info(disk_path)
+    }
+    fn store(&self, _project: &ProjectId) -> Box<dyn SecretStore> {
+        Box::new(Stuck(self.store.0.clone()))
+    }
+    fn snapshot(&self, root: &Path, source: &Source, dest: &Path) -> Result<SnapshotPlan, String> {
+        self.inner.snapshot(root, source, dest)
+    }
 }

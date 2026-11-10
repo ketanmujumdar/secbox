@@ -564,3 +564,38 @@ fn color_is_used_only_when_asked_and_stays_out_of_escaped_text() {
     let colored = t.run(&["doctor"], "");
     assert!(colored.out.contains("\u{1b}[32mok\u{1b}[0m"));
 }
+
+#[test]
+fn prune_deletes_only_what_projects_no_longer_here_left_and_asks_first() {
+    let mut t = Harness::new();
+    // A project on this machine: its secret has a records folder to go with it.
+    t.answer(&[VALUE, VALUE]);
+    assert_eq!(t.run(&["secrets", "set", "KEPT"], "").code, exit::OK);
+    // Left by a project that was removed before removal cleaned up.
+    t.vault.put("gone-0123456789abcdef", "OLD_TOKEN", "fake-old-token");
+
+    // Without a terminal and without --yes, nothing goes.
+    let refused = t.run(&["secrets", "prune"], "");
+    assert_eq!(refused.code, exit::FAILED, "{}", refused.all());
+    assert!(refused.out.contains("gone-0123456789abcdef  OLD_TOKEN"), "{}", refused.all());
+    assert!(!refused.out.contains("KEPT"), "{}", refused.all());
+    assert!(t.vault.value("OLD_TOKEN").is_some());
+
+    // Asked at a terminal, the default is no.
+    t.terminal = true;
+    let declined = t.run(&["secrets", "prune"], "\n");
+    assert_eq!(declined.code, exit::OK, "{}", declined.all());
+    assert!(declined.out.contains("Nothing was deleted."), "{}", declined.all());
+    assert!(t.vault.value("OLD_TOKEN").is_some());
+
+    let done = t.run(&["secrets", "prune"], "y\n");
+    assert_eq!(done.code, exit::OK, "{}", done.all());
+    assert!(done.out.contains("Deleted 1 from the keychain."), "{}", done.all());
+    assert!(t.vault.value("OLD_TOKEN").is_none());
+    assert_eq!(t.vault.value("KEPT").as_deref(), Some(VALUE));
+    assert!(!done.all().contains("fake-old-token") && !done.all().contains(VALUE));
+
+    let again = t.run(&["secrets", "prune"], "");
+    assert_eq!(again.code, exit::OK, "{}", again.all());
+    assert!(again.out.contains("Nothing to remove"), "{}", again.all());
+}

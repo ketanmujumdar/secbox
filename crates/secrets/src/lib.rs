@@ -24,5 +24,5 @@ pub use dotenv::{
 };
 pub use names::{BoundHost, NameError, ProjectId, SecretName, ServiceName};
 pub use placeholder::{Placeholder, PlaceholderError, SandboxPlaceholders};
-pub use store::{KeyringStore, MemoryStore, SecretStore, StoreError};
+pub use store::{keychain_accounts, split_account, KeyringStore, MemoryStore, SecretStore, StoreError};
 pub use value::SecretValue;

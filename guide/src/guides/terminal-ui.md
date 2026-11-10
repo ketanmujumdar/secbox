@@ -118,7 +118,7 @@ Up and down choose a secret. Enter sets a value for an empty name or replaces a 
 
 ## Settings
 
-The Settings tab shows the project's name, path, where it came from, its state and its limits. `x` destroys the sandbox and leaves the project in the list. `D` destroys its sandbox and removes the project from the list, along with the copy of a project imported from a remote. A folder of your own is not touched, and stored secrets stay in your keychain. Both ask first, and only `y` agrees.
+The Settings tab shows the project's name, path, where it came from, its state and its limits. `x` destroys the sandbox and leaves the project in the list. `D` destroys its sandbox and removes the project from the list, along with the copy of a project imported from a remote. A folder of your own is not touched. Its stored secrets are deleted from your keychain. Both ask first, and only `y` agrees.
 
 ## What only the desktop app has
 

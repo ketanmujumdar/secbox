@@ -818,8 +818,9 @@ pub fn down(
 /// before them fails the project is still listed and this can be tried again.
 ///
 /// `project.root` itself is never removed: only the daemon's own copy of an
-/// imported project, which `imported_folder` names. Secrets stay in the keychain,
-/// which cannot be asked what it holds for a project.
+/// imported project, which `imported_folder` names. Its secrets are deleted
+/// from the keychain; one that cannot be is named in the report, and the
+/// project is removed all the same.
 pub fn remove(
     service: &Service,
     project: &Project,
@@ -827,6 +828,8 @@ pub fn remove(
 ) -> Result<RemoveReport, ApiError> {
     let imported = crate::remote::imported_folder(service, project);
     let sandbox_destroyed = down(service, project, true, progress)?.destroyed;
+    // Before the records go, since the names are in them.
+    let (secrets_removed, secrets_left) = remove_secrets(service, project, progress);
     if let Some(folder) = &imported {
         progress.step("removing the imported copy", None);
         std::fs::remove_dir_all(folder)
@@ -842,7 +845,59 @@ pub fn remove(
         project_id: project.id.as_str().to_owned(),
         sandbox_destroyed,
         removed_copy: imported.is_some(),
+        secrets_removed,
+        secrets_left,
     })
+}
+
+/// Deletes every secret a project has in the keychain: the names its records
+/// hold, and any more the keychain lists under its id. Values are never read,
+/// so the keychain has nothing to ask. Returns how many were deleted and the
+/// names that could not be.
+fn remove_secrets(service: &Service, project: &Project, progress: &mut dyn Progress) -> (u64, Vec<String>) {
+    let store = service.deps().store(&project.id);
+    let mut names: Vec<secrets::SecretName> = Vec::new();
+    let mut add = |name: &secrets::SecretName| {
+        if !names.iter().any(|n| n == name) {
+            names.push(name.clone());
+        }
+    };
+    // Unreadable records still leave the keychain's own list to go by.
+    if let Ok(Some(meta)) = hoststate::read_meta(&project.dir) {
+        meta.secrets.iter().for_each(|record| add(&record.name));
+        meta.assignments.iter().for_each(|assignment| add(assignment.name()));
+    }
+    if let Ok(Some(listed)) = store.names() {
+        listed.iter().for_each(&mut add);
+    }
+    if names.is_empty() {
+        return (0, Vec::new());
+    }
+    progress.step("removing its secrets from the keychain", None);
+    let mut removed = 0u64;
+    let mut left = Vec::new();
+    for name in &names {
+        match store.delete(name) {
+            Ok(true) => removed += 1,
+            Ok(false) => {}
+            Err(_) => left.push(name.as_str().to_owned()),
+        }
+    }
+    if removed > 0 {
+        service.record(
+            audit::entry(service.deps().now_unix(), audit::Action::SecretsRemoved)
+                .project(project.id.as_str())
+                .detail(format!("{removed} deleted from the keychain")),
+        );
+    }
+    if !left.is_empty() {
+        service.record(
+            audit::entry(service.deps().now_unix(), audit::Action::SecretsLeft)
+                .project(project.id.as_str())
+                .detail(left.join(", ")),
+        );
+    }
+    (removed, left)
 }
 
 pub fn status(service: &Service, project: &Project) -> Result<StatusReport, ApiError> {
