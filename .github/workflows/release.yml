@@ -64,7 +64,17 @@ jobs:
           rm -f "$RUNNER_TEMP/cert.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$pw" "$kc" >/dev/null
           security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
-          security find-identity -v -p codesigning "$kc" | grep -F "$APPLE_SIGNING_IDENTITY"
+          # A Developer ID certificate is only valid with Apple's G2 intermediate,
+          # which a runner may not have.
+          curl -fsSL -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$kc" || true
+          echo "Certificates and keys in the signing keychain (names only):"
+          security find-identity -p codesigning "$kc" || true
+          if ! security find-identity -v -p codesigning "$kc" | grep -qF "$APPLE_SIGNING_IDENTITY"; then
+            echo "No valid identity named as APPLE_SIGNING_IDENTITY. Check that the .p12 holds the private key"
+            echo "(export it from My Certificates, not Certificates) and that the name matches exactly."
+            exit 1
+          fi
 
       - name: Write the App Store Connect API key
         env:
