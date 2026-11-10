@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "brand"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "brotli"
@@ -660,7 +660,7 @@ checksum = "914a755b7c2d4af2bdcff7ce1739e2db9a1b81a9b07123d8015786ae03c0980d"
 
 [[package]]
 name = "daemon"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "brand",
  "engine",
@@ -805,7 +805,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "brand",
  "daemon",
@@ -978,7 +978,7 @@ checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
 name = "engine"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "brand",
  "serde_json",
@@ -1404,7 +1404,7 @@ dependencies = [
 
 [[package]]
 name = "gitbroker"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "brand",
  "serde",
@@ -1585,7 +1585,7 @@ dependencies = [
 
 [[package]]
 name = "hoststate"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "brand",
  "secrets",
@@ -2694,7 +2694,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "personcheck"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "block2",
  "objc2",
@@ -2927,7 +2927,7 @@ dependencies = [
 
 [[package]]
 name = "projectcheck"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "brand",
  "serde",
@@ -2937,7 +2937,7 @@ dependencies = [
 
 [[package]]
 name = "proto"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "brand",
  "serde",
@@ -3247,7 +3247,7 @@ dependencies = [
 
 [[package]]
 name = "secrets"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "brand",
  "keyring",

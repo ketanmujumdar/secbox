@@ -16,8 +16,11 @@ class Secbox < Formula
 
   # The engine boots VMs with Hypervisor.framework, on Apple Silicon only.
   depends_on arch: :arm64
-  depends_on macos: :ventura
   depends_on :macos
+
+  on_macos do
+    depends_on macos: :ventura
+  end
 
   # The engine, pinned to the version secbox was tested against
   # (engine::TESTED_VERSION in crates/engine/src/msb.rs). This is deliberately
@@ -93,6 +96,7 @@ class Secbox < Formula
     assert_match "Critical (1)", shell_output("#{bin}/secbox check #{testpath}/project")
     shell_output("#{bin}/secbox check --strict #{testpath}/project", 3)
 
-    assert_match "Removed", shell_output("#{bin}/secbox uninstall --purge --yes")
+    # Nothing above writes state, and --purge must say so rather than fail.
+    assert_match "Nothing to remove", shell_output("#{bin}/secbox uninstall --purge --yes")
   end
 end

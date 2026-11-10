@@ -237,7 +237,7 @@
     if (needDaemon && !daemonRunning) throw 'The daemon is not running. Start it from the menu bar icon.';
     switch (cmd) {
       case 'app_info':
-        return { product: 'secbox', cli_bin: 'secbox', daemon_bin: 'secboxd', version: '0.1.0', state_dir: STATE, bundled_cli: '/Applications/secbox.app/Contents/MacOS/secbox' };
+        return { product: 'secbox', cli_bin: 'secbox', daemon_bin: 'secboxd', version: '1.0.0', state_dir: STATE, bundled_cli: '/Applications/secbox.app/Contents/MacOS/secbox' };
       case 'daemon_state':
         // As the app opens with no daemon: starting for a moment, then a note.
         if (scene === 'daemon-starting' && performance.now() < 3000) {

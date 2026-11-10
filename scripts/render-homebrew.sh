@@ -8,7 +8,7 @@
 # The release workflow runs it with OUT_DIR set to a checkout of the tap.
 set -euo pipefail
 
-version="${1:?VERSION, such as 0.1.0}"
+version="${1:?VERSION, such as 1.0.0}"
 tarball="${2:?path to secbox-VERSION-darwin-aarch64.tar.gz}"
 dmg="${3:?path to secbox-desktop-VERSION-aarch64.dmg}"
 out="${4:?the tap checkout to write into}"

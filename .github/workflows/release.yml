@@ -1,5 +1,5 @@
 # Builds, signs and notarizes a macOS release, publishes it on GitHub, and
-# updates the Homebrew tap. Runs when a tag like v0.1.0 is pushed.
+# updates the Homebrew tap. Runs when a tag like v1.0.0 is pushed.
 #
 # One-time setup (secrets, certificate, tap repository) is in docs/RELEASING.md.
 # Until the secrets exist, the signing step fails before anything is published.
@@ -130,7 +130,9 @@ jobs:
           shasum -a 256 "secbox-$VERSION-darwin-aarch64.tar.gz" "secbox-desktop-$VERSION-aarch64.dmg" > SHA256SUMS
           cat SHA256SUMS
           # Every 0.x release is marked as a pre-release.
-          gh release create "$GITHUB_REF_NAME" --prerelease --verify-tag --generate-notes \
+          pre=()
+          case "$VERSION" in 0.*) pre=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" ${pre[@]+"${pre[@]}"} --verify-tag --generate-notes \
             --title "secbox $VERSION" \
             "secbox-$VERSION-darwin-aarch64.tar.gz" "secbox-desktop-$VERSION-aarch64.dmg" SHA256SUMS
 

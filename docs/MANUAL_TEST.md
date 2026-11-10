@@ -14,7 +14,7 @@ export SECBOX_HOME=/tmp/sbtest
 secbox --version
 ```
 
-Expect `secbox 0.1.0`.
+Expect `secbox 1.0.0`.
 
 `/tmp/sbtest` is short on purpose. A long path, such as the default macOS temp folder, makes `doctor` report a socket path failure.
 
