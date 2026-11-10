@@ -16,8 +16,15 @@ run a Compose project with its network constrained
 Mac, but containment has not been shown under attack. On real traffic, the only
 network rule is the engine's own hostname allowlist: the rule engine in
 `crates/egress` is not connected to anything. Secrets assigned to a service are
-delivered into its sandbox on each start, by environment or file. That route
-exists in the code and has not been confirmed on a real guest.
+delivered into its sandbox on each start, by environment or file. On a real Mac
+each service got only the secrets assigned to it, and no value was found
+anywhere under `~/.secbox`, the VM's disk images included, through start,
+restart, approve and block.
+
+A hand test plan (`docs/TEST_PLAN.md`) has been run on a real Mac: 82 of 86
+cases pass, 3 were skipped and 1 fails. The failure: Codex can read files on
+your Mac even when set up as `secbox mcp setup codex` prints. See
+[AI agents](#ai-agents-claude-code-codex).
 
 `docs/NEEDS_A_VM.md` lists everything that has to run on real hardware before
 any of it can be called working.
@@ -43,9 +50,9 @@ secbox net check tests/fixtures/policy.yaml PUT https://registry.npmjs.org/left-
 | --- | --- |
 | `doctor` | Works. Checks the host, without needing Docker |
 | `remove [path]` | Works. Removes a project from this machine: its sandbox, its records and any imported copy. Never a folder of your own. Its secrets are deleted from the keychain too |
-| `ports [open PORT [--on N] \| close PORT]` | Built, run against a fake engine only. Shows each port a project publishes, and opens, closes or moves one to another number on this Mac, for when two projects publish the same port. Nothing changes until the next start, which asks you to confirm, naming the ports it opens; a running sandbox needs a restart. Ports stay on `127.0.0.1`. A sandbox made before this can close or move its ports but not open new ones. Also the Ports card on the desktop app's Settings tab |
-| `net allow <host> [--project PATH]` | Works on a real VM on a small project. Lets a sandbox reach one more exact hostname, by replacing it with its data kept and restarting its services. Also the Approve button in the desktop app and `a` in the terminal interface's Traffic panel, which have only been run against a fake engine |
-| `net hosts [--project PATH]`, `net block <host> [--project PATH]` | Built, run against a fake engine only. `net hosts` lists what a sandbox may reach: hosts you approved, with when, and the plan's build hosts. `net block` takes an approval back, replacing the sandbox without that host, with its data kept. No Touch ID, since it only narrows. Also the Allowed hosts card, with Block again, on the desktop app's Network tab; the terminal interface's Network tab shows the list |
+| `ports [open PORT [--on N] \| close PORT]` | Has run on a real Mac. Shows each port a project publishes, and opens, closes or moves one to another number on this Mac, for when two projects publish the same port. Nothing changes until the next start, which asks you to confirm, naming the ports it opens; a running sandbox needs a restart. Ports stay on `127.0.0.1`. A sandbox made before this can close or move its ports but not open new ones. Also the Ports card on the desktop app's Settings tab |
+| `net allow <host> [--project PATH]` | Works on a real VM on a small project. Lets a sandbox reach one more exact hostname, by replacing it with its data kept and restarting its services. Also the Approve button in the desktop app, which has run on a real Mac, and `a` in the terminal interface's Traffic panel |
+| `net hosts [--project PATH]`, `net block <host> [--project PATH]` | Has run on a real Mac. `net hosts` lists what a sandbox may reach: hosts you approved, with when, and the plan's build hosts. `net block` takes an approval back, replacing the sandbox without that host, with its data kept. No Touch ID, since it only narrows. Also the Allowed hosts card, with Block again, on the desktop app's Network tab; the terminal interface's Network tab shows the list |
 | `check [path]` | Works. Reads a project's Compose file as data and reports what it asks for. For a project with only a Dockerfile, reads its `EXPOSE` lines |
 | `open`, `checks` | Works. Editor safety checks, and the gate before launching an editor |
 | `resources [path]` | Works. Shows requested and resolved limits. To keep a limit, use the desktop app or `secbox.yaml`. A change applies the next time a stopped sandbox starts |
@@ -161,7 +168,7 @@ secbox mcp setup claude ~/agents/myapp --project ~/code/myapp
 cd ~/agents/myapp && claude
 ```
 
-`setup claude` makes a new folder outside the project. Its settings deny Claude Code's own shell, file and web tools there, and allow the sandbox's. `secbox mcp setup codex` prints the equivalent for Codex, which is weaker because Codex can't turn its shell off.
+`setup claude` makes a new folder outside the project. Its settings deny Claude Code's own shell, file and web tools there, and allow the sandbox's. `secbox mcp setup codex` prints the equivalent for Codex, which is much weaker: in testing, Codex 0.167 read files on the Mac without asking, even with its shell tool turned off. Use Codex with secbox only in a folder and account where that is acceptable.
 
 MCP adds a way into the sandbox. It doesn't take away what the agent can already do on your machine: only the agent's own settings do that, and secbox can't enforce them. Secrets delivered into the sandbox can be read with `exec`, and changes can't be brought back to the host yet. Read [docs/MCP.md](docs/MCP.md) before using it.
 
