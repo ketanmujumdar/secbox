@@ -42,11 +42,12 @@ secbox doctor
 
 `uninstall --purge` removes only `~/.secbox`, or `$SECBOX_HOME/.secbox` if that is set. It refuses if that path is a symbolic link or not a directory, if the folder holds other files and has no marker from this tool, or if a sandbox in it is still running. Engine data under `~/.secbox/msb` goes with it, including downloaded images.
 
-## Homebrew through a tap (NOT AVAILABLE YET)
+## Homebrew through a tap
 
-**Nothing has been released yet**, so these commands don't work today. They are what the first release will offer, on Apple Silicon Macs:
+On Apple Silicon Macs. Homebrew 7 and later load a tap that isn't Homebrew's own only after you trust it, once:
 
 ```sh
+brew trust --tap ketanmujumdar/tap
 brew install --cask ketanmujumdar/tap/secbox-desktop   # the desktop app, which pulls in the formula
 brew install ketanmujumdar/tap/secbox                   # or only the CLI and the daemon
 brew services start secbox                              # run the daemon now and at login

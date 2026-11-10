@@ -182,10 +182,11 @@ first. Once code runs as you on your machine, secbox does not stop it:
   the branch and commit. It does not yet say that the commit adds a CI
   workflow or an AI tool hook, so read `secbox diff` before you agree. Status:
   **partly done**.
-- **secbox itself has no signed release.** The Homebrew formula is a
-  placeholder. A fake download site is how the Binance attack began, so a
-  release needs published checksums and a signature before anyone is told
-  where to install it from. Status: **not yet**.
+- **secbox itself is released signed.** A fake download site is how the
+  Binance attack began. Releases come only from GitHub, built by the release
+  workflow, signed with Developer ID, notarized by Apple, with a SHA256SUMS
+  file, and the Homebrew tap pins each file by sha256. Status: **done** from
+  1.0.0.
 
 ### Other gaps
 

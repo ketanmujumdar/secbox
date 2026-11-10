@@ -1,8 +1,17 @@
 # Install
 
-secbox is built from source for now. This page installs the command line tool, the daemon and the VM engine, then checks the result.
+## With Homebrew (Mac with Apple Silicon)
 
-> There is no release, Homebrew tap or package yet. Every step here builds from the repository.
+```sh
+brew trust --tap ketanmujumdar/tap                     # Homebrew asks you to trust a tap once
+brew install --cask ketanmujumdar/tap/secbox-desktop   # the app, the CLI, the daemon and the engine
+```
+
+Open secbox from Applications; it starts the daemon. The app is signed and notarized by Apple. To update: `brew update && brew upgrade`. For the CLI and daemon only, without the app: `brew install ketanmujumdar/tap/secbox`, then `brew services start secbox`.
+
+## From source
+
+On Linux, or to build it yourself, the rest of this page installs the command line tool, the daemon and the VM engine from the repository, then checks the result.
 
 ## Requirements
 

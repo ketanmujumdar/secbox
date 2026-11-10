@@ -36,7 +36,7 @@ secbox is an early build. This page says exactly which parts work, which are bui
 | `diff [PATH]` | Works, through the daemon, on a real VM. Lists what changed in a running sandbox, with risky files flagged first. Copies nothing out |
 | Touch ID before `up`, `net allow` and each push | macOS only. Lightly tried on a real Mac. No prompt on Linux |
 | `export` | Not built. Exits with code 69 |
-| Desktop app | Early build. Runs on a Mac when built from source. There is no signed release yet |
+| Desktop app | Early build. Signed and notarized; install it with Homebrew, or build it from source |
 
 ## What kind of project can it start
 

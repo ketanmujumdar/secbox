@@ -16,7 +16,7 @@ cask "secbox-desktop" do
   homepage "https://github.com/ketanmujumdar/secbox"
 
   depends_on arch: :arm64
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
   # The CLI, the daemon and the pinned engine. The app talks to the daemon
   # that `brew services start secbox` runs.
   depends_on formula: "ketanmujumdar/tap/secbox"

@@ -5,6 +5,7 @@ A release is one tag. Pushing `vX.Y.Z` runs `.github/workflows/release.yml`, whi
 ## What users get
 
 ```sh
+brew trust --tap ketanmujumdar/tap                     # once; Homebrew 7 asks for it
 brew install --cask ketanmujumdar/tap/secbox-desktop   # the app, and the formula below with it
 brew install ketanmujumdar/tap/secbox                   # or only the CLI and daemon
 brew services start secbox                              # the daemon, now and at login
@@ -67,6 +68,7 @@ Settings, Secrets and variables, Actions. Put them in a `release` environment wi
 
    ```sh
    brew update
+   brew trust --tap ketanmujumdar/tap
    brew install --cask ketanmujumdar/tap/secbox-desktop
    brew test ketanmujumdar/tap/secbox
    brew audit --strict ketanmujumdar/tap/secbox
@@ -104,7 +106,7 @@ Built locally, signed with Developer ID and the hardened runtime, and installed 
 
 ## Not tested yet
 
-- The workflow has never run. The keychain import, Tauri's signing of the sidecars, and notarization are the likely first failures. Local builds were not notarized, so Gatekeeper refused the app until its quarantine flag was removed.
+- The workflow ran for 1.0.0. Its first runs failed at the keychain import, because the `.p12` held a development certificate instead of the Developer ID one; the step now lists the identities it finds by name.
 - The SSH relay under the hardened runtime. If something breaks, it needs an entitlement, not a weaker signature.
 - The daemon under launchd: that `HOME` and `SSH_AUTH_SOCK` reach it.
 - *Restart daemon* and *Stop daemon* in the app stop whichever daemon is running, including the launchd one, which launchd then restarts. The app says so when that happens.

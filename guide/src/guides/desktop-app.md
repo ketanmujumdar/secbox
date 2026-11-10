@@ -2,7 +2,7 @@
 
 The desktop app is a menu bar icon and a window for the same daemon the command line uses. It keeps `secboxd` running and lets you start, stop and destroy sandboxes, read logs and see blocked hostnames.
 
-> **Early build.** It runs on a Mac when built from source. There is no signed release yet.
+> **Early build.** Install it with `brew trust --tap ketanmujumdar/tap` then `brew install --cask ketanmujumdar/tap/secbox-desktop`, or build it from source.
 
 ## What it has
 

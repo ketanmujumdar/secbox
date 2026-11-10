@@ -33,7 +33,16 @@ any of it can be called working.
 
 ## Quick start
 
-You need a Rust toolchain, and macOS on Apple Silicon or Linux. There is no Homebrew tap or release yet, so [install from source](docs/INSTALL.md):
+On a Mac with Apple Silicon, install with Homebrew:
+
+```sh
+brew trust --tap ketanmujumdar/tap                     # Homebrew asks you to trust a tap once
+brew install --cask ketanmujumdar/tap/secbox-desktop   # the app, the CLI, the daemon and the engine
+```
+
+Open secbox from Applications. It starts the daemon, and the CLI (`secbox`) talks to the same one. To update, run `brew update && brew upgrade`.
+
+On Linux, or to build it yourself, you need a Rust toolchain. See [install from source](docs/INSTALL.md):
 
 ```sh
 cargo install --path crates/cli --locked
@@ -70,7 +79,7 @@ secbox net check tests/fixtures/policy.yaml PUT https://registry.npmjs.org/left-
 | `mcp setup claude FOLDER`, `mcp setup codex` | Works. Makes a folder for Claude Code with its own host tools denied, or prints how to add the server to Codex |
 | `diff [PATH]` | Works, through the daemon, on a real VM. Lists what changed in a running sandbox since its snapshot, with files that could act on your machine flagged first. Copies nothing out. See [Reviewing changes](#reviewing-changes-in-a-sandbox) |
 | `export` | Not built |
-| Desktop app (`apps/desktop`) | Early build, with no signed release yet. A menu bar icon that keeps the daemon running, and a window that brings a project in (clone from an SSH remote, or add a folder), shows its plan before it starts, and gives each project Overview, Logs, Network (blocked hostnames), Changes (compare, then commit, pull and push), Secrets and Settings tabs, with stop and destroy, plus memory, CPU and disk limits and live use. Same daemon, same powers as the CLI. Runs on a Mac when built from source. See [its README](apps/desktop/README.md) |
+| Desktop app (`apps/desktop`) | Early build, signed and notarized, installed with Homebrew. A menu bar icon that keeps the daemon running, and a window that brings a project in (clone from an SSH remote, or add a folder), shows its plan before it starts, and gives each project Overview, Logs, Network (blocked hostnames), Changes (compare, then commit, pull and push), Secrets and Settings tabs, with stop and destroy, plus memory, CPU and disk limits and live use. Same daemon, same powers as the CLI. See [its README](apps/desktop/README.md) |
 
 `new`, `up`, `down`, `status`, `logs`, `net blocked`, `shell`, `exec` and `diff` send requests to a daemon,
 `secboxd`, which holds the secrets, the policy and the approvals. With no daemon
