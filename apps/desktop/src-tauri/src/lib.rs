@@ -107,6 +107,27 @@ impl AppState {
         }
     }
 
+    fn stop_daemon(&self) -> Result<String, String> {
+        let _one = self.daemon_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if self.client.ping().is_err() {
+            return Ok("The daemon is not running.".to_owned());
+        }
+        daemon_proc::stop_daemon(&self.client)?;
+        // `brew services` keeps the daemon alive, so launchd may start it again.
+        std::thread::sleep(Duration::from_secs(2));
+        if self.client.ping().is_ok() {
+            return Ok(format!(
+                "{} was stopped, and something started it again, likely `brew services`. To keep it stopped, run `brew services stop {}`.",
+                brand::DAEMON_BIN,
+                brand::PRODUCT_NAME
+            ));
+        }
+        Ok(format!(
+            "Stopped {}. Running sandboxes keep running; start the daemon again to manage them.",
+            brand::DAEMON_BIN
+        ))
+    }
+
     fn paths(&self) -> Result<&hoststate::StatePaths, String> {
         self.paths
             .as_ref()
@@ -735,6 +756,9 @@ fn tray_menu(app: &AppHandle, snap: &TraySnapshot) -> tauri::Result<Menu<tauri::
         ("start-daemon", "Start daemon")
     };
     menu.append(&MenuItem::with_id(app, id, label, true, None::<&str>)?)?;
+    if snap.running {
+        menu.append(&MenuItem::with_id(app, "stop-daemon", "Stop daemon", true, None::<&str>)?)?;
+    }
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&MenuItem::with_id(app, "quit", "Quit (the daemon keeps running)", true, None::<&str>)?)?;
     Ok(menu)
@@ -751,6 +775,8 @@ fn apply_tray(app: &AppHandle, snap: &TraySnapshot) {
         tauri::include_image!("icons/tray-off.png")
     };
     let _ = tray.set_icon(Some(icon));
+    // Black-and-clear template images: macOS paints them to suit the menu bar.
+    let _ = tray.set_icon_as_template(true);
     let tip = if snap.running {
         format!("{}: daemon running", brand::PRODUCT_NAME)
     } else {
@@ -794,6 +820,19 @@ fn on_menu(app: &AppHandle, id: &str) {
                 apply_tray(&app, &snap);
             });
         }
+        "stop-daemon" => {
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let state = app.state::<Arc<AppState>>();
+                let text = match state.stop_daemon() {
+                    Ok(text) => text,
+                    Err(reason) => format!("Could not stop {}: {reason}", brand::DAEMON_BIN),
+                };
+                state.set_notice(text);
+                let snap = tray_snapshot(&state);
+                apply_tray(&app, &snap);
+            });
+        }
         "quit" => app.exit(0),
         _ => {}
     }
@@ -818,6 +857,7 @@ pub fn run() {
             };
             TrayIconBuilder::with_id(TRAY_ID)
                 .icon(tauri::include_image!("icons/tray-off.png"))
+                .icon_as_template(true)
                 .tooltip(brand::PRODUCT_NAME)
                 .menu(&tray_menu(&handle, &initial)?)
                 .show_menu_on_left_click(true)

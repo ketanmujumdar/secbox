@@ -172,6 +172,14 @@ fn peer_pid(_stream: &std::os::unix::net::UnixStream) -> Result<i32, String> {
 /// Asks the running daemon to stop, waits for its socket to go quiet, then
 /// starts a new one. Sandboxes are separate processes and keep running.
 pub fn restart_daemon(binary: &Path, log: &Path, client: &Client) -> Result<(), String> {
+    stop_daemon(client)?;
+    spawn_daemon(binary, log, client)
+}
+
+/// Asks the daemon answering on the socket to exit, and waits until it no
+/// longer answers. Sandboxes are separate processes and keep running. Nothing
+/// to do when no daemon answers.
+pub fn stop_daemon(client: &Client) -> Result<(), String> {
     if client.ping().is_ok() {
         let pid = listener_pid(client.socket())?;
         if pid <= 1 {
@@ -187,7 +195,7 @@ pub fn restart_daemon(binary: &Path, log: &Path, client: &Client) -> Result<(), 
             std::thread::sleep(Duration::from_millis(100));
         }
     }
-    spawn_daemon(binary, log, client)
+    Ok(())
 }
 
 #[cfg(test)]
