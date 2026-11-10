@@ -249,12 +249,13 @@ fn engine_home(paths: &StatePaths) -> PathBuf {
 
 /// Never looks in the current folder or on `PATH`: a hostile repo could plant
 /// a binary there, and this command is exactly what someone runs inside a repo
-/// they do not trust yet. Only the state folder or an explicit setting counts.
+/// they do not trust yet. Only an explicit setting, the state folder or
+/// Homebrew's fixed install path counts, the same as the daemon.
 fn engine_location(paths: &StatePaths, deps: &Deps) -> (PathBuf, PathBuf) {
     let home = engine_home(paths);
     let binary = match (deps.env)(&engine_bin_var()) {
         Some(binary) => PathBuf::from(binary),
-        None => home.join("bin").join("msb"),
+        None => hoststate::default_engine_bin(&paths.state),
     };
     (binary, home)
 }

@@ -196,11 +196,12 @@ fn run() -> Result<(), String> {
     hoststate::ensure_state(&paths)?;
 
     let home = paths.state.join(hoststate::ENGINE_DIR);
-    // The state folder belongs to this user, and the same place is what the
-    // doctor command checks. Nothing searches the path or the current folder.
+    // The state folder belongs to this user, then Homebrew's fixed install
+    // path; the doctor command checks the same. Nothing searches the path or
+    // the current folder.
     let binary = match env(&hoststate::engine_bin_var()) {
         Some(path) => std::path::PathBuf::from(path),
-        None => home.join("bin").join("msb"),
+        None => hoststate::default_engine_bin(&paths.state),
     };
     if !binary.is_file() {
         return Err(format!(

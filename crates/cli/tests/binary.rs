@@ -139,7 +139,9 @@ fn doctor_never_runs_a_binary_planted_in_the_current_folder() {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
     let done = run_binary(dir.path(), &["doctor"]);
-    assert!(done.out.contains("not found"), "{}", done.out);
+    // Homebrew's engine may be installed on this machine and be found; the
+    // planted one never is, and never runs.
+    assert!(!done.out.contains(".tools"), "{}", done.out);
     assert!(!canary.exists());
 }
 

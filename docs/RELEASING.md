@@ -59,8 +59,8 @@ Settings, Secrets and variables, Actions. Put them in a `release` environment wi
 3. Tag and push:
 
    ```sh
-   git tag -s v0.1.0 -m "secbox 0.1.0"
-   git push origin v0.1.0
+   git tag -s v1.0.0 -m "secbox 1.0.0"
+   git push origin v1.0.0
    ```
 
 4. When the workflow is green, on a clean Mac (or a new user account):
@@ -77,13 +77,35 @@ Settings, Secrets and variables, Actions. Put them in a `release` environment wi
 If the tap step was skipped, render the files yourself and push them to the tap:
 
 ```sh
-scripts/render-homebrew.sh 0.1.0 secbox-0.1.0-darwin-aarch64.tar.gz secbox-desktop-0.1.0-aarch64.dmg ../homebrew-tap
+scripts/render-homebrew.sh 1.0.0 secbox-1.0.0-darwin-aarch64.tar.gz secbox-desktop-1.0.0-aarch64.dmg ../homebrew-tap
 ```
+
+## Updating
+
+A new tag publishes a release and updates the tap. Users then run:
+
+```sh
+brew update
+brew upgrade                            # the CLI, the daemon, the pinned engine and the app
+brew services restart secbox            # if the daemon runs under brew services
+```
+
+`brew upgrade secbox` or `brew upgrade --cask secbox-desktop` upgrades one of them alone.
+
+Running sandboxes keep running through an upgrade; only the daemon restarts. With the app instead of `brew services`, use *Restart daemon* in its menu. The app has no updater of its own: Homebrew is how it updates. The binaries are signed with the same Developer ID and identifier each release, so the keychain's "Always Allow" carries over and secrets don't prompt again.
+
+## Tested on a real Mac, without the workflow
+
+Built locally, signed with Developer ID and the hardened runtime, and installed with `brew install` and `brew install --cask` from a local tap pointing at the files on disk:
+
+- `brew test` and `brew audit --strict` pass on the formula.
+- The formula's `secbox` and `secboxd` with its pinned engine started a sandbox, Touch ID confirmed it, and its port answered.
+- The app from the cask lists projects, its menu bar icon follows the menu bar's colour, and *Stop daemon* and *Start daemon* work. Opened from Finder, its daemon finds the engine at Homebrew's fixed path (`/opt/homebrew/opt/secbox/libexec/engine/msb`), after the state folder's own.
 
 ## Not tested yet
 
-- The workflow has never run. The keychain import, Tauri's signing of the sidecars, and notarization of bare executables are the likely first failures.
-- Hardened runtime on `secboxd` with Touch ID, the keychain and the SSH relay. If something breaks, it needs an entitlement, not a weaker signature.
-- The daemon under launchd: that `HOME` and `SSH_AUTH_SOCK` reach it, and that `SECBOX_ENGINE_BIN` from the service block is used.
-- The desktop app with the Homebrew daemon. The app brings its own `secboxd` and starts it when none answers. Started from Finder, that copy has no `SECBOX_ENGINE_BIN`, so it won't find the engine. Its *Restart daemon* stops whichever daemon is running, including the launchd one, which launchd then restarts. Start the daemon with `brew services` until the app learns where Homebrew put the engine.
+- The workflow has never run. The keychain import, Tauri's signing of the sidecars, and notarization are the likely first failures. Local builds were not notarized, so Gatekeeper refused the app until its quarantine flag was removed.
+- The SSH relay under the hardened runtime. If something breaks, it needs an entitlement, not a weaker signature.
+- The daemon under launchd: that `HOME` and `SSH_AUTH_SOCK` reach it.
+- *Restart daemon* and *Stop daemon* in the app stop whichever daemon is running, including the launchd one, which launchd then restarts. The app says so when that happens.
 - Linux and Intel Macs are not packaged. Build from source there (`docs/INSTALL.md`).

@@ -45,6 +45,33 @@ pub fn engine_bin_var() -> String {
     format!("{}{}", brand::ENV_PREFIX, brand::ENGINE_BIN_ENV_SUFFIX)
 }
 
+/// Where the Homebrew formula installs the engine it pins. A fixed absolute
+/// path, never a search of `PATH` or the current folder.
+pub fn packaged_engine_bin() -> PathBuf {
+    PathBuf::from(format!(
+        "/opt/homebrew/opt/{}/libexec/engine/msb",
+        brand::PRODUCT_NAME
+    ))
+}
+
+/// The engine to use when its variable is not set: the one in the state
+/// folder if there is one, otherwise the one Homebrew installed, if there is
+/// one. An app opened from Finder passes no variables, so without this it
+/// could not find the engine Homebrew put in place. With neither present, the
+/// state folder's path is returned, so the error names where to put it.
+pub fn default_engine_bin(state: &Path) -> PathBuf {
+    pick_engine_bin(state, &packaged_engine_bin())
+}
+
+fn pick_engine_bin(state: &Path, packaged: &Path) -> PathBuf {
+    let own = state.join(ENGINE_DIR).join("bin").join("msb");
+    if !own.is_file() && packaged.is_file() {
+        packaged.to_path_buf()
+    } else {
+        own
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StatePaths {
     pub state: PathBuf,
@@ -464,6 +491,30 @@ fn now_unix() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_state_folder_engine_comes_before_the_packaged_one() {
+        let dir = std::env::temp_dir().join(format!("engine-pick-{}", std::process::id()));
+        let state = dir.join("state");
+        let packaged = dir.join("brew/msb");
+        let own = state.join(super::ENGINE_DIR).join("bin").join("msb");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Neither present: the state folder's path, so the error says where.
+        assert_eq!(super::pick_engine_bin(&state, &packaged), own);
+
+        // Only Homebrew's: that one.
+        std::fs::create_dir_all(packaged.parent().unwrap()).unwrap();
+        std::fs::write(&packaged, b"").unwrap();
+        assert_eq!(super::pick_engine_bin(&state, &packaged), packaged);
+
+        // Both: the state folder's.
+        std::fs::create_dir_all(own.parent().unwrap()).unwrap();
+        std::fs::write(&own, b"").unwrap();
+        assert_eq!(super::pick_engine_bin(&state, &packaged), own);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn many_threads_can_write_the_same_file_at_once() {
         let dir = std::env::temp_dir().join(format!("write-private-{}", std::process::id()));
